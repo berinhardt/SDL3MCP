@@ -41,6 +41,7 @@ add_library(SDL3MCP ${sdl3mcp_library_type}
     src/info.cpp
     src/session.cpp
     src/frame.cpp
+    src/capture.cpp
     src/transport.cpp
     src/server.cpp
     src/stdio_isolation.cpp

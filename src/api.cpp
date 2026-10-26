@@ -14,15 +14,17 @@
   corrupt the JSON-RPC stream.
 
   sdl_input runs on the server thread and only fills the input queue; the app
-  thread turns a taken batch into SDL events in AppIterate. sdl_capture is still
-  a stub and arrives on its own step; sdl_info is answered from a copied
-  snapshot.
+  thread turns a taken batch into SDL events in AppIterate. sdl_capture waits on
+  the CaptureState the server marks pending and the app answers with a copied
+  frame; sdl_info is answered from a copied snapshot.
 */
 
 #include <SDL3MCP/SDL3MCP.h>
 
 #include "app_input.hpp"
+#include "capture.hpp"
 #include "configuration.hpp"
+#include "frame.hpp"
 #include "info.hpp"
 #include "input_json.hpp"
 #include "keymap.hpp"
@@ -33,12 +35,15 @@
 #include "session.hpp"
 #include "stdio_isolation.hpp"
 
+#include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <exception>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -53,7 +58,11 @@ namespace
 {
 
 using sdl3mcp::AppliedBatchPlan;
+using sdl3mcp::CaptureRegion;
+using sdl3mcp::CaptureState;
+using sdl3mcp::CaptureStats;
 using sdl3mcp::Configuration;
+using sdl3mcp::Frame;
 using sdl3mcp::InfoSnapshot;
 using sdl3mcp::InputBatch;
 using sdl3mcp::InputOutcome;
@@ -92,6 +101,7 @@ struct LibraryState
     MouseReplayer mouseReplayer;
 
     InputQueue inputQueue;
+    CaptureState capture;
     Session session;
     StdioIsolation isolation;
 
@@ -127,11 +137,30 @@ struct LibraryState
         info = std::move(snapshot);
     }
 
-    /* Any thread: returns a copy that outlives the lock. */
+    /*
+      Any thread: returns a copy that outlives both locks. The app-written
+      window/frame fields and the server-written capture statistics have
+      separate mutexes, so they are copied one after the other rather than
+      under one lock that both threads would have to share.
+    */
     InfoSnapshot snapshotInfo() const
     {
-        std::lock_guard<std::mutex> lock(infoMutex);
-        return info;
+        InfoSnapshot copy;
+        {
+            std::lock_guard<std::mutex> lock(infoMutex);
+            copy = info;
+        }
+
+        const CaptureStats stats = capture.stats();
+        copy.capture.pending = stats.pending;
+        copy.capture.count = stats.count;
+        copy.capture.dropped = stats.dropped;
+        copy.capture.lastWidth = stats.lastWidth;
+        copy.capture.lastHeight = stats.lastHeight;
+        copy.capture.lastBytes = stats.lastBytes;
+        copy.capture.lastMs = stats.lastMs;
+        copy.capture.lastError = stats.lastError;
+        return copy;
     }
 };
 
@@ -365,10 +394,268 @@ ToolResult inputResult(LibraryState &state, const ToolCall &call)
     return textResult("unknown input outcome", true);
 }
 
+constexpr int kCaptureMinWidth = 16;
+constexpr int kCaptureMaxWidth = 16384;
+constexpr int kCaptureMinTimeoutMs = 1;
+constexpr int kCaptureMaxTimeoutMs = 60000;
+
+constexpr std::array<std::string_view, 3> kCaptureProperties{"max_width", "timeout_ms",
+                                                             "region"};
+constexpr std::array<std::string_view, 4> kRegionProperties{"x", "y", "width", "height"};
+
+/* The sdl_capture arguments as the handler uses them, already range-checked. */
+struct CaptureArguments
+{
+    std::optional<int> maxWidth;
+    std::chrono::milliseconds timeout{0};
+    std::optional<CaptureRegion> region;
+};
+
+template <std::size_t N>
+std::optional<std::string> rejectUnknownProperties(const nlohmann::json &value,
+                                                   const std::array<std::string_view, N> &allowed)
+{
+    for (auto entry = value.begin(); entry != value.end(); ++entry) {
+        const std::string_view name = entry.key();
+        bool isAllowed = false;
+        for (const std::string_view candidate : allowed) {
+            if (name == candidate) {
+                isAllowed = true;
+                break;
+            }
+        }
+        if (!isAllowed) {
+            return "unknown property \"" + entry.key() + "\"";
+        }
+    }
+    return std::nullopt;
+}
+
+/* Reads one required integer; unsigned JSON values too large for int64_t fail. */
+std::optional<int64_t> readCaptureInteger(const nlohmann::json &object,
+                                          const char *name,
+                                          std::string &error)
+{
+    const auto entry = object.find(name);
+    if (entry == object.end()) {
+        error = std::string(name) + " is required";
+        return std::nullopt;
+    }
+    if (!entry->is_number_integer()) {
+        error = std::string(name) + " must be an integer";
+        return std::nullopt;
+    }
+    if (entry->is_number_unsigned()) {
+        const uint64_t value = entry->get<uint64_t>();
+        if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+            error = std::string(name) + " is out of range";
+            return std::nullopt;
+        }
+        return static_cast<int64_t>(value);
+    }
+    return entry->get<int64_t>();
+}
+
 /*
-  The server thread dispatcher. sdl_info answers from the published copy and
-  sdl_input blocks in the queue; capture is not implemented yet. Only the queue
-  crosses the boundary, never SDL.
+  Server thread: validates the wire shape before anything is requested. Every
+  property the schema does not name is rejected, so a typo cannot silently fall
+  back to a default; ranges match the published tool schema.
+*/
+std::optional<CaptureArguments> parseCaptureArguments(const nlohmann::json &arguments,
+                                                      uint32_t defaultTimeoutMs,
+                                                      std::string &error)
+{
+    error.clear();
+
+    if (!arguments.is_object()) {
+        error = "arguments must be a JSON object";
+        return std::nullopt;
+    }
+    if (const std::optional<std::string> unknown =
+            rejectUnknownProperties(arguments, kCaptureProperties);
+        unknown.has_value()) {
+        error = *unknown;
+        return std::nullopt;
+    }
+
+    CaptureArguments parsed;
+    parsed.timeout = std::chrono::milliseconds(defaultTimeoutMs);
+
+    if (arguments.contains("max_width")) {
+        const std::optional<int64_t> value = readCaptureInteger(arguments, "max_width", error);
+        if (!value.has_value()) {
+            return std::nullopt;
+        }
+        if (*value < kCaptureMinWidth || *value > kCaptureMaxWidth) {
+            error = "max_width " + std::to_string(*value) + " must be between " +
+                    std::to_string(kCaptureMinWidth) + " and " +
+                    std::to_string(kCaptureMaxWidth);
+            return std::nullopt;
+        }
+        parsed.maxWidth = static_cast<int>(*value);
+    }
+
+    if (arguments.contains("timeout_ms")) {
+        const std::optional<int64_t> value = readCaptureInteger(arguments, "timeout_ms", error);
+        if (!value.has_value()) {
+            return std::nullopt;
+        }
+        if (*value < kCaptureMinTimeoutMs || *value > kCaptureMaxTimeoutMs) {
+            error = "timeout_ms " + std::to_string(*value) + " must be between " +
+                    std::to_string(kCaptureMinTimeoutMs) + " and " +
+                    std::to_string(kCaptureMaxTimeoutMs);
+            return std::nullopt;
+        }
+        parsed.timeout = std::chrono::milliseconds(*value);
+    }
+
+    if (const auto regionEntry = arguments.find("region"); regionEntry != arguments.end()) {
+        if (!regionEntry->is_object()) {
+            error = "region must be an object";
+            return std::nullopt;
+        }
+        if (const std::optional<std::string> unknown =
+                rejectUnknownProperties(*regionEntry, kRegionProperties);
+            unknown.has_value()) {
+            error = *unknown;
+            return std::nullopt;
+        }
+
+        const std::optional<int64_t> x = readCaptureInteger(*regionEntry, "x", error);
+        if (!x.has_value()) {
+            return std::nullopt;
+        }
+        const std::optional<int64_t> y = readCaptureInteger(*regionEntry, "y", error);
+        if (!y.has_value()) {
+            return std::nullopt;
+        }
+        const std::optional<int64_t> width = readCaptureInteger(*regionEntry, "width", error);
+        if (!width.has_value()) {
+            return std::nullopt;
+        }
+        const std::optional<int64_t> height = readCaptureInteger(*regionEntry, "height", error);
+        if (!height.has_value()) {
+            return std::nullopt;
+        }
+        if (*x < 0 || *y < 0) {
+            error = "region x and y must be at least 0";
+            return std::nullopt;
+        }
+        if (*width < 1 || *height < 1) {
+            error = "region width and height must be at least 1";
+            return std::nullopt;
+        }
+        if (*x > std::numeric_limits<int>::max() || *y > std::numeric_limits<int>::max() ||
+            *width > std::numeric_limits<int>::max() ||
+            *height > std::numeric_limits<int>::max()) {
+            error = "region is out of range";
+            return std::nullopt;
+        }
+
+        CaptureRegion region;
+        region.x = static_cast<int>(*x);
+        region.y = static_cast<int>(*y);
+        region.width = static_cast<int>(*width);
+        region.height = static_cast<int>(*height);
+        parsed.region = region;
+    }
+
+    return parsed;
+}
+
+/* Server thread: one request, one frame, then crop/downscale/PNG/base64. */
+ToolResult captureResult(LibraryState &state, const ToolCall &call)
+{
+    std::string error;
+    const std::optional<CaptureArguments> arguments = parseCaptureArguments(
+        call.arguments, state.configuration.value().frame_timeout_ms, error);
+    if (!arguments.has_value()) {
+        return textResult(std::move(error), true);
+    }
+
+    if (!state.snapshotInfo().window.bound) {
+        return textResult("no window bound", true);
+    }
+    if (!state.capture.begin(error)) {
+        return textResult(std::move(error), true);
+    }
+
+    Frame frame;
+    std::string failure;
+    if (!state.capture.wait(arguments->timeout, frame, failure)) {
+        std::string message = "no frame arrived within " +
+                              std::to_string(arguments->timeout.count()) +
+                              " ms. The app must call SDL3MCP_WriteFrame() when "
+                              "SDL3MCP_FrameRequested() returns true, with tightly packed "
+                              "RGBA8888 at SDL_GetWindowSizeInPixels().";
+        if (!failure.empty()) {
+            message += " Last drop: " + failure + ".";
+        }
+        state.capture.recordError(message);
+        return textResult(std::move(message), true);
+    }
+
+    const auto started = std::chrono::steady_clock::now();
+    if (arguments->region.has_value()) {
+        const std::optional<Frame> cropped =
+            sdl3mcp::cropFrame(frame, *arguments->region, error);
+        if (!cropped.has_value()) {
+            state.capture.recordError(error);
+            return textResult(std::move(error), true);
+        }
+        frame = std::move(*cropped);
+    }
+
+    /* The statistics report the frame before max_width downscaling. */
+    const int sourceWidth = frame.width;
+    const int sourceHeight = frame.height;
+
+    Frame output;
+    if (arguments->maxWidth.has_value()) {
+        output = sdl3mcp::downscaleFrame(frame, *arguments->maxWidth);
+    } else {
+        output = std::move(frame);
+    }
+
+    const std::vector<uint8_t> png = sdl3mcp::encodePng(output);
+    if (png.empty()) {
+        const std::string message = "PNG encoding failed for " +
+                                    std::to_string(output.width) + "x" +
+                                    std::to_string(output.height);
+        state.capture.recordError(message);
+        return textResult(message, true);
+    }
+    const std::string data = sdl3mcp::base64Encode(png);
+    const double elapsedMs = std::chrono::duration<double, std::milli>(
+                                 std::chrono::steady_clock::now() - started)
+                                 .count();
+
+    state.capture.updateSuccess(sourceWidth, sourceHeight, png.size(), elapsedMs);
+
+    std::string summary = std::to_string(output.width) + "x" +
+                          std::to_string(output.height) + " PNG";
+    if (arguments->region.has_value()) {
+        summary += " from " + std::to_string(arguments->region->width) + "x" +
+                   std::to_string(arguments->region->height) + " at " +
+                   std::to_string(arguments->region->x) + "," +
+                   std::to_string(arguments->region->y);
+    }
+    summary += ", " + std::to_string(png.size()) + " bytes, " +
+               std::to_string(static_cast<long long>(std::lround(elapsedMs))) + " ms";
+
+    ToolResult result;
+    result.content = nlohmann::json::array({
+        nlohmann::json{{"type", "text"}, {"text", std::move(summary)}},
+        nlohmann::json{{"type", "image"}, {"mimeType", "image/png"}, {"data", data}},
+    });
+    result.isError = false;
+    return result;
+}
+
+/*
+  The server thread dispatcher. sdl_info answers from the published copy,
+  sdl_input blocks in the queue, and sdl_capture waits on the capture state.
+  Only those queues cross the boundary, never SDL.
 */
 ToolHandler makeToolHandler(LibraryState *state)
 {
@@ -379,19 +666,23 @@ ToolHandler makeToolHandler(LibraryState *state)
         if (call.name == "sdl_input") {
             return inputResult(*state, call);
         }
+        if (call.name == "sdl_capture") {
+            return captureResult(*state, call);
+        }
         return textResult(kToolStubMessage, true);
     };
 }
 
 /*
-  Stops the queue before the server so a handler blocked on F+1 wakes up, then
-  joins the reader, then hands stdin/stdout back. Safe with no state, and safe
-  when startup failed before the server existed.
+  Wakes a waiting sdl_capture and stops the queue before the server so both
+  blocked handlers return, then joins the reader, then hands stdin/stdout back.
+  Safe with no state, and safe when startup failed before the server existed.
 */
 void teardownState() noexcept
 {
     if (g_state) {
         try {
+            g_state->capture.cancel();
             g_state->inputQueue.stop();
             releaseHeldInput(*g_state);
             if (g_state->server) {
@@ -589,8 +880,10 @@ extern "C" SDL_DECLSPEC void SDLCALL SDL3MCP_AppShutdown(void)
 extern "C" SDL_DECLSPEC bool SDLCALL SDL3MCP_FrameRequested(void)
 {
     try {
-        /* Capture wiring arrives on its own step; nothing is ever pending yet. */
-        return false;
+        if (!g_state || g_state->window == nullptr || !g_state->server) {
+            return false;
+        }
+        return g_state->capture.pending();
     } catch (...) {
         return false;
     }
@@ -599,9 +892,36 @@ extern "C" SDL_DECLSPEC bool SDLCALL SDL3MCP_FrameRequested(void)
 extern "C" SDL_DECLSPEC void SDLCALL SDL3MCP_WriteFrame(const uint8_t *data, size_t size)
 {
     try {
-        /* Frame validation and handoff arrive on their own step. */
-        (void)data;
-        (void)size;
+        if (!g_state || !g_state->capture.pending()) {
+            return;
+        }
+        if (g_state->window == nullptr) {
+            g_state->capture.recordFailure("no window bound");
+            return;
+        }
+
+        int width = 0;
+        int height = 0;
+        if (!SDL_GetWindowSizeInPixels(g_state->window, &width, &height) || width <= 0 ||
+            height <= 0) {
+            g_state->capture.recordFailure("window has zero drawable pixels");
+            return;
+        }
+
+        if (const std::optional<std::string> error = sdl3mcp::validateFrame(
+                data, size, width, height, g_state->configuration.value().max_frame_bytes);
+            error.has_value()) {
+            /* Keep the request pending: the app may retry on the next frame. */
+            g_state->capture.recordFailure(*error);
+            return;
+        }
+
+        Frame frame;
+        frame.width = width;
+        frame.height = height;
+        frame.pixels.assign(data, data + size);
+        g_state->capture.submit(std::move(frame));
     } catch (...) {
+        /* The C boundary never throws; a lost frame becomes a capture timeout. */
     }
 }

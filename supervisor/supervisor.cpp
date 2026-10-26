@@ -311,15 +311,17 @@ void Supervisor::monitorLoop()
 
 void Supervisor::shutdown()
 {
+    ChildProcess *process = nullptr;
     {
         const std::lock_guard<std::mutex> lock(stateMutex_);
         stopping_ = true;
+        process = child_.get();
     }
     monitorCondition_.notify_all();
     transport_.stop();
 
-    if (child_) {
-        child_->terminate(kTerminateGraceMs);
+    if (process != nullptr) {
+        process->terminate(kTerminateGraceMs);
     }
     if (monitor_.joinable()) {
         monitor_.join();
@@ -507,11 +509,12 @@ bool Supervisor::startChild(Deadline deadline, nlohmann::json &window, std::stri
     }
 
     childTransport_.reset();
+    ChildProcess *process = nullptr;
     {
         const std::lock_guard<std::mutex> lock(stateMutex_);
         child_ = std::move(child);
+        process = child_.get();
     }
-    ChildProcess *process = child_.get();
 
     const int execTimeout = std::max(remainingMs(deadline), 1);
     if (!process->waitForExec(execTimeout, failure)) {
@@ -600,10 +603,16 @@ bool Supervisor::startChild(Deadline deadline, nlohmann::json &window, std::stri
 
 SupervisorToolResult Supervisor::failSpawn(const std::string &reason)
 {
+    ChildProcess *process = nullptr;
+    {
+        const std::lock_guard<std::mutex> lock(stateMutex_);
+        process = child_.get();
+    }
+
     std::string stderrTail;
-    if (child_) {
-        child_->terminate();
-        stderrTail = child_->stderrTail();
+    if (process != nullptr) {
+        process->terminate();
+        stderrTail = process->stderrTail();
     }
 
     childTransport_.reset();

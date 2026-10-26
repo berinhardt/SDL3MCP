@@ -285,7 +285,10 @@ if(SDL3MCP_BUILD_SUPERVISOR)
                      $<TARGET_FILE:sdl3mcp_fake_child>)
 
     # The same binary again, this time driving the real example through the
-    # proxy. The dummy video driver gives a real software renderer headless.
+    # proxy. The dummy video driver gives a real software renderer headless;
+    # as with the other dummy-driver tests, SDL's process-wide allocations are
+    # not leaks the example can free, so leak detection is scoped off here and
+    # inherited by both the supervisor and the app it spawns.
     if(SDL3MCP_BUILD_EXAMPLES)
         add_test(NAME supervisor_real_app
                  COMMAND sdl3mcp_test_supervisor

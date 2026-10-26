@@ -194,14 +194,19 @@ cmake --build --preset debug --parallel
 ctest --preset debug
 ```
 
-The `shared` preset is the same sequence with `--preset shared`. The `asan`
-preset compiles with `-fsanitize=address,undefined` and runs the full suite with
-leak detection on; only the two SDL dummy-video-driver integration tests
-(`input_tool_tests`, `capture_tool_tests`) set `ASAN_OPTIONS=detect_leaks=0`,
-because SDL keeps process-wide allocations those tests cannot free. The `tsan`
-preset compiles with `-fsanitize=thread` and runs only `queue_tests` and
-`server_tests`, the two thread handoffs the design depends on. Sanitizer runs
-are local only; there is no CI workflow.
+The `shared` preset is the same sequence with `--preset shared`. All four
+presets also set `SDL3MCP_BUILD_SUPERVISOR=ON`, so the supervisor binary and its
+tests are built in every configuration. The `asan` preset compiles with
+`-fsanitize=address,undefined` and runs the full suite with leak detection on,
+including the supervisor tests; only the SDL dummy-video-driver integration
+tests (`input_tool_tests`, `capture_tool_tests`, `terminate_tests`,
+`supervisor_real_app`) set `ASAN_OPTIONS=detect_leaks=0`, because SDL keeps
+process-wide allocations those tests cannot free. The `tsan` preset compiles
+with `-fsanitize=thread` and runs `queue_tests`, `server_tests` and
+`supervisor_tests`, the thread handoffs and the fork/exec + monitor-thread
+process the design depends on; the real-example supervisor test stays out of
+that filter because real SDL under TSan is out of scope. Sanitizer runs are
+local only; there is no CI workflow.
 
 ### Embedding
 
@@ -638,6 +643,14 @@ Build it alongside the example:
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DSDL3MCP_BUILD_EXAMPLES=ON -DSDL3MCP_BUILD_SUPERVISOR=ON
 cmake --build build --parallel
 ```
+
+`SDL3MCP_BUILD_SUPERVISOR` stays `OFF` by default, so the plain
+`cmake -S . -B build` flow does not build it. The `debug`, `shared`, `asan` and
+`tsan` presets set it to `ON`: each one builds `sdl3mcp-supervisor` and registers
+`supervisor_tests` and `supervisor_real_app`. The `asan` preset runs both with
+leak detection on, except that `supervisor_real_app` turns leak detection off for
+itself and the SDL process it spawns; the `tsan` preset includes only
+`supervisor_tests` in its filtered thread-race suite.
 
 ### Supervisor command line
 

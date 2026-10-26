@@ -17,9 +17,12 @@ and `examples/minimal` is a complete host.
   `ctest --test-dir build --output-on-failure`. For the shared configuration use
   a separate directory with `-DSDL3MCP_BUILD_SHARED=ON`. `CMakePresets.json`
   wraps the same configurations as `debug`, `shared`, `asan`, and `tsan`
-  presets (the `asan` suite runs with leak detection on and `tsan` filters to
-  `queue_tests` and `server_tests`). The direct `cmake -S . -B build` flow stays
-  the documented path and no CI workflow runs the presets.
+  presets. All four pass `-DSDL3MCP_BUILD_SUPERVISOR=ON`, so every preset builds
+  `sdl3mcp-supervisor` and registers the supervisor tests; the `asan` suite runs
+  with leak detection on (the real-example supervisor test scopes it off for
+  itself and its SDL child) and `tsan` filters to `queue_tests`, `server_tests`,
+  and `supervisor_tests`. The direct `cmake -S . -B build` flow stays the
+  documented path and no CI workflow runs the presets.
 - The example target is `minimal`, built from `examples/CMakeLists.txt`, so the
   binary is `build/examples/minimal`; run `./build/examples/minimal --mcp` from
   the repository root (or `cd build && ./examples/minimal --mcp`). There is no

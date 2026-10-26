@@ -95,6 +95,18 @@ target_include_directories(sdl3mcp_test_frame PRIVATE
 target_link_libraries(sdl3mcp_test_frame PRIVATE SDL3MCP::SDL3MCP SDL3::SDL3)
 add_test(NAME frame_tests COMMAND sdl3mcp_test_frame)
 
+add_executable(sdl3mcp_test_info info_tests.cpp)
+target_compile_features(sdl3mcp_test_info PRIVATE cxx_std_20)
+target_include_directories(sdl3mcp_test_info PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+)
+target_link_libraries(sdl3mcp_test_info PRIVATE
+    SDL3MCP::SDL3MCP
+    SDL3::SDL3
+    nlohmann_json::nlohmann_json
+)
+add_test(NAME info_tests COMMAND sdl3mcp_test_info)
+
 add_executable(sdl3mcp_test_server server_tests.cpp)
 target_compile_features(sdl3mcp_test_server PRIVATE cxx_std_20)
 target_include_directories(sdl3mcp_test_server PRIVATE

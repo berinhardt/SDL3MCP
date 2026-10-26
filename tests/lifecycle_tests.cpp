@@ -264,6 +264,35 @@ void testStdioPipes()
     CHECK(response["id"] == 1);
     CHECK(response["result"]["protocolVersion"] == "2025-11-25");
 
+    /*
+      The whole public path in one call: session dispatch, the app-thread
+      snapshot published by AppInit, and a readable JSON text block.
+    */
+    constexpr std::string_view infoRequest =
+        R"({"jsonrpc":"2.0","id":2,"method":"tools/call",)"
+        R"("params":{"name":"sdl_info","arguments":{}}})";
+    writeAll(input.writeFd, std::string(infoRequest) + "\n");
+
+    const nlohmann::json infoResponse =
+        nlohmann::json::parse(readLine(output.readFd));
+    CHECK(infoResponse["id"] == 2);
+    CHECK(infoResponse["result"]["isError"] == false);
+
+    const nlohmann::json &content = infoResponse["result"]["content"];
+    CHECK(content.is_array());
+    CHECK(content.size() == 1);
+    CHECK(content[0]["type"] == "text");
+
+    const nlohmann::json info =
+        nlohmann::json::parse(content[0]["text"].get<std::string>());
+    CHECK(info["window"].is_null());
+    CHECK(info["limits"]["frameTimeoutMs"] ==
+          SDL3MCP_DefaultConfiguration().frame_timeout_ms);
+    CHECK(info["limits"]["maxFrameBytes"] ==
+          SDL3MCP_DefaultConfiguration().max_frame_bytes);
+    CHECK(info["capture"]["pending"] == false);
+    CHECK(info["appliedFrame"] == 0);
+
     SDL3MCP_AppShutdown();
 
     /* Shutdown restored the descriptors AppInit found, not /dev/null and stderr. */

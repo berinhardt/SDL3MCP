@@ -36,6 +36,7 @@ add_library(SDL3MCP ${sdl3mcp_library_type}
     src/queue.cpp
     src/json_rpc.cpp
     src/tools.cpp
+    src/info.cpp
     src/session.cpp
     src/frame.cpp
     src/transport.cpp

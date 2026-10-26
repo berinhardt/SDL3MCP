@@ -3,7 +3,7 @@
 SDL3MCP is a library that embeds an MCP server in any SDL3 application: public
 C API, C++20 internals, stdio transport, synthetic input, and PNG frame capture.
 `README.md` is the design contract and the implementation follows it: the
-transport, input replay, frame pipeline, and all three MCP tools are in `src/`,
+transport, input replay, frame pipeline, and all four MCP tools are in `src/`,
 and `examples/minimal` is a complete host.
 
 ## Current state
@@ -17,16 +17,29 @@ and `examples/minimal` is a complete host.
   `ctest --test-dir build --output-on-failure`. For the shared configuration use
   a separate directory with `-DSDL3MCP_BUILD_SHARED=ON`. `CMakePresets.json`
   wraps the same configurations as `debug`, `shared`, `asan`, and `tsan`
-  presets (the `asan` suite runs with leak detection on and `tsan` filters to
-  `queue_tests` and `server_tests`). The direct `cmake -S . -B build` flow stays
-  the documented path and no CI workflow runs the presets.
+  presets. All four pass `-DSDL3MCP_BUILD_SUPERVISOR=ON`, so every preset builds
+  `sdl3mcp-supervisor` and registers the supervisor tests; the `asan` suite runs
+  with leak detection on (the real-example supervisor test scopes it off for
+  itself and its SDL child) and `tsan` filters to `queue_tests`, `server_tests`,
+  and `supervisor_tests`. The direct `cmake -S . -B build` flow stays the
+  documented path and no CI workflow runs the presets.
 - The example target is `minimal`, built from `examples/CMakeLists.txt`, so the
   binary is `build/examples/minimal`; run `./build/examples/minimal --mcp` from
   the repository root (or `cd build && ./examples/minimal --mcp`). There is no
   `examples/minimal/minimal`.
 - `tests/check_readme.py` compiles the README's two complete C examples, parses
-  every JSON block, and checks the schemas, the run command, and the loop order.
-  CTest registers it as `readme_check` when Python 3 is found.
+  every JSON block, and checks both `sdl_capture` schemas and the raw-framing
+  prose, the run command, the supervisor states, and the loop order. CTest
+  registers it as `readme_check` when Python 3 is found.
+- `SDL3MCP_BUILD_SUPERVISOR=ON` builds `build/sdl3mcp-supervisor`, the optional
+  single-endpoint supervisor over a restartable app. Its sources live in
+  `supervisor/` (CLI, child process, proxy, scaling, PNG/base64) and its tests
+  are `supervisor_scaling_tests` and `supervisor_png_tests` (the moved
+  presentation code), `supervisor_tests` (fake MCP child over real pipes) and
+  `supervisor_real_app` (the real `examples/minimal` under
+  `SDL_VIDEODRIVER=dummy`); the last is registered only when examples are
+  built. `opencode.json` in the repository root points the local MCP client at
+  the supervisor.
 - Target SDL 3.2+. There, `SDL_RenderReadPixels(renderer, rect)` returns an
   `SDL_Surface *`; the old five-argument form is retired. Keep examples on 3.2
   APIs (no `SDL_RenderDebugText` or other 3.4-only calls).
@@ -43,22 +56,30 @@ and `examples/minimal` is a complete host.
 - **F+1 acknowledgement.** A batch applied during frame F has its events
   consumed by the app during F+1, so `sdl_input` returns during F+1 and reports
   frame F. At most one batch is in flight.
-- **Standard MCP content.** `sdl_capture` returns `{"type":"image",
-  "mimeType":"image/png","data":"<base64>"}`. A binary continuation framing was
-  considered and rejected during design; do not reintroduce a custom client or a
-  non-standard content type.
+- **Capture framing: raw in the library, image/png at the MCP edge.**
+  `sdl_capture` is the one tool whose library result is not a content array: it
+  writes one result line
+  `{"format":"rgba8888","width":W,"height":H,"byteLength":B}` and then exactly
+  `B` tightly packed RGBA bytes, with no newline and no base64. `region` stays in
+  the library; downscaling, PNG, and base64 are supervisor policy. The
+  supervisor reads that framing, validates the header and payload size, and
+  returns the standard `{"type":"image","mimeType":"image/png","data":"<base64>"}`
+  content block, which stays the client-facing contract. Do not reintroduce a
+  custom client, a non-standard content type, or PNG encoding in the library.
 - **Frame contract.** `SDL3MCP_WriteFrame` accepts only tightly packed RGBA8888,
   `width * height * 4` bytes at the bound window's
   `SDL_GetWindowSizeInPixels`, top-left origin, no row padding and no pitch
-  parameter. The app converts and packs when a readback surface is padded. PNG
-  encoding and base64 happen on the server thread. Drops (no window, zero
+  parameter. The app converts and packs when a readback surface is padded. The
+  server thread crops the optional region and writes the raw framing; PNG
+  encoding and base64 happen only in the supervisor. Drops (no window, zero
   drawable pixels, size mismatch, `max_frame_bytes`, null data, non-positive
   dimension) leave the request pending and surface in the timeout text and
   `sdl_info`.
 - **Capture region.** `region` is `{x, y, width, height}` in full-frame pixels,
   top-left origin, all four required, and must fit inside `pixelWidth` by
-  `pixelHeight`; the crop happens before `max_width` downscaling. `max_width` is
-  16..16384 and `timeout_ms` is 1..60000.
+  `pixelHeight`; the library crops it before the supervisor's `max_width`
+  downscaling. `max_width` is 16..16384 and exists only in the supervisor's
+  schema. `timeout_ms` is 1..60000.
 - **Input is event-based.** Actions become `SDL_PushEvent` traffic applied in
   `SDL3MCP_AppIterate` on the app thread. `SDL_GetKeyboardState` cannot be
   updated because SDL3 exposes no per-key setter; that is a documented
@@ -82,6 +103,39 @@ and `examples/minimal` is a complete host.
 - **Requests are serialized.** One server thread handles one message at a time,
   so a blocking `sdl_input`/`sdl_capture` delays later requests, including
   `ping`, by up to its timeout.
+- **`sdl_terminate` only sets a flag.** The server thread stores the request and
+  returns `termination requested`; it never calls SDL. `SDL3MCP_AppIterate`
+  exchanges the flag and pushes exactly one zeroed `SDL_EVENT_QUIT`, restoring
+  the flag to retry when `SDL_PushEvent` fails. It still returns
+  `SDL_APP_CONTINUE` and leaves the app's own quit handling untouched.
+- **The supervisor is an optional separate process with one state machine.** It
+  speaks MCP on its own stdio and runs one target child at a time. `Idle`
+  advertises only `spawn`, `Starting` advertises nothing, and `Running` mirrors
+  the committed child tools except `sdl_capture`, which the supervisor replaces
+  with its own definition (region, `max_width`, `timeout_ms`) because it owns
+  presentation. `spawn` is synchronous: fork/exec, initialize, `tools/list`, then
+  poll `sdl_info` until a window is bound or `--startup-timeout-ms` expires. A
+  second `spawn` while not idle is an error. Every transition that changes the
+  tool view sends one `notifications/tools/list_changed`; do not make it fire
+  twice or cache the tool list on the client side.
+- **The terminate watchdog is supervisor policy, not library policy.**
+  `sdl_terminate` is forwarded like any other running tool, but its timer starts
+  before the forward and the supervisor waits for the child to exit. Clean exit
+  returns the text `terminated`; on `--terminate-timeout-ms` (default 60000) the
+  watchdog sends SIGTERM, waits about two seconds, then SIGKILL, and says the
+  termination was forced. The child's exit handler, whether from the request, a
+  crash, or the watchdog, restores `Idle`/`spawn` and sends the single
+  `list_changed`.
+- **Supervisor shutdown never orphans the child.** stdin EOF, SIGINT/SIGTERM,
+  and a normal return all run the same shutdown: SIGTERM, grace, SIGKILL, then
+  join and reap. Signals are blocked process-wide and consumed by a `sigwait`
+  thread because the handler cannot take the state or writer mutexes.
+- **The supervisor reuses the library plumbing.** CLI parsing, the line
+  transport, and JSON-RPC dispatch come from `supervisor/cli.*`,
+  `src/transport.*`, and `src/json_rpc.*`; the supervisor links
+  `sdl3mcp_objects` and `sdl3mcp_supervisor_objects` rather than duplicating
+  them. It never calls SDL and is POSIX-only (`fork`/`exec`, pipes, signals),
+  matching the platform stance above.
 - **fd ownership.** `NONE` leaves stdin/stdout untouched. `STDIO` duplicates the
   originals for MCP, redirects the host stdin to `/dev/null` and the host stdout
   to stderr, and restores both at shutdown. stderr stays separate and is where
@@ -111,11 +165,13 @@ and `examples/minimal` is a complete host.
   isolation, and test guards. Do not add untested Win32 code; later Windows
   work removes the guard, adds those paths, and extends the test matrix to a
   Windows host or CI.
-- **Dependencies stay SDL3-only at runtime.** `stb_image_write.h` is vendored in
-  `third_party/stb` and compiled once in `src/stb_image_write_impl.cpp`.
-  `nlohmann/json.hpp` is resolved system-first (`SDL3MCP_USE_SYSTEM_JSON`) with
-  the vendored `third_party/nlohmann` header as the fallback. There is no
-  `SDL3MCP_USE_SYSTEM_STB` option.
+- **Dependencies stay SDL3-only at runtime.** `nlohmann/json.hpp` is resolved
+  system-first (`SDL3MCP_USE_SYSTEM_JSON`) with the vendored
+  `third_party/nlohmann` header as the fallback. `stb_image_write.h` is vendored
+  in `third_party/stb` but used only by the supervisor: it is a private include
+  and one implementation unit in `supervisor/`, compiled into
+  `sdl3mcp_supervisor_objects`, and the library archive must not contain an stb
+  symbol. There is no `SDL3MCP_USE_SYSTEM_STB` option.
 
 ## Working on the spec
 
@@ -125,6 +181,7 @@ and `examples/minimal` is a complete host.
 - Change the implementation and the matching README section together, including
   the tool JSON schemas when a parameter changes.
 - `tests/check_readme.py` enforces the run path (`./build/examples/minimal
-  --mcp`), the schema limits, the two complete examples, the stale phrases, and
-  `SDL3MCP_AppIterate` after `SDL_RenderPresent`; update it when the contract
-  changes rather than weakening it.
+  --mcp`), both `sdl_capture` schemas, the capture framing prose, the two
+  complete examples, the stale phrases, and `SDL3MCP_AppIterate` after
+  `SDL_RenderPresent`; update it when the contract changes rather than
+  weakening it.

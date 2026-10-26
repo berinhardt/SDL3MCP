@@ -6,7 +6,8 @@ SDL3MCP gives an agent two things every SDL3 app already has: **input** and a
 **rendered frame**. Link the library, wire six calls into your existing main
 callbacks, and the app speaks the Model Context Protocol over stdio. The agent
 can press keys, type text, move and click the mouse, scroll, inspect the window,
-and ask for a PNG of the current frame.
+and ask for the current frame: raw RGBA pixels from the library, or a PNG when
+it runs behind the supervisor.
 
 No renderer hooks, no window injection, no OS-level automation. Your app keeps
 owning its event loop, window, and renderer; SDL3MCP only feeds synthetic SDL
@@ -26,6 +27,7 @@ events into the queue and hands the pixels you give it back to the agent.
 - [Running it](#running-it)
 - [Configuration](#configuration)
 - [Command line](#command-line)
+- [Supervisor](#supervisor)
 - [Public API](#public-api)
 - [Frame pipeline](#frame-pipeline)
 - [Input model](#input-model)
@@ -43,7 +45,8 @@ events into the queue and hands the pixels you give it back to the agent.
 | --- | --- |
 | `sdl_info` | Window title, size in points and pixels, pixel density, video driver, SDL version, held input, frame counters, capture statistics. |
 | `sdl_input` | Send a batch of key, text, mouse-move, mouse-button, scroll, or release-all actions. |
-| `sdl_capture` | Ask the app for a fresh frame, optionally cropped or downscaled, and receive it as an `image/png` content block. |
+| `sdl_capture` | Ask the app for a fresh frame, optionally cropped, and receive its raw RGBA8888 pixels plus the exact payload size; under the supervisor it is downscaled and returned as an `image/png` block. |
+| `sdl_terminate` | Ask the app to exit cleanly by pushing one `SDL_EVENT_QUIT` into its own event loop. |
 
 Typical agent loop:
 
@@ -63,7 +66,7 @@ Typical agent loop:
 │   │ SDL_AppIterate ─────┼─ geometry ───▶ │  JSON-RPC 2.0, one line    │   │
 │   │  ├ apply input      │◀─ input batch ─┤  per message               │   │
 │   │  ├ WriteFrame ──────┼─ RGBA copy ───▶│  sdl_input  → input queue  │   │
-│   │ SDL_AppQuit         │◀─ frame req ───┤  sdl_capture → PNG + b64   │   │
+│   │ SDL_AppQuit         │◀─ frame req ───┤  sdl_capture → raw RGBA    │   │
 │   └─────────────────────┘                └────────────────────────────┘   │
 │             │                                            │                │
 │     SDL event queue, renderer                     client's pipes          │
@@ -113,9 +116,10 @@ the same rule: the frame you receive was written after the request arrived.
 - CMake 3.21 or newer.
 - A pthreads-capable platform. The stdio transport, fd isolation, and server
   thread are POSIX today; Windows support is a TODO.
-- `stb_image_write.h` and `nlohmann/json.hpp`. stb is vendored in
-  `third_party/stb`; nlohmann is resolved from the system first and falls back
-  to `third_party/nlohmann/json.hpp`.
+- `nlohmann/json.hpp` for the protocol, plus `stb_image_write.h` for the
+  supervisor's PNG encoding. nlohmann is resolved from the system first and
+  falls back to `third_party/nlohmann/json.hpp`; stb is vendored in
+  `third_party/stb` and used only by `sdl3mcp-supervisor`.
 
 No other runtime dependencies. The public header includes only `<SDL3/SDL.h>`
 and the C standard headers.
@@ -156,12 +160,15 @@ Targets and options:
 | --- | --- | --- |
 | `SDL3MCP_BUILD_SHARED` | `OFF` | Build a shared library instead of a static one. |
 | `SDL3MCP_BUILD_EXAMPLES` | `OFF` | Build the `minimal` executable from `examples/minimal/main.c`. |
+| `SDL3MCP_BUILD_SUPERVISOR` | `OFF` | Build the `sdl3mcp-supervisor` executable that runs an app as a restartable child. |
 | `SDL3MCP_BUILD_TESTS` | `ON` if top-level | Build the unit tests and register them with CTest. |
 | `SDL3MCP_USE_SYSTEM_JSON` | `ON` | Try `find_package(nlohmann_json CONFIG QUIET)` before using the vendored header. |
 
-stb is always vendored: `third_party/stb/stb_image_write.h` is a private include
-directory of the library, and `STB_IMAGE_WRITE_IMPLEMENTATION` is compiled
-exactly once in `src/stb_image_write_impl.cpp`. nlohmann/json is exported as the
+The library has no image dependency. stb is vendored but linked only into the
+supervisor: `third_party/stb/stb_image_write.h` is a private include of
+`sdl3mcp_supervisor_objects`, and `STB_IMAGE_WRITE_IMPLEMENTATION` is compiled
+exactly once in `supervisor/stb_image_write_impl.cpp`, so no stb symbol reaches
+`libSDL3MCP`. nlohmann/json is exported as the
 `nlohmann_json::nlohmann_json` interface target: the system package when found,
 otherwise the header in `third_party/nlohmann`.
 
@@ -191,14 +198,19 @@ cmake --build --preset debug --parallel
 ctest --preset debug
 ```
 
-The `shared` preset is the same sequence with `--preset shared`. The `asan`
-preset compiles with `-fsanitize=address,undefined` and runs the full suite with
-leak detection on; only the two SDL dummy-video-driver integration tests
-(`input_tool_tests`, `capture_tool_tests`) set `ASAN_OPTIONS=detect_leaks=0`,
-because SDL keeps process-wide allocations those tests cannot free. The `tsan`
-preset compiles with `-fsanitize=thread` and runs only `queue_tests` and
-`server_tests`, the two thread handoffs the design depends on. Sanitizer runs
-are local only; there is no CI workflow.
+The `shared` preset is the same sequence with `--preset shared`. All four
+presets also set `SDL3MCP_BUILD_SUPERVISOR=ON`, so the supervisor binary and its
+tests are built in every configuration. The `asan` preset compiles with
+`-fsanitize=address,undefined` and runs the full suite with leak detection on,
+including the supervisor tests; only the SDL dummy-video-driver integration
+tests (`input_tool_tests`, `capture_tool_tests`, `terminate_tests`,
+`supervisor_real_app`) set `ASAN_OPTIONS=detect_leaks=0`, because SDL keeps
+process-wide allocations those tests cannot free. The `tsan` preset compiles
+with `-fsanitize=thread` and runs `queue_tests`, `server_tests` and
+`supervisor_tests`, the thread handoffs and the fork/exec + monitor-thread
+process the design depends on; the real-example supervisor test stays out of
+that filter because real SDL under TSan is out of scope. Sanitizer runs are
+local only; there is no CI workflow.
 
 ### Embedding
 
@@ -620,6 +632,182 @@ Propagate any non-`SDL_APP_CONTINUE` result out of `SDL_AppInit`; `--mcp-help`
 and `--mcp-version` use `SDL_APP_SUCCESS` as a clean way to exit before a window
 is opened.
 
+## Supervisor
+
+The library speaks MCP on the app's own stdin/stdout, so a client that starts the
+app directly loses its endpoint whenever the app exits or crashes.
+`sdl3mcp-supervisor` is an optional executable that keeps one MCP connection
+alive across app restarts: it speaks MCP on its own stdin/stdout and runs the app
+as a child process behind it. The client keeps the same pipe; only the tools
+change when the child comes and goes.
+
+Build it alongside the example:
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DSDL3MCP_BUILD_EXAMPLES=ON -DSDL3MCP_BUILD_SUPERVISOR=ON
+cmake --build build --parallel
+```
+
+`SDL3MCP_BUILD_SUPERVISOR` stays `OFF` by default, so the plain
+`cmake -S . -B build` flow does not build it. The `debug`, `shared`, `asan` and
+`tsan` presets set it to `ON`: each one builds `sdl3mcp-supervisor` and registers
+`supervisor_tests` and `supervisor_real_app`. The `asan` preset runs both with
+leak detection on, except that `supervisor_real_app` turns leak detection off for
+itself and the SDL process it spawns; the `tsan` preset includes only
+`supervisor_tests` in its filtered thread-race suite.
+
+### Supervisor command line
+
+```text
+sdl3mcp-supervisor [--startup-timeout-ms N] [--terminate-timeout-ms N] --target <executable> [app args...]
+```
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--startup-timeout-ms N` | `10000` | Budget for fork/exec, the MCP handshake, and the first `sdl_info` that reports a bound window. |
+| `--terminate-timeout-ms N` | `60000` | How long `sdl_terminate` may take before the watchdog sends SIGTERM and then SIGKILL. |
+| `--target <executable>` | *(required)* | The app to run. Everything after it is passed to the app verbatim. |
+
+Options are parsed only before `--target`; after it, a flag that looks like a
+supervisor option belongs to the app. The supervisor never calls SDL, so it has
+no window, renderer, or video driver of its own.
+
+### States and `tools/list`
+
+| State | `tools/list` | When |
+| --- | --- | --- |
+| `Idle` | `spawn` only | At startup, and again after the child exits for any reason. |
+| `Starting` | empty | Between accepting `spawn` and the child reporting a window. |
+| `Running` | the child's tools, with the supervisor's own `sdl_capture` | While the child is alive. |
+
+`spawn` is the supervisor's own tool and is never forwarded. It starts one child
+(synchronously, so there is never more than one), completes the MCP handshake,
+and waits until `sdl_info` reports a bound window. On failure the result is an
+error that includes the child's recent stderr, and the supervisor returns to
+`Idle`.
+
+While `Running`, every other `tools/call` is forwarded to the child verbatim:
+the arguments go in unchanged, the child's content blocks and `isError` come
+back unchanged, and a JSON-RPC error from the child is returned unchanged.
+`sdl_capture` is the one exception, because presentation belongs to the
+supervisor; see [Capture through the supervisor](#capture-through-the-supervisor).
+`initialize`, `ping`, and `tools/list` are always answered by the supervisor.
+If the child exits or crashes on its own, the exit handler clears the committed
+tools, sends `notifications/tools/list_changed`, and puts `spawn` back. Each
+transition sends that notification exactly once, so a client should call
+`tools/list` on each notification rather than cache the tool set.
+
+### Capture through the supervisor
+
+The library's `sdl_capture` returns raw pixels so the library never links an
+image encoder. The supervisor owns presentation: while `Running` it replaces the
+child's `sdl_capture` entry in `tools/list` with its own definition and keeps the
+client-facing `image/png` contract.
+
+```json
+{
+  "name": "sdl_capture",
+  "description": "Ask the application for a fresh frame and return it as a PNG image block. The optional region crops pixels from the full frame, using pixelWidth x pixelHeight from sdl_info, with a top-left origin; it must fit inside the frame and is applied before max_width downscaling. Use max_width to keep the payload small.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "max_width": { "type": "integer", "minimum": 16, "maximum": 16384 },
+      "timeout_ms": { "type": "integer", "minimum": 1, "maximum": 60000 },
+      "region": {
+        "type": "object",
+        "description": "Crop rectangle in pixels of the full frame, top-left origin.",
+        "properties": {
+          "x": { "type": "integer", "minimum": 0 },
+          "y": { "type": "integer", "minimum": 0 },
+          "width": { "type": "integer", "minimum": 1 },
+          "height": { "type": "integer", "minimum": 1 }
+        },
+        "required": ["x", "y", "width", "height"],
+        "additionalProperties": false
+      }
+    },
+    "additionalProperties": false
+  },
+  "annotations": {
+    "readOnlyHint": true,
+    "idempotentHint": false,
+    "openWorldHint": false
+  }
+}
+```
+
+- `region` and `timeout_ms` are forwarded to the child unchanged. The region is
+  still applied by the library, before any scaling.
+- `max_width` is the supervisor's: it box-filters the cropped frame down to that
+  width, preserving the aspect ratio, and never upscales. A value absent means
+  no scaling.
+- The supervisor reads the child's result line, checks `format == "rgba8888"`,
+  that both dimensions are positive, and that
+  `byteLength == width * height * 4`. It rejects a frame larger than 64 MiB
+  before allocating the payload. A mismatched header or a short payload is a
+  tool error.
+- It then downscales when asked, encodes PNG, base64-encodes it, and answers with
+  the usual `[text, image/png]` content and `isError: false`. The text summary
+  names the output size, the source size, the region, and the PNG size, for
+  example `320x180 PNG from 960x540 at 0,0, 41234 bytes`.
+- A JSON-RPC error object or a text error result from the child passes through
+  unchanged, so a capture timeout still reports the library's own message.
+
+```text
+→ {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"sdl_capture","arguments":{"max_width":1280}}}
+← {"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"1280x720 PNG from 1920x1080, 91234 bytes"},{"type":"image","mimeType":"image/png","data":"iVBORw0KGgo..."}],"isError":false}}
+```
+
+### Terminating the app
+
+`sdl_terminate` still means "ask the app to quit cleanly": the supervisor
+forwards the call, then waits for the child to actually exit within
+`--terminate-timeout-ms`. If the child exits, the result is the text
+`terminated`. If the deadline passes, the supervisor sends SIGTERM, waits about
+two seconds, sends SIGKILL, and returns a text result that says termination was
+forced. Either way the exit handler restores `Idle`/`spawn` and sends one
+`notifications/tools/list_changed`.
+
+The watchdog exists because `sdl_terminate` only pushes a quit event: an app
+that ignores `SDL_EVENT_QUIT`, hangs in a render loop, or never returns from
+`SDL_AppIterate` would otherwise keep the child alive forever behind a
+working-looking MCP endpoint.
+
+### Stopping the supervisor
+
+Supervisor stdin EOF, SIGINT, SIGTERM, and a normal return all stop the child
+before the supervisor exits: SIGTERM, a grace period, then SIGKILL if it is
+still alive. The child is reaped by the supervisor, so stopping the client never
+leaves an orphan app behind.
+
+### Client configuration
+
+A local client can point at the supervisor instead of the app. This is the
+`opencode.json` used during development; run it from the repository root so the
+relative paths resolve:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "sdl3mcp": {
+        "type": "local",
+        "command": [
+          "build/sdl3mcp-supervisor",
+          "--target",
+          "build/examples/minimal",
+          "--mcp"
+        ]
+      }
+    }
+  }
+}
+```
+
+The supervisor is POSIX-only, like the rest of the project: it uses
+`fork`/`exec`, pipes, and POSIX signals. `CMakeLists.txt` rejects a Windows
+configure rather than shipping an untested path.
+
 ## Public API
 
 The complete public surface:
@@ -759,8 +947,9 @@ parameter: the buffer must already be packed.
   window's `SDL_GetWindowSizeInPixels` at the moment of the call.
 - **Guard:** `size <= max_frame_bytes`; larger frames are dropped.
 - The pixels are copied before the function returns, so the app can reuse or
-  free its buffer immediately. PNG encoding and base64 happen on the server
-  thread, never on the render thread.
+  free its buffer immediately. The server thread crops the optional region and
+  sends raw pixels; downscaling, PNG encoding, and base64 are the supervisor's
+  job and never touch the render thread.
 - Call it only when `SDL3MCP_FrameRequested()` is true. Calls with no pending
   capture are ignored.
 - App thread only, because it queries the window.
@@ -784,9 +973,16 @@ asks:
 5. `SDL3MCP_WriteFrame` validates the buffer against the bound window's
    `SDL_GetWindowSizeInPixels`, copies it, clears the pending request, and wakes
    the server thread.
-6. The server thread crops the optional region, optionally downscales, encodes
-   PNG, base64-encodes it, and answers the tool call.
+6. The server thread crops the optional region and answers with one result line,
+   `{"format":"rgba8888","width":W,"height":H,"byteLength":B}`, immediately
+   followed by exactly `B` raw RGBA bytes and nothing else.
 7. The app continues its loop; nothing blocked.
+
+A direct library client receives those raw bytes. When the app runs behind
+`sdl3mcp-supervisor`, the supervisor reads the payload, downscales it when
+`max_width` was asked for, encodes PNG, base64-encodes it, and returns the usual
+`image/png` content block. That split keeps stb and every image decision out of
+the library while the client-facing image contract stays stable.
 
 Rules that fall out of this design:
 
@@ -805,13 +1001,18 @@ Rules that fall out of this design:
   the attempts.
 - `sdl_capture` fails immediately with a clear error if no window is bound, if
   the region does not fit inside the frame, or if the app never answers in time.
-- PNG encoding is the expensive part (tens of milliseconds at 1080p) and happens
-  on the server thread while the app keeps rendering.
-- `max_width` box-filters the image down before encoding, after any region crop.
-  This is the main lever for payload size; 1280 or 1600 wide is usually enough
-  for an agent to read UI text.
-- Base64 adds about 33% to the PNG, and the whole image travels as one JSON
-  line. A 1280×720 PNG is typically 50–150 KB, or ~70–200 KB on the wire.
+  A timeout is a normal content result with `isError: true`.
+- The library does only the crop on the server thread: no downscale and no image
+  encoding happen in the app process. An `sdl_capture` result is one framed
+  header plus its pixel payload, with no base64 and no newline inside the frame.
+- `max_width` belongs to the supervisor's `sdl_capture`, which box-filters the
+  cropped frame before encoding. It is not in the library's schema. This is the
+  main lever for payload size; 1280 or 1600 wide is usually enough for an agent
+  to read UI text.
+- Through the supervisor, base64 adds about 33% to the PNG and the whole image
+  travels as one JSON content block. A 1280×720 PNG is typically 50–150 KB, or
+  ~70–200 KB on the wire. A direct library client instead pays
+  `width * height * 4` bytes for the raw frame.
 
 ## Input model
 
@@ -973,6 +1174,10 @@ Tool annotations:
 | `sdl_info` | `true` | `true` | `false` |
 | `sdl_input` | `false` | `false` | `false` |
 | `sdl_capture` | `true` | `false` | `false` |
+| `sdl_terminate` | `false` | `false` | `false` |
+
+`sdl_terminate` additionally sets `destructiveHint: true`, because asking the
+app to quit ends the session.
 
 ### `sdl_info`
 
@@ -998,7 +1203,7 @@ No arguments. Returns a pretty-printed JSON text block:
     "dropped": 0,
     "lastWidth": 1920,
     "lastHeight": 1080,
-    "lastBytes": 84213,
+    "lastBytes": 8294400,
     "lastMs": 27,
     "lastError": null
   },
@@ -1018,10 +1223,11 @@ No arguments. Returns a pretty-printed JSON text block:
   `sdl_input` button enum.
 - `capture.pending` is true while a capture waits for a frame; `count` is
   successful captures; `dropped` counts rejected `SDL3MCP_WriteFrame` attempts.
-  `lastWidth`/`lastHeight` describe the frame **after** any region crop and
-  **before** `max_width` downscaling, `lastBytes` is the PNG size, `lastMs` is
-  the encode time, and `lastError` is `null` when the last capture succeeded (or
-  none ran), otherwise the last drop or capture error string.
+  `lastWidth`/`lastHeight` describe the frame the library returned, after any
+  region crop and before the supervisor's downscaling, `lastBytes` is the raw
+  RGBA payload size (`width * height * 4`), `lastMs` covers the wait for the
+  frame plus the crop, and `lastError` is `null` when the last capture succeeded
+  (or none ran), otherwise the last drop or capture error string.
 - `limits` repeats the effective `frame_timeout_ms` and `max_frame_bytes`.
 - `frame` is the library's frame counter and `appliedFrame` is the last frame at
   which an input batch was applied (0 when none was).
@@ -1141,14 +1347,15 @@ errors fail the call before queueing; key and chord errors fail it at F+1. See
 
 ### `sdl_capture`
 
+The library's own schema has no `max_width`: presentation is supervisor policy.
+
 ```json
 {
   "name": "sdl_capture",
-  "description": "Ask the application for a fresh frame through SDL3MCP_FrameRequested() and return it as a PNG image block. The optional region crops pixels from the full frame, using pixelWidth x pixelHeight from sdl_info, with a top-left origin; it must fit inside the frame and is applied before max_width downscaling. Use max_width to keep the payload small.",
+  "description": "Ask the application for a fresh frame through SDL3MCP_FrameRequested() and return its raw pixels. The JSON-RPC result line is {\"format\":\"rgba8888\",\"width\":W,\"height\":H,\"byteLength\":B}, immediately followed by exactly B tightly packed RGBA bytes with no newline and no base64. The optional region crops pixels from the full frame, using pixelWidth x pixelHeight from sdl_info, with a top-left origin; it must fit inside the frame.",
   "inputSchema": {
     "type": "object",
     "properties": {
-      "max_width": { "type": "integer", "minimum": 16, "maximum": 16384 },
       "timeout_ms": { "type": "integer", "minimum": 1, "maximum": 60000 },
       "region": {
         "type": "object",
@@ -1176,25 +1383,31 @@ errors fail the call before queueing; key and chord errors fail it at F+1. See
 - `region` is a crop in **full-frame pixels** — the `pixelWidth` × `pixelHeight`
   reported by `sdl_info` — with a top-left origin. All four fields are required,
   `x`/`y` must be at least 0, `width`/`height` at least 1, and the rectangle must
-  fit inside the frame. It is applied before `max_width`.
-- `max_width` is 16–16384; the crop is downscaled with a box filter to that
-  width, preserving the aspect ratio.
+  fit inside the frame. It is applied by the library.
 - `timeout_ms` is 1–60000 and defaults to `frame_timeout_ms`.
+- Any other property, including `max_width`, is rejected before a frame is
+  requested.
 
-The result has two content blocks: a short text summary and the image.
+A successful call is **one JSON-RPC result line followed by raw bytes**, not a
+content array:
 
-```json
-{
-  "content": [
-    { "type": "text", "text": "1280x720 PNG from 1920x1080 at 0,0, 91234 bytes, 34 ms" },
-    { "type": "image", "mimeType": "image/png", "data": "iVBORw0KGgoAAAANSUhEUg..." }
-  ],
-  "isError": false
-}
+```text
+← {"jsonrpc":"2.0","id":4,"result":{"format":"rgba8888","width":640,"height":360,"byteLength":921600}}
+<921600 raw RGBA8888 bytes; no newline, no base64>
 ```
 
-On timeout the result is an error, not an image, and names the last drop reason
-when there was one:
+- `format` is always `"rgba8888"`: bytes R, G, B, A, top-left origin, row-major,
+  stride exactly `width * 4`.
+- `byteLength` is exactly `width * height * 4`, and exactly that many bytes
+  follow the result line before the next JSON-RPC message.
+- `width` and `height` describe the frame that was sent: the region when one was
+  given, otherwise the window's `pixelWidth` × `pixelHeight`.
+- A client that wants a self-contained image should go through the supervisor,
+  which turns this framing into the standard `image/png` block. See
+  [Capture through the supervisor](#capture-through-the-supervisor).
+
+On timeout the result is an ordinary content error, not a frame, and names the
+last drop reason when there was one:
 
 ```json
 {
@@ -1205,6 +1418,37 @@ when there was one:
 }
 ```
 
+### `sdl_terminate`
+
+```json
+{
+  "name": "sdl_terminate",
+  "description": "Ask the application to exit cleanly: the next SDL3MCP_AppIterate() pushes one SDL_EVENT_QUIT so the app's own event loop can shut down.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  },
+  "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": false,
+    "openWorldHint": false
+  }
+}
+```
+
+No arguments. The tool sets a flag and returns the text `termination requested`
+with `isError: false`. It does not call SDL, and it does not end the process:
+the app decides what a quit means.
+
+On the next `SDL3MCP_AppIterate`, after the usual batch and snapshot work, the
+library exchanges the flag and pushes exactly one zeroed `SDL_EVENT_QUIT` with
+`SDL_PushEvent`. If the push fails, the flag is restored and the next iterate
+retries; either way `SDL3MCP_AppIterate` still returns `SDL_APP_CONTINUE`, so
+the app's own quit handling runs unchanged. A second iterate with no new
+request pushes nothing.
+
 ### Example session
 
 ```text
@@ -1212,14 +1456,22 @@ when there was one:
 ← {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"sdl3mcp","version":"0.1.0"}}}
 → {"jsonrpc":"2.0","method":"notifications/initialized"}
 → {"jsonrpc":"2.0","id":2,"method":"tools/list"}
-← {"jsonrpc":"2.0","id":2,"result":{"tools":[ ... sdl_info, sdl_input, sdl_capture ... ]}}
+← {"jsonrpc":"2.0","id":2,"result":{"tools":[ ... sdl_info, sdl_input, sdl_capture, sdl_terminate ... ]}}
 → {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"sdl_input","arguments":{"actions":[{"type":"key","key":"right","action":"down"},{"type":"key","key":"space","action":"press"}]}}}
 ← {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"2 actions applied at frame 7"}],"isError":false}}
-→ {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"sdl_capture","arguments":{"max_width":1280}}}
-← {"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"1280x720 PNG, 91234 bytes, 34 ms"},{"type":"image","mimeType":"image/png","data":"iVBORw0KGgo..."}],"isError":false}}
+→ {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"sdl_capture","arguments":{"region":{"x":0,"y":0,"width":640,"height":360}}}}
+← {"jsonrpc":"2.0","id":4,"result":{"format":"rgba8888","width":640,"height":360,"byteLength":921600}}
+← 921600 raw RGBA8888 bytes follow, with no newline and no base64
 → {"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"sdl_input","arguments":{"actions":[{"type":"key","key":"right","action":"up"},{"type":"key","key":"escape","action":"press"}]}}}
 ← {"jsonrpc":"2.0","id":5,"result":{"content":[{"type":"text","text":"2 actions applied at frame 9"}],"isError":false}}
+→ {"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"sdl_terminate","arguments":{}}}
+← {"jsonrpc":"2.0","id":6,"result":{"content":[{"type":"text","text":"termination requested"}],"isError":false}}
 ```
+
+The supervisor keeps the client-facing contract an image: the same session
+through `sdl3mcp-supervisor` ends the capture at
+`← {"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"1280x720 PNG from 1920x1080, 91234 bytes"},{"type":"image","mimeType":"image/png","data":"iVBORw0KGgo..."}],"isError":false}}`
+for `{"max_width":1280}`.
 
 ## Threading and lifetime
 
@@ -1235,7 +1487,8 @@ Rules that make this safe:
 2. **Input travels one way.** Tool calls append immutable action batches to a
    queue; `SDL3MCP_AppIterate` drains and applies them on the app thread.
 3. **Frames travel one way.** `SDL3MCP_WriteFrame` copies pixels under a mutex
-   and signals a condition variable; encoding happens after the copy.
+   and signals a condition variable; the crop happens after the copy, and the
+   supervisor's encoding happens in a different process.
 4. **No blocking on the app thread.** `SDL3MCP_AppIterate` and
    `SDL3MCP_WriteFrame` never wait for the server, the client, or a lock held
    during encoding.
@@ -1313,9 +1566,11 @@ of cursor warping.
 **A key is stuck.** The library releases held keys during
 `SDL3MCP_AppShutdown`. To recover mid-session, send `{"type":"release_all"}`.
 
-**Payloads are too large.** Pass `max_width` (1280 is a good default for UI
-work), crop with `region`, and lower `max_frame_bytes` if you want a hard
-ceiling. Base64 adds about a third to the PNG size.
+**Payloads are too large.** Through the supervisor, pass `max_width` (1280 is a
+good default for UI work) and crop with `region`; base64 adds about a third to
+the PNG size. A direct library client receives raw RGBA at
+`width * height * 4` bytes per capture, so keep `region` small and lower
+`max_frame_bytes` if you want a hard ceiling.
 
 **The app hangs in a GUI launch.** Apps started from Finder or Explorer have no
 usable stdin/stdout, so there is no MCP session. Launch from a terminal or let
@@ -1334,7 +1589,8 @@ Known limits in v0:
 - One MCP client per process, stdio only, no TLS, no remote access.
 - MCP `2026-07-28` and later stateless revisions are not implemented; clients
   must use the handshake-based revision.
-- PNG only, one full frame per capture, no diffs or video.
+- Frames are raw RGBA8888 from the library; PNG is only available through the
+  supervisor, one full frame per capture, no diffs or video.
 - No window management (resize, move, title), no gamepad, touch, or audio.
 - Capture requires cooperation from the app; the library cannot read a
   swapchain on its own.
@@ -1342,10 +1598,10 @@ Known limits in v0:
   `/dev/null`. Windows support is a TODO.
 - `log_level` is validated but not yet connected to a leveled logger.
 
-Plausible next steps: `sdl_window` for resize/title/fullscreen, `sdl_quit`,
-gamepad and touch actions, frame diffs, and a `sdl3mcp://frame/latest`
-resource. Anything added has to keep the six-call wiring and the "library never
-touches your renderer" rule intact.
+Plausible next steps: `sdl_window` for resize/title/fullscreen, gamepad and
+touch actions, frame diffs, and a `sdl3mcp://frame/latest` resource. Anything
+added has to keep the six-call wiring and the "library never touches your
+renderer" rule intact.
 
 ## Development
 
@@ -1365,15 +1621,19 @@ src/json_rpc.*                     JSON-RPC 2.0 message layer
 src/tools.*                        tool catalog and JSON schemas
 src/session.*                      MCP initialize/tools/ping session
 src/info.*                         sdl_info serialization
-src/frame.*                        frame validation, crop, downscale, base64
+src/frame.*                        frame validation and region crop
 src/capture.*                      pending capture state and statistics
-src/transport.*                    line-oriented stdio transport
+src/transport.*                    line transport plus raw frame read/write
 src/server.*                       server thread loop
 src/stdio_isolation.*              fd duplication and redirect
-src/png.hpp, src/stb_image_write_impl.cpp
-third_party/stb/                   vendored stb_image_write.h
+third_party/stb/                   vendored stb_image_write.h (supervisor only)
 third_party/nlohmann/              vendored json.hpp fallback
 examples/minimal/main.c           the quick-start app
+supervisor/                        supervisor executable: CLI, child process, proxy
+supervisor/scaling.*               box-filter downscale for max_width
+supervisor/png.*                   PNG encode and base64
+supervisor/stb_image_write_impl.cpp
+                                   the one stb implementation translation unit
 tests/                             unit and integration tests, check_readme.py
 CMakeLists.txt
 ```
@@ -1381,11 +1641,16 @@ CMakeLists.txt
 Test suite (all registered with CTest): `header_c`, `header_cpp`,
 `configuration_tests`, `keymap_tests`, `input_tests`, `input_json_tests`,
 `replay_tests`, `mouse_tests`, `queue_tests`, `app_input_tests`,
-`input_tool_tests`, `capture_tests`, `capture_tool_tests`, `json_rpc_tests`,
-`session_tests`, `frame_tests`, `info_tests`, `server_tests`, and six
-`lifecycle_*` scenarios. When Python 3 is available, `readme_check` runs
-`tests/check_readme.py`: it compiles both complete C examples, parses every
-JSON block, and checks the schemas, the example run path, and the loop order.
+`input_tool_tests`, `capture_tests`, `capture_tool_tests`, `terminate_tests`,
+`json_rpc_tests`, `session_tests`, `frame_tests`, `info_tests`, `server_tests`,
+and six `lifecycle_*` scenarios. With `SDL3MCP_BUILD_SUPERVISOR=ON` it also adds
+`supervisor_scaling_tests` and `supervisor_png_tests` for the moved presentation
+code, `supervisor_tests`, which drives the real supervisor binary against a fake MCP
+child, and `supervisor_real_app`, which repeats the round trip through
+`examples/minimal` under `SDL_VIDEODRIVER=dummy`. When Python 3 is available,
+`readme_check` runs `tests/check_readme.py`: it compiles both complete C
+examples, parses every JSON block, and checks both `sdl_capture` schemas, the
+example run path, the supervisor states, and the loop order.
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DSDL3MCP_BUILD_EXAMPLES=ON

@@ -12,6 +12,7 @@ include(CMakePackageConfigHelpers)
 option(SDL3MCP_BUILD_SHARED "Build SDL3MCP as a shared library" OFF)
 option(SDL3MCP_BUILD_TESTS "Build the SDL3MCP smoke tests" ${PROJECT_IS_TOP_LEVEL})
 option(SDL3MCP_BUILD_EXAMPLES "Build the SDL3MCP examples" OFF)
+option(SDL3MCP_BUILD_SUPERVISOR "Build the sdl3mcp-supervisor executable" OFF)
 option(SDL3MCP_USE_SYSTEM_JSON "Resolve nlohmann_json from the system before vendoring" ON)
 
 find_package(SDL3 CONFIG REQUIRED)
@@ -65,7 +66,6 @@ add_library(sdl3mcp_objects OBJECT
     src/transport.cpp
     src/server.cpp
     src/stdio_isolation.cpp
-    src/stb_image_write_impl.cpp
 )
 add_library(SDL3MCP ${sdl3mcp_library_type} $<TARGET_OBJECTS:sdl3mcp_objects>)
 add_library(SDL3MCP::SDL3MCP ALIAS SDL3MCP)
@@ -104,7 +104,6 @@ target_include_directories(sdl3mcp_objects
         "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
         "$<BUILD_INTERFACE:${SDL3MCP_GENERATED_DIR}>"
     PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb"
         ${SDL3MCP_JSON_INCLUDE_DIRS}
 )
 target_include_directories(SDL3MCP PUBLIC
@@ -113,12 +112,55 @@ target_include_directories(SDL3MCP PUBLIC
     "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
 )
 target_include_directories(SDL3MCP PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb"
     ${SDL3MCP_JSON_INCLUDE_DIRS}
 )
 
 if(SDL3MCP_BUILD_EXAMPLES)
     add_subdirectory(examples)
+endif()
+
+if(SDL3MCP_BUILD_SUPERVISOR)
+    # The supervisor is POSIX-only: the top-level WIN32 guard above already
+    # rejects Windows, and the implementation uses fork/exec and private pipes.
+    # The supervisor owns presentation: the library-to-supervisor link carries
+    # raw pixels, so downscaling, PNG, and base64 are compiled here only. stb is
+    # a private include of the supervisor objects, never of the library.
+    add_library(sdl3mcp_supervisor_objects OBJECT
+        supervisor/cli.cpp
+        supervisor/child_process.cpp
+        supervisor/scaling.cpp
+        supervisor/png.cpp
+        supervisor/stb_image_write_impl.cpp
+        supervisor/supervisor.cpp
+    )
+    target_compile_features(sdl3mcp_supervisor_objects PRIVATE cxx_std_20)
+    target_include_directories(sdl3mcp_supervisor_objects
+        PUBLIC
+            "${CMAKE_CURRENT_SOURCE_DIR}/supervisor"
+        PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/src"
+            "${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb"
+    )
+    target_link_libraries(sdl3mcp_supervisor_objects
+        PUBLIC
+            sdl3mcp_objects
+            nlohmann_json::nlohmann_json
+            Threads::Threads
+    )
+
+    add_executable(sdl3mcp-supervisor supervisor/main.cpp)
+    target_compile_features(sdl3mcp-supervisor PRIVATE cxx_std_20)
+    target_include_directories(sdl3mcp-supervisor PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    )
+    # Object files from a linked object library do not propagate transitively, so
+    # the library objects are named here as well as in the supervisor objects.
+    # The object library's own link dependencies are private, hence SDL3 too.
+    target_link_libraries(sdl3mcp-supervisor PRIVATE
+        sdl3mcp_supervisor_objects
+        sdl3mcp_objects
+        SDL3::SDL3
+    )
 endif()
 
 if(SDL3MCP_BUILD_TESTS)

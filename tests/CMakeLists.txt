@@ -125,8 +125,8 @@ target_link_libraries(sdl3mcp_test_input_tool PRIVATE
 )
 add_test(NAME input_tool_tests COMMAND sdl3mcp_test_input_tool)
 # SDL's dummy video driver keeps process-wide allocations the test cannot free,
-# so leak detection is scoped off for the two dummy-driver integration tests
-# only. Every other test runs with ASan leak detection on.
+# so leak detection is scoped off for the dummy-driver integration tests only.
+# Every other test runs with ASan leak detection on.
 set_tests_properties(input_tool_tests PROPERTIES ENVIRONMENT
     "SDL_VIDEODRIVER=dummy;ASAN_OPTIONS=detect_leaks=0:halt_on_error=1")
 
@@ -156,6 +156,21 @@ target_link_libraries(sdl3mcp_test_capture_tool PRIVATE
 )
 add_test(NAME capture_tool_tests COMMAND sdl3mcp_test_capture_tool)
 set_tests_properties(capture_tool_tests PROPERTIES ENVIRONMENT
+    "SDL_VIDEODRIVER=dummy;ASAN_OPTIONS=detect_leaks=0:halt_on_error=1")
+
+add_executable(sdl3mcp_test_terminate terminate_tests.cpp)
+target_compile_features(sdl3mcp_test_terminate PRIVATE cxx_std_20)
+target_include_directories(sdl3mcp_test_terminate PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+)
+target_link_libraries(sdl3mcp_test_terminate PRIVATE
+    SDL3MCP::SDL3MCP
+    SDL3::SDL3
+    nlohmann_json::nlohmann_json
+    Threads::Threads
+)
+add_test(NAME terminate_tests COMMAND sdl3mcp_test_terminate)
+set_tests_properties(terminate_tests PROPERTIES ENVIRONMENT
     "SDL_VIDEODRIVER=dummy;ASAN_OPTIONS=detect_leaks=0:halt_on_error=1")
 
 add_executable(sdl3mcp_test_json_rpc json_rpc_tests.cpp)
@@ -243,4 +258,72 @@ if(Python3_Interpreter_FOUND)
                      "${CMAKE_CURRENT_SOURCE_DIR}/check_readme.py"
                      --source "${PROJECT_SOURCE_DIR}"
                      --build "${PROJECT_BINARY_DIR}")
+endif()
+
+# The supervisor tests drive the real executable over pipes, with a fake child
+# that speaks MCP without SDL, so no window or video driver is involved.
+if(SDL3MCP_BUILD_SUPERVISOR)
+    add_executable(sdl3mcp_test_supervisor_scaling supervisor_scaling_tests.cpp)
+    target_compile_features(sdl3mcp_test_supervisor_scaling PRIVATE cxx_std_20)
+    target_include_directories(sdl3mcp_test_supervisor_scaling PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../supervisor"
+    )
+    target_link_libraries(sdl3mcp_test_supervisor_scaling PRIVATE
+        sdl3mcp_supervisor_objects
+        sdl3mcp_objects
+        SDL3::SDL3
+        Threads::Threads
+    )
+    add_test(NAME supervisor_scaling_tests COMMAND sdl3mcp_test_supervisor_scaling)
+
+    add_executable(sdl3mcp_test_supervisor_png supervisor_png_tests.cpp)
+    target_compile_features(sdl3mcp_test_supervisor_png PRIVATE cxx_std_20)
+    target_include_directories(sdl3mcp_test_supervisor_png PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../supervisor"
+    )
+    target_link_libraries(sdl3mcp_test_supervisor_png PRIVATE
+        sdl3mcp_supervisor_objects
+        sdl3mcp_objects
+        SDL3::SDL3
+        Threads::Threads
+    )
+    add_test(NAME supervisor_png_tests COMMAND sdl3mcp_test_supervisor_png)
+
+    add_executable(sdl3mcp_fake_child supervisor_fake_child.cpp)
+    target_compile_features(sdl3mcp_fake_child PRIVATE cxx_std_20)
+    target_link_libraries(sdl3mcp_fake_child PRIVATE nlohmann_json::nlohmann_json)
+
+    add_executable(sdl3mcp_test_supervisor supervisor_tests.cpp)
+    target_compile_features(sdl3mcp_test_supervisor PRIVATE cxx_std_20)
+    target_include_directories(sdl3mcp_test_supervisor PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+    )
+    target_link_libraries(sdl3mcp_test_supervisor PRIVATE
+        sdl3mcp_supervisor_objects
+        sdl3mcp_objects
+        SDL3::SDL3
+        nlohmann_json::nlohmann_json
+        Threads::Threads
+    )
+    add_test(NAME supervisor_tests
+             COMMAND sdl3mcp_test_supervisor
+                     $<TARGET_FILE:sdl3mcp-supervisor>
+                     $<TARGET_FILE:sdl3mcp_fake_child>)
+
+    # The same binary again, this time driving the real example through the
+    # proxy. The dummy video driver gives a real software renderer headless;
+    # as with the other dummy-driver tests, SDL's process-wide allocations are
+    # not leaks the example can free, so leak detection is scoped off here and
+    # inherited by both the supervisor and the app it spawns.
+    if(SDL3MCP_BUILD_EXAMPLES)
+        add_test(NAME supervisor_real_app
+                 COMMAND sdl3mcp_test_supervisor
+                         $<TARGET_FILE:sdl3mcp-supervisor>
+                         $<TARGET_FILE:sdl3mcp_fake_child>
+                         $<TARGET_FILE:minimal>)
+        set_tests_properties(supervisor_real_app PROPERTIES ENVIRONMENT
+            "SDL_VIDEODRIVER=dummy;ASAN_OPTIONS=detect_leaks=0:halt_on_error=1")
+    endif()
 endif()

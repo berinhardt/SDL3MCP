@@ -90,16 +90,13 @@ CaptureStats CaptureState::stats() const
     return stats_;
 }
 
-void CaptureState::updateSuccess(int preDownscaleWidth,
-                                 int preDownscaleHeight,
-                                 uint64_t pngBytes,
-                                 double ms)
+void CaptureState::updateSuccess(int width, int height, uint64_t bytes, double ms)
 {
     const std::lock_guard<std::mutex> lock(mutex_);
     ++stats_.count;
-    stats_.lastWidth = preDownscaleWidth;
-    stats_.lastHeight = preDownscaleHeight;
-    stats_.lastBytes = pngBytes;
+    stats_.lastWidth = width;
+    stats_.lastHeight = height;
+    stats_.lastBytes = bytes;
     stats_.lastMs = ms;
     stats_.lastError.clear();
 }

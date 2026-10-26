@@ -32,6 +32,7 @@
 #ifndef SDL3MCP_SERVER_HPP
 #define SDL3MCP_SERVER_HPP
 
+#include "frame.hpp"
 #include "json_rpc.hpp"
 #include "session.hpp"
 #include "transport.hpp"
@@ -41,6 +42,7 @@
 #include <cstddef>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -48,11 +50,17 @@
 namespace sdl3mcp
 {
 
-/* What a tool handler returns: MCP content blocks plus the error flag. */
+/*
+  What a tool handler returns. Every tool except sdl_capture answers with MCP
+  content blocks plus the error flag; sdl_capture leaves `content` unused and
+  fills `frame`, which makes the server write one result line carrying the raw
+  framing header followed by exactly the pixel bytes.
+*/
 struct ToolResult
 {
     nlohmann::json content;
     bool isError = false;
+    std::optional<Frame> frame;
 };
 
 using ToolHandler = std::function<ToolResult(const ToolCall &)>;

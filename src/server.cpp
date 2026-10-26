@@ -88,6 +88,10 @@ void Server::run()
             setFailure(error.empty() ? std::string("the transport could not be read") : error);
             return;
         }
+        /* Only a bounded read can time out; the server reads indefinitely. */
+        if (status == ReadStatus::Timeout) {
+            continue;
+        }
 
         try {
             if (!handleLine(line)) {
@@ -150,6 +154,32 @@ bool Server::writeResponse(const nlohmann::json &response)
 bool Server::writeToolCall(const ToolCall &call)
 {
     const ToolResult result = handler_(call);
+
+    /*
+      A raw frame is one JSON-RPC result line naming the payload, immediately
+      followed by the pixels with no newline: the header's byteLength is the only
+      framing the supervisor needs.
+    */
+    if (result.frame.has_value()) {
+        const nlohmann::json header{
+            {"format", "rgba8888"},
+            {"width", result.frame->width},
+            {"height", result.frame->height},
+            {"byteLength", result.frame->pixels.size()},
+        };
+        if (!writeResponse(makeResult(call.id, header))) {
+            return false;
+        }
+        if (!transport_.writeBytes(result.frame->pixels.data(),
+                                   result.frame->pixels.size())) {
+            const int errorCode = errno;
+            setFailure(std::string("cannot write the frame payload to the client: ") +
+                       std::strerror(errorCode));
+            return false;
+        }
+        return true;
+    }
+
     return writeResponse(makeResult(call.id, nlohmann::json{
                                              {"content", result.content},
                                              {"isError", result.isError},

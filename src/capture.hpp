@@ -15,7 +15,7 @@
   recordFailure() is for rejected SDL3MCP_WriteFrame data: it keeps the first
   reason, counts one drop, and leaves the request pending so the app may retry
   on the next frame. recordError() only publishes a reason for sdl_info, which is
-  what crop and encode failures need because they are not drops.
+  what crop and timeout failures need because they are not drops.
 
   One mutex and one condition variable guard the state. Nothing here calls SDL,
   so every member is legal on either thread.
@@ -41,9 +41,12 @@ struct CaptureStats
     bool pending = false;
     uint64_t count = 0;
     uint64_t dropped = 0;
+    /* The frame the library returned: after any region crop. */
     int lastWidth = 0;
     int lastHeight = 0;
+    /* Raw RGBA payload size, width * height * 4; the library never encodes an image. */
     uint64_t lastBytes = 0;
+    /* Wait for the frame plus the region crop. */
     double lastMs = 0;
     std::string lastError;
 };
@@ -84,10 +87,7 @@ public:
     CaptureStats stats() const;
 
     /* Publishes a completed capture; this is the only success counter. */
-    void updateSuccess(int preDownscaleWidth,
-                       int preDownscaleHeight,
-                       uint64_t pngBytes,
-                       double ms);
+    void updateSuccess(int width, int height, uint64_t bytes, double ms);
 
 private:
     mutable std::mutex mutex_;

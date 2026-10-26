@@ -6,9 +6,14 @@ the loop order is a bug. The checks are deliberately mechanical:
 
 - both complete C examples are compiled with ``gcc -std=c11 -fsyntax-only``;
 - every fenced ``json`` block parses;
-- the ``sdl_input`` and ``sdl_capture`` schemas match the implemented limits;
+- the ``sdl_input`` schema matches the implemented limits;
+- the ``sdl_capture`` schemas match both sides: region + timeout_ms for the
+  library's raw framing and max_width for the supervisor's image block;
+- the ``sdl_terminate`` schema is the empty object with all four hints;
 - the quick start matches ``examples/minimal/main.c`` and contains R/G/B;
 - the documented run command points at ``<build>/examples/minimal``;
+- the supervisor section documents ``sdl3mcp-supervisor --target`` and its
+  Idle/Starting/Running states;
 - stale phrases from earlier drafts are gone;
 - ``SDL3MCP_AppIterate`` is the last call, after ``SDL_RenderPresent``.
 """
@@ -25,6 +30,7 @@ from pathlib import Path
 
 EXAMPLE_COMMAND = "./build/examples/minimal --mcp"
 WRONG_EXAMPLE_PATH = "examples/minimal/minimal"
+SUPERVISOR_STATES = ("Idle", "Starting", "Running")
 
 STALE_PHRASES = (
     "F+2",
@@ -79,6 +85,15 @@ def find_tool_schema(documents: list[object], name: str) -> object | None:
                 and document.get("name") == name
                 and "inputSchema" in document):
             return document["inputSchema"]
+    return None
+
+
+def find_tool_document(documents: list[object], name: str) -> dict | None:
+    for document in documents:
+        if (isinstance(document, dict)
+                and document.get("name") == name
+                and "inputSchema" in document):
+            return document
     return None
 
 
@@ -179,31 +194,116 @@ def check_input_schema(documents: list[object], failures: list[str]) -> None:
             failures.append("sdl_input text minLength must be 1")
 
 
-def check_capture_schema(documents: list[object], failures: list[str]) -> None:
-    schema = find_tool_schema(documents, "sdl_capture")
-    if not isinstance(schema, dict):
-        failures.append("no sdl_capture tool schema with an inputSchema in the README")
-        return
+def check_capture_schemas(documents: list[object], failures: list[str]) -> None:
+    """Both captures are contract: raw framing in the library, images via the supervisor."""
+    library = None
+    supervisor = None
+    for document in documents:
+        if not (isinstance(document, dict)
+                and document.get("name") == "sdl_capture"
+                and isinstance(document.get("inputSchema"), dict)):
+            continue
+        properties = document["inputSchema"].get("properties", {})
+        if "max_width" in properties:
+            supervisor = document
+        elif "timeout_ms" in properties:
+            library = document
 
-    properties = schema.get("properties", {})
-    max_width = properties.get("max_width", {})
-    if (max_width.get("minimum"), max_width.get("maximum")) != (16, 16384):
-        failures.append("sdl_capture max_width must be an integer in 16..16384")
+    if library is None:
+        failures.append("no library sdl_capture schema with region and timeout_ms")
+    else:
+        schema = library["inputSchema"]
+        properties = schema.get("properties", {})
+        if set(properties) != {"region", "timeout_ms"}:
+            failures.append(
+                "library sdl_capture must advertise only region and timeout_ms")
+        if schema.get("additionalProperties") is not False:
+            failures.append("library sdl_capture must set additionalProperties false")
+        if schema.get("required"):
+            failures.append("library sdl_capture has no required members")
+        timeout = properties.get("timeout_ms", {})
+        if (timeout.get("minimum"), timeout.get("maximum")) != (1, 60000):
+            failures.append("library sdl_capture timeout_ms must be 1..60000")
+        check_region_schema(schema, "library sdl_capture", failures)
+        description = library.get("description", "")
+        if "rgba8888" not in description or "byteLength" not in description:
+            failures.append(
+                "library sdl_capture description must document the raw "
+                "format/byteLength framing")
 
-    timeout = properties.get("timeout_ms", {})
-    if (timeout.get("minimum"), timeout.get("maximum")) != (1, 60000):
-        failures.append("sdl_capture timeout_ms must be an integer in 1..60000")
+    if supervisor is None:
+        failures.append("no supervisor sdl_capture schema with max_width")
+    else:
+        schema = supervisor["inputSchema"]
+        properties = schema.get("properties", {})
+        max_width = properties.get("max_width", {})
+        if (max_width.get("minimum"), max_width.get("maximum")) != (16, 16384):
+            failures.append("supervisor sdl_capture max_width must be 16..16384")
+        timeout = properties.get("timeout_ms", {})
+        if (timeout.get("minimum"), timeout.get("maximum")) != (1, 60000):
+            failures.append("supervisor sdl_capture timeout_ms must be 1..60000")
+        check_region_schema(schema, "supervisor sdl_capture", failures)
+        if "PNG" not in supervisor.get("description", ""):
+            failures.append("supervisor sdl_capture description must promise a PNG")
 
-    region = properties.get("region")
+
+def check_region_schema(schema: dict, label: str, failures: list[str]) -> None:
+    region = schema.get("properties", {}).get("region")
     if not isinstance(region, dict):
-        failures.append("sdl_capture schema has no region property")
+        failures.append(f"{label} schema has no region property")
         return
     if set(region.get("required", [])) != {"x", "y", "width", "height"}:
-        failures.append("sdl_capture region must require x, y, width, and height")
+        failures.append(f"{label} region must require x, y, width, and height")
+    if region.get("additionalProperties") is not False:
+        failures.append(f"{label} region must set additionalProperties false")
     region_properties = region.get("properties", {})
     for field in ("x", "y", "width", "height"):
         if region_properties.get(field, {}).get("type") != "integer":
-            failures.append(f"sdl_capture region {field} must be an integer")
+            failures.append(f"{label} region {field} must be an integer")
+
+
+def check_capture_framing_prose(readme: str, failures: list[str]) -> None:
+    """The raw framing and its supervisor split are prose the contract depends on."""
+    for required in ('"format":"rgba8888"', '"byteLength"', "raw RGBA"):
+        if required not in readme:
+            failures.append(f"README does not document the capture framing phrase {required!r}")
+    if "max_width" not in readme:
+        failures.append("README does not document the supervisor's max_width")
+    lowered = readme.lower()
+    if "library" not in lowered or "supervisor" not in lowered:
+        failures.append("README must state which side owns the capture presentation")
+
+
+def check_terminate_schema(documents: list[object], failures: list[str]) -> None:
+    tool = find_tool_document(documents, "sdl_terminate")
+    if tool is None:
+        failures.append("no sdl_terminate tool schema with an inputSchema in the README")
+        return
+
+    schema = tool["inputSchema"]
+    if not isinstance(schema, dict):
+        failures.append("sdl_terminate inputSchema must be an object")
+    else:
+        if schema.get("type") != "object":
+            failures.append("sdl_terminate schema type must be object")
+        if schema.get("properties") != {}:
+            failures.append("sdl_terminate schema properties must be empty")
+        if schema.get("additionalProperties") is not False:
+            failures.append("sdl_terminate schema must set additionalProperties false")
+
+    annotations = tool.get("annotations")
+    if not isinstance(annotations, dict):
+        failures.append("sdl_terminate schema has no annotations")
+        return
+    expected = {
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": False,
+        "openWorldHint": False,
+    }
+    for key, value in expected.items():
+        if annotations.get(key) != value:
+            failures.append(f"sdl_terminate annotation {key} must be {value}")
 
 
 def check_example_command(readme: str, failures: list[str]) -> None:
@@ -211,6 +311,19 @@ def check_example_command(readme: str, failures: list[str]) -> None:
         failures.append(f"README must document the example command '{EXAMPLE_COMMAND}'")
     if WRONG_EXAMPLE_PATH in readme:
         failures.append(f"README must not reference '{WRONG_EXAMPLE_PATH}'")
+
+
+def check_supervisor_docs(readme: str, failures: list[str]) -> None:
+    """The supervisor is part of the shipped binary, so its contract is checked."""
+    if "## Supervisor" not in readme:
+        failures.append("README has no Supervisor section")
+    if "sdl3mcp-supervisor" not in readme:
+        failures.append("README does not document the sdl3mcp-supervisor command")
+    if "--target" not in readme:
+        failures.append("README does not document the supervisor's --target option")
+    for state in SUPERVISOR_STATES:
+        if f"`{state}`" not in readme:
+            failures.append(f"README does not document the supervisor {state} state")
 
 
 def check_stale_phrases(readme: str, failures: list[str]) -> None:
@@ -274,8 +387,11 @@ def main(argv: list[str] | None = None) -> int:
 
     documents = check_json_blocks(blocks, failures)
     check_input_schema(documents, failures)
-    check_capture_schema(documents, failures)
+    check_capture_schemas(documents, failures)
+    check_capture_framing_prose(readme, failures)
+    check_terminate_schema(documents, failures)
     check_example_command(readme, failures)
+    check_supervisor_docs(readme, failures)
     check_stale_phrases(readme, failures)
 
     for index, body in enumerate(complete_examples, start=1):

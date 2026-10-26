@@ -38,7 +38,6 @@
 #include <array>
 #include <atomic>
 #include <chrono>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -104,6 +103,12 @@ struct LibraryState
     CaptureState capture;
     Session session;
     StdioIsolation isolation;
+
+    /*
+      Set by the server thread's sdl_terminate handler and exchanged by the app
+      thread, which owns the only SDL call (SDL_PushEvent).
+    */
+    std::atomic<bool> terminateRequested{false};
 
     /* Present only while the stdio server runs; owns its thread. */
     std::unique_ptr<Server> server;
@@ -394,19 +399,15 @@ ToolResult inputResult(LibraryState &state, const ToolCall &call)
     return textResult("unknown input outcome", true);
 }
 
-constexpr int kCaptureMinWidth = 16;
-constexpr int kCaptureMaxWidth = 16384;
 constexpr int kCaptureMinTimeoutMs = 1;
 constexpr int kCaptureMaxTimeoutMs = 60000;
 
-constexpr std::array<std::string_view, 3> kCaptureProperties{"max_width", "timeout_ms",
-                                                             "region"};
+constexpr std::array<std::string_view, 2> kCaptureProperties{"timeout_ms", "region"};
 constexpr std::array<std::string_view, 4> kRegionProperties{"x", "y", "width", "height"};
 
 /* The sdl_capture arguments as the handler uses them, already range-checked. */
 struct CaptureArguments
 {
-    std::optional<int> maxWidth;
     std::chrono::milliseconds timeout{0};
     std::optional<CaptureRegion> region;
 };
@@ -481,20 +482,6 @@ std::optional<CaptureArguments> parseCaptureArguments(const nlohmann::json &argu
     CaptureArguments parsed;
     parsed.timeout = std::chrono::milliseconds(defaultTimeoutMs);
 
-    if (arguments.contains("max_width")) {
-        const std::optional<int64_t> value = readCaptureInteger(arguments, "max_width", error);
-        if (!value.has_value()) {
-            return std::nullopt;
-        }
-        if (*value < kCaptureMinWidth || *value > kCaptureMaxWidth) {
-            error = "max_width " + std::to_string(*value) + " must be between " +
-                    std::to_string(kCaptureMinWidth) + " and " +
-                    std::to_string(kCaptureMaxWidth);
-            return std::nullopt;
-        }
-        parsed.maxWidth = static_cast<int>(*value);
-    }
-
     if (arguments.contains("timeout_ms")) {
         const std::optional<int64_t> value = readCaptureInteger(arguments, "timeout_ms", error);
         if (!value.has_value()) {
@@ -563,9 +550,11 @@ std::optional<CaptureArguments> parseCaptureArguments(const nlohmann::json &argu
     return parsed;
 }
 
-/* Server thread: one request, one frame, then crop/downscale/PNG/base64. */
+/* Server thread: one request, one cropped frame, then raw RGBA framing. */
 ToolResult captureResult(LibraryState &state, const ToolCall &call)
 {
+    const auto started = std::chrono::steady_clock::now();
+
     std::string error;
     const std::optional<CaptureArguments> arguments = parseCaptureArguments(
         call.arguments, state.configuration.value().frame_timeout_ms, error);
@@ -595,7 +584,6 @@ ToolResult captureResult(LibraryState &state, const ToolCall &call)
         return textResult(std::move(message), true);
     }
 
-    const auto started = std::chrono::steady_clock::now();
     if (arguments->region.has_value()) {
         const std::optional<Frame> cropped =
             sdl3mcp::cropFrame(frame, *arguments->region, error);
@@ -606,49 +594,15 @@ ToolResult captureResult(LibraryState &state, const ToolCall &call)
         frame = std::move(*cropped);
     }
 
-    /* The statistics report the frame before max_width downscaling. */
-    const int sourceWidth = frame.width;
-    const int sourceHeight = frame.height;
-
-    Frame output;
-    if (arguments->maxWidth.has_value()) {
-        output = sdl3mcp::downscaleFrame(frame, *arguments->maxWidth);
-    } else {
-        output = std::move(frame);
-    }
-
-    const std::vector<uint8_t> png = sdl3mcp::encodePng(output);
-    if (png.empty()) {
-        const std::string message = "PNG encoding failed for " +
-                                    std::to_string(output.width) + "x" +
-                                    std::to_string(output.height);
-        state.capture.recordError(message);
-        return textResult(message, true);
-    }
-    const std::string data = sdl3mcp::base64Encode(png);
+    /* The statistics describe the raw pixels this handler hands to the server. */
     const double elapsedMs = std::chrono::duration<double, std::milli>(
                                  std::chrono::steady_clock::now() - started)
                                  .count();
-
-    state.capture.updateSuccess(sourceWidth, sourceHeight, png.size(), elapsedMs);
-
-    std::string summary = std::to_string(output.width) + "x" +
-                          std::to_string(output.height) + " PNG";
-    if (arguments->region.has_value()) {
-        summary += " from " + std::to_string(arguments->region->width) + "x" +
-                   std::to_string(arguments->region->height) + " at " +
-                   std::to_string(arguments->region->x) + "," +
-                   std::to_string(arguments->region->y);
-    }
-    summary += ", " + std::to_string(png.size()) + " bytes, " +
-               std::to_string(static_cast<long long>(std::lround(elapsedMs))) + " ms";
+    state.capture.updateSuccess(frame.width, frame.height, frame.pixels.size(),
+                                elapsedMs);
 
     ToolResult result;
-    result.content = nlohmann::json::array({
-        nlohmann::json{{"type", "text"}, {"text", std::move(summary)}},
-        nlohmann::json{{"type", "image"}, {"mimeType", "image/png"}, {"data", data}},
-    });
-    result.isError = false;
+    result.frame = std::move(frame);
     return result;
 }
 
@@ -668,6 +622,10 @@ ToolHandler makeToolHandler(LibraryState *state)
         }
         if (call.name == "sdl_capture") {
             return captureResult(*state, call);
+        }
+        if (call.name == "sdl_terminate") {
+            state->terminateRequested.store(true);
+            return textResult("termination requested", false);
         }
         return textResult(kToolStubMessage, true);
     };
@@ -858,6 +816,18 @@ extern "C" SDL_DECLSPEC SDL_AppResult SDLCALL SDL3MCP_AppIterate(void)
             applyNextBatch(*g_state, frame);
         }
         publishSnapshot(*g_state, frame);
+
+        /*
+          One quit request makes one SDL_EVENT_QUIT. A failed push restores the
+          flag so the next iterate retries instead of losing the request.
+        */
+        if (g_state->terminateRequested.exchange(false)) {
+            SDL_Event event{};
+            event.type = SDL_EVENT_QUIT;
+            if (!SDL_PushEvent(&event)) {
+                g_state->terminateRequested.store(true);
+            }
+        }
 
         return SDL_APP_CONTINUE;
     } catch (const std::exception &exception) {

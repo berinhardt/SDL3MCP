@@ -16,6 +16,11 @@
   pieces is still one line. A trailing '\r' is stripped to accept CRLF clients.
   A line longer than maxLineBytes is Error rather than an unbounded allocation,
   which is the only way a hostile or broken client can grow our memory.
+
+  readBytes() is the raw-frame counterpart of readLine(): it consumes whatever
+  readLine buffered past the newline first, then reads exactly count bytes. The
+  supervisor uses it on the child's end of the pipe, after the child's capture
+  result line announced the pixel payload size.
 */
 
 #ifndef SDL3MCP_TRANSPORT_HPP
@@ -23,8 +28,10 @@
 
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace sdl3mcp
 {
@@ -37,6 +44,8 @@ enum class ReadStatus
     Eof,
     /* stop() was called; nothing was read. */
     Stopped,
+    /* The caller's deadline passed with no complete line buffered. */
+    Timeout,
     /* Read failure, a line over the cap, or a peer that vanished mid-line. */
     Error
 };
@@ -49,11 +58,31 @@ public:
     /*
       Blocks until a full line is buffered, the peer closes, stop() is observed,
       or reading fails. `error` is filled only for Error and is cleared otherwise.
+      A negative `timeoutMs` waits indefinitely; otherwise Timeout is returned
+      once that many milliseconds pass without a complete line. Buffered partial
+      input survives a Timeout, so a caller can resume reading.
     */
-    ReadStatus readLine(std::string &line, std::string &error);
+    ReadStatus readLine(std::string &line, std::string &error, int timeoutMs = -1);
+
+    /*
+      Reads exactly `count` bytes into `out`, starting with anything readLine
+      already buffered and then reading from the fd. A negative `timeoutMs` waits
+      indefinitely; otherwise a deadline that passes first is an error. stop(),
+      EOF, a short read, or a read failure returns false with `error` set.
+    */
+    bool readBytes(size_t count,
+                   std::vector<uint8_t> &out,
+                   std::string &error,
+                   int timeoutMs = -1);
 
     /* Appends '\n' and writes every byte. False on a write error, such as EPIPE. */
     bool writeLine(std::string_view line);
+
+    /*
+      Writes exactly `size` bytes with nothing appended. False on a write error;
+      either every byte is written or the caller sees a failure.
+    */
+    bool writeBytes(const uint8_t *data, size_t size);
 
     /* Asynchronous and idempotent; safe to call from another thread. */
     void stop();
@@ -61,6 +90,7 @@ public:
 
 private:
     std::string lineLimitError() const;
+    bool writeAll(const char *data, size_t size);
 
     int readFd_;
     int writeFd_;

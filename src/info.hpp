@@ -47,9 +47,11 @@ struct CaptureInfo
     bool pending = false;
     uint64_t count = 0;
     uint64_t dropped = 0;
+    /* Frame dimensions after the region crop, and its raw RGBA byte count. */
     int lastWidth = 0;
     int lastHeight = 0;
     uint64_t lastBytes = 0;
+    /* Wait for the frame plus the region crop. */
     double lastMs = 0;
     std::string lastError;
 };

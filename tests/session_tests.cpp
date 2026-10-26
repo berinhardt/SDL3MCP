@@ -264,7 +264,7 @@ void testToolList()
         resultOf(session, R"({"jsonrpc":"2.0","id":2,"method":"tools/list"})", 2);
     const nlohmann::json &tools = result["tools"];
     CHECK(tools.is_array());
-    CHECK(tools.size() == 3);
+    CHECK(tools.size() == 4);
 
     std::string names;
     for (const nlohmann::json &tool : tools) {
@@ -277,12 +277,13 @@ void testToolList()
         CHECK(nlohmann::json::accept(tool["inputSchema"].dump()));
         names += tool["name"].get<std::string>() + " ";
     }
-    CHECK(names == "sdl_info sdl_input sdl_capture ");
+    CHECK(names == "sdl_info sdl_input sdl_capture sdl_terminate ");
 
-    CHECK(sdl3mcp::toolCatalog().size() == 3);
+    CHECK(sdl3mcp::toolCatalog().size() == 4);
     CHECK(sdl3mcp::findTool("sdl_info") != nullptr);
     CHECK(sdl3mcp::findTool("sdl_input") != nullptr);
     CHECK(sdl3mcp::findTool("sdl_capture") != nullptr);
+    CHECK(sdl3mcp::findTool("sdl_terminate") != nullptr);
     CHECK(sdl3mcp::findTool("sdl_nope") == nullptr);
     CHECK(sdl3mcp::findTool("") == nullptr);
 }
@@ -380,10 +381,9 @@ void testCaptureSchema()
     /* No top-level required member: every parameter is optional. */
     CHECK(!schema.contains("required"));
 
-    const nlohmann::json &maxWidth = schema["properties"]["max_width"];
-    CHECK(maxWidth["type"] == "integer");
-    CHECK(maxWidth["minimum"] == 16);
-    CHECK(maxWidth["maximum"] == 16384);
+    /* max_width is supervisor policy: the library schema does not advertise it. */
+    CHECK(!schema["properties"].contains("max_width"));
+    CHECK(schema["properties"].size() == 2);
 
     const nlohmann::json &timeout = schema["properties"]["timeout_ms"];
     CHECK(timeout["type"] == "integer");
@@ -411,9 +411,11 @@ void testAnnotations()
     const ToolDefinition *info = sdl3mcp::findTool("sdl_info");
     const ToolDefinition *input = sdl3mcp::findTool("sdl_input");
     const ToolDefinition *capture = sdl3mcp::findTool("sdl_capture");
+    const ToolDefinition *terminate = sdl3mcp::findTool("sdl_terminate");
     CHECK(info != nullptr);
     CHECK(input != nullptr);
     CHECK(capture != nullptr);
+    CHECK(terminate != nullptr);
 
     CHECK(info->annotations["readOnlyHint"] == true);
     CHECK(info->annotations["idempotentHint"] == true);
@@ -426,6 +428,21 @@ void testAnnotations()
     CHECK(capture->annotations["readOnlyHint"] == true);
     CHECK(capture->annotations["idempotentHint"] == false);
     CHECK(capture->annotations["openWorldHint"] == false);
+
+    CHECK(terminate->annotations["readOnlyHint"] == false);
+    CHECK(terminate->annotations["destructiveHint"] == true);
+    CHECK(terminate->annotations["idempotentHint"] == false);
+    CHECK(terminate->annotations["openWorldHint"] == false);
+}
+
+void testTerminateSchema()
+{
+    const nlohmann::json &schema = schemaOf("sdl_terminate");
+    CHECK(schema["type"] == "object");
+    CHECK(schema["properties"].is_object());
+    CHECK(schema["properties"].empty());
+    CHECK(schema["additionalProperties"] == false);
+    CHECK(!schema.contains("required"));
 }
 
 void testToolCalls()
@@ -463,11 +480,11 @@ void testToolCalls()
         /* The request id keeps its JSON type. */
         const SessionResult result = dispatch(
             session,
-            R"({"jsonrpc":"2.0","id":"cap","method":"tools/call","params":{"name":"sdl_capture","arguments":{"max_width":1280}}})");
+            R"({"jsonrpc":"2.0","id":"cap","method":"tools/call","params":{"name":"sdl_capture","arguments":{"timeout_ms":1280}}})");
         CHECK(result.toolCall.has_value());
         CHECK(result.toolCall->id.is_string());
         CHECK(result.toolCall->id == "cap");
-        CHECK(result.toolCall->arguments["max_width"] == 1280);
+        CHECK(result.toolCall->arguments["timeout_ms"] == 1280);
     }
     {
         /* The session only dispatches; it never executes a tool. */
@@ -533,6 +550,7 @@ int main()
     testInfoSchema();
     testInputSchema();
     testCaptureSchema();
+    testTerminateSchema();
     testAnnotations();
     testToolCalls();
     testToolCallErrors();

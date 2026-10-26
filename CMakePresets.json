@@ -12,7 +12,8 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "SDL3MCP_BUILD_TESTS": "ON",
-        "SDL3MCP_BUILD_EXAMPLES": "ON"
+        "SDL3MCP_BUILD_EXAMPLES": "ON",
+        "SDL3MCP_BUILD_SUPERVISOR": "ON"
       }
     },
     {
@@ -107,7 +108,7 @@
       },
       "filter": {
         "include": {
-          "name": "queue_tests|server_tests"
+          "name": "queue_tests|server_tests|supervisor_tests"
         }
       },
       "output": {

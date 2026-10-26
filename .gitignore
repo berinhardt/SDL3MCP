@@ -3,6 +3,7 @@ build-shared/
 cmake-build-*/
 compile_commands.json
 .cache/
+.opencode/
 *.o
 *.a
 *.so

@@ -4,6 +4,7 @@ project(SDL3MCP VERSION 0.1.0 LANGUAGES C CXX)
 
 option(SDL3MCP_BUILD_SHARED "Build SDL3MCP as a shared library" OFF)
 option(SDL3MCP_BUILD_TESTS "Build the SDL3MCP smoke tests" ${PROJECT_IS_TOP_LEVEL})
+option(SDL3MCP_BUILD_EXAMPLES "Build the SDL3MCP examples" OFF)
 option(SDL3MCP_USE_SYSTEM_JSON "Resolve nlohmann_json from the system before vendoring" ON)
 
 find_package(SDL3 CONFIG REQUIRED)
@@ -84,6 +85,10 @@ target_include_directories(SDL3MCP PUBLIC
 target_include_directories(SDL3MCP PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb"
 )
+
+if(SDL3MCP_BUILD_EXAMPLES)
+    add_subdirectory(examples)
+endif()
 
 if(SDL3MCP_BUILD_TESTS)
     enable_testing()

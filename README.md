@@ -155,25 +155,108 @@ Installed builds export `SDL3MCP::SDL3MCP` and install the header as
 
 ## Quick start
 
-This is a complete, minimal app using SDL3's main callbacks:
+This is `examples/minimal`, a complete app using SDL3's main callbacks:
 
 ```c
+/*
+  The smallest complete SDL3MCP host: a window whose background an agent can
+  change with synthetic key presses and then see in a capture.
+*/
+
 #define SDL_MAIN_USE_CALLBACKS 1
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 #include <SDL3MCP/SDL3MCP.h>
 
-typedef struct App {
+typedef enum BackgroundMode
+{
+    BACKGROUND_DEFAULT,
+    BACKGROUND_RED,
+    BACKGROUND_GREEN,
+    BACKGROUND_BLUE
+} BackgroundMode;
+
+typedef struct App
+{
     SDL_Window *window;
     SDL_Renderer *renderer;
+    BackgroundMode background;
 } App;
+
+/* Pressing the active color key again returns to the default background. */
+static BackgroundMode toggledBackground(BackgroundMode current, BackgroundMode target)
+{
+    return current == target ? BACKGROUND_DEFAULT : target;
+}
+
+static void setBackgroundColor(App *app)
+{
+    switch (app->background) {
+    case BACKGROUND_RED:
+        SDL_SetRenderDrawColor(app->renderer, 200, 30, 30, 255);
+        break;
+    case BACKGROUND_GREEN:
+        SDL_SetRenderDrawColor(app->renderer, 30, 180, 60, 255);
+        break;
+    case BACKGROUND_BLUE:
+        SDL_SetRenderDrawColor(app->renderer, 40, 80, 220, 255);
+        break;
+    case BACKGROUND_DEFAULT:
+        SDL_SetRenderDrawColor(app->renderer, 24, 24, 32, 255);
+        break;
+    }
+}
+
+/*
+  SDL3MCP_WriteFrame wants tightly packed RGBA8888, while a readback surface is
+  free to pad its rows, so copy when the pitch does not match the row size.
+  SDL_PIXELFORMAT_RGBA32 is SDL's byte-order alias for bytes R,G,B,A; the
+  similarly named SDL_PIXELFORMAT_RGBA8888 is packed 32-bit order and stores
+  A,B,G,R in memory on little-endian hosts.
+*/
+static void writeFrame(App *app)
+{
+    SDL_Surface *frame = SDL_RenderReadPixels(app->renderer, NULL);
+    if (!frame) {
+        return;
+    }
+
+    SDL_Surface *rgba = frame;
+    if (frame->format != SDL_PIXELFORMAT_RGBA32) {
+        rgba = SDL_ConvertSurface(frame, SDL_PIXELFORMAT_RGBA32);
+        SDL_DestroySurface(frame);
+        if (!rgba) {
+            return;
+        }
+    }
+
+    const size_t rowBytes = (size_t)rgba->w * 4u;
+    const size_t size = rowBytes * (size_t)rgba->h;
+    if ((size_t)rgba->pitch == rowBytes) {
+        SDL3MCP_WriteFrame(rgba->pixels, size);
+    } else {
+        uint8_t *packed = SDL_malloc(size);
+        if (packed) {
+            for (int y = 0; y < rgba->h; ++y) {
+                SDL_memcpy(packed + rowBytes * (size_t)y,
+                           (const uint8_t *)rgba->pixels + (size_t)rgba->pitch * (size_t)y,
+                           rowBytes);
+            }
+            SDL3MCP_WriteFrame(packed, size);
+            SDL_free(packed);
+        }
+    }
+
+    SDL_DestroySurface(rgba);
+}
 
 SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv)
 {
-    SDL3MCP_Configuration cfg = SDL3MCP_DefaultConfiguration();
-    SDL_AppResult result = SDL3MCP_AppInit(&cfg, argc, argv);
+    /* SDL3MCP_AppInit runs first so --mcp-help and --mcp=off can exit early. */
+    SDL3MCP_Configuration configuration = SDL3MCP_DefaultConfiguration();
+    SDL_AppResult result = SDL3MCP_AppInit(&configuration, argc, argv);
     if (result != SDL_APP_CONTINUE) {
-        return result; /* --mcp=off, --mcp-help, or a configuration error */
+        return result;
     }
 
     if (!SDL_Init(SDL_INIT_VIDEO)) {
@@ -198,48 +281,46 @@ SDL_AppResult SDL_AppIterate(void *appstate)
 {
     App *app = appstate;
 
-    /* Apply agent input before polling, so this frame reacts to it. */
-    SDL_AppResult result = SDL3MCP_AppIterate();
-    if (result != SDL_APP_CONTINUE) {
-        return result;
-    }
-
-    /* Draw something. */
-    SDL_SetRenderDrawColor(app->renderer, 24, 24, 32, 255);
+    setBackgroundColor(app);
     SDL_RenderClear(app->renderer);
-    SDL_SetRenderDrawColor(app->renderer, 240, 200, 80, 255);
-    SDL_RenderDebugText(app->renderer, 24, 24, "link SDL3MCP, press keys, capture");
-    /* ... */
 
-    /* Answer a pending capture before presenting. */
     if (SDL3MCP_FrameRequested()) {
-        SDL_Surface *frame = SDL_RenderReadPixels(app->renderer, NULL);
-        if (frame) {
-            SDL_Surface *rgba = frame;
-            if (frame->format != SDL_PIXELFORMAT_RGBA8888) {
-                rgba = SDL_ConvertSurface(frame, SDL_PIXELFORMAT_RGBA8888);
-                SDL_DestroySurface(frame);
-            }
-            if (rgba) {
-                SDL3MCP_WriteFrame(rgba->pixels, (size_t)rgba->pitch * (size_t)rgba->h);
-                SDL_DestroySurface(rgba);
-            }
-        }
+        writeFrame(app);
     }
 
     SDL_RenderPresent(app->renderer);
-    return SDL_APP_CONTINUE;
+
+    /* Last, so this frame's capture and input bookkeeping stay in step. */
+    return SDL3MCP_AppIterate();
 }
 
 SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
 {
-    (void)appstate;
+    App *app = appstate;
+
     if (event->type == SDL_EVENT_QUIT) {
         return SDL_APP_SUCCESS;
     }
-    if (event->type == SDL_EVENT_KEY_DOWN && event->key.key == SDLK_ESCAPE) {
-        return SDL_APP_SUCCESS;
+    if (event->type != SDL_EVENT_KEY_DOWN || event->key.repeat) {
+        return SDL_APP_CONTINUE;
     }
+
+    switch (event->key.key) {
+    case SDLK_ESCAPE:
+        return SDL_APP_SUCCESS;
+    case SDLK_R:
+        app->background = toggledBackground(app->background, BACKGROUND_RED);
+        break;
+    case SDLK_G:
+        app->background = toggledBackground(app->background, BACKGROUND_GREEN);
+        break;
+    case SDLK_B:
+        app->background = toggledBackground(app->background, BACKGROUND_BLUE);
+        break;
+    default:
+        break;
+    }
+
     return SDL_APP_CONTINUE;
 }
 
@@ -257,6 +338,9 @@ void SDL_AppQuit(void *appstate, SDL_AppResult result)
     SDL_Quit();
 }
 ```
+
+Press `r`, `g`, or `b` to switch the background to red, green, or blue, and
+press the active color again to return to the default; key repeats are ignored.
 
 Every synthetic event arrives through `SDL_AppEvent` like a real one, so an app
 that already handles input needs no extra wiring.
@@ -532,7 +616,10 @@ Hands a rendered frame to a waiting capture.
 - **Format:** tightly packed RGBA8888, top-left origin, row-major, stride exactly
   `width * 4`, bytes in the order R, G, B, A. On SDL 3.2+, `SDL_RenderReadPixels`
   returns a surface; convert it with `SDL_ConvertSurface(surface,
-  SDL_PIXELFORMAT_RGBA8888)` and pass `surface->pixels`.
+  SDL_PIXELFORMAT_RGBA32)` and pass `surface->pixels`. `SDL_PIXELFORMAT_RGBA32`
+  is SDL's byte-order alias for an R, G, B, A byte array; the similarly named
+  `SDL_PIXELFORMAT_RGBA8888` is integer-packed order and stores A, B, G, R in
+  memory on little-endian hosts.
 - **Size:** `width * height * 4`, where `width` and `height` are the bound
   window's `SDL_GetWindowSizeInPixels` at the moment of the call. A mismatch is
   dropped and logged; the capture eventually times out.
@@ -930,7 +1017,7 @@ before), allocating for `SDL_GetWindowSize` instead of
 
 **Frames are upside down or colors are swapped.** The buffer must be
 top-left-first RGBA8888 with no row padding. `SDL_RenderReadPixels` returns a
-surface; convert it with `SDL_ConvertSurface(surface, SDL_PIXELFORMAT_RGBA8888)`
+surface; convert it with `SDL_ConvertSurface(surface, SDL_PIXELFORMAT_RGBA32)`
 and pass its pixels with pitch `width * 4`.
 
 **Mouse clicks land in the wrong place on a HiDPI display.** Frames are in

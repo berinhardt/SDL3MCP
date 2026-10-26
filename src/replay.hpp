@@ -1,6 +1,6 @@
 /*
-  Keyboard replay: turns a key action into SDL key events and tracks which keys
-  the library holds.
+  Keyboard and text replay: turns a key or text action into SDL events and tracks
+  which keys the library holds.
 
   SDL 3.4 fills a key event's `key` with the unmodified base keycode (the
   key_event=true form of SDL_GetKeyFromScancode) and keeps the live modifiers in
@@ -8,9 +8,10 @@
   already down, in Ctrl/Shift/Alt/Gui order, and releases exactly those in
   reverse, so the same batch always produces the same events.
 
-  apply() resolves and validates before it touches state or the event vector, so
-  a failed action changes neither. A batch applies its actions to a copy of the
-  replayer and commits that copy only once every action succeeded.
+  apply() and buildTextEvent() resolve and validate before they touch state or
+  the event vector, so a failed action changes neither. A batch applies its
+  actions to a copy of the replayer and commits that copy only once every action
+  succeeded.
 
   The constructor takes the KeyMap by reference and stores a pointer, so the map
   must outlive the replayer. Every method calls SDL keyboard functions and must
@@ -84,6 +85,19 @@ private:
     std::vector<SDL_Scancode> heldKeys_;
     SDL_Keymod modifiers_ = SDL_KMOD_NONE;
 };
+
+/*
+  Appends the single SDL_EVENT_TEXT_INPUT for one text action, or returns false
+  with one line of text in `error` and appends nothing when no window is bound,
+  text input is inactive on the bound window, or the text is empty.
+
+  The event stores a pointer to input.text, exactly as SDL does, so the caller
+  must keep that TextInput alive until the app has consumed the event at F+1.
+  Nothing here copies the string; the input queue, which owns the batch, is
+  responsible for keeping the action alive for the whole frame.
+*/
+bool buildTextEvent(const TextInput &input, SDL_WindowID windowID, bool textInputActive,
+                    Uint64 timestamp, std::vector<SDL_Event> &events, std::string &error);
 
 } // namespace sdl3mcp
 

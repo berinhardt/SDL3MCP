@@ -21,6 +21,7 @@ using sdl3mcp::KeyChord;
 using sdl3mcp::KeyInput;
 using sdl3mcp::KeyMap;
 using sdl3mcp::KeyReplayer;
+using sdl3mcp::TextInput;
 
 constexpr SDL_WindowID kWindowID = 42;
 constexpr Uint64 kTimestamp = 123456789;
@@ -348,6 +349,51 @@ void testReset()
 }
 
 /*
+  Text replay borrows the string: the event stores input.text.c_str(), so the
+  test keeps the TextInput alive while it inspects the event.
+*/
+void testTextInput()
+{
+    const std::string text = "héllo ✓";
+    const TextInput input{text};
+    std::vector<SDL_Event> events;
+    std::string error;
+
+    CHECK(sdl3mcp::buildTextEvent(input, kWindowID, true, kTimestamp, events, error));
+    CHECK(error.empty());
+    CHECK(events.size() == 1);
+
+    const SDL_Event &event = events[0];
+    CHECK(event.type == SDL_EVENT_TEXT_INPUT);
+    CHECK(event.text.windowID == kWindowID);
+    CHECK(event.text.timestamp == kTimestamp);
+    /* The whole UTF-8 string, by pointer rather than a copy. */
+    CHECK(event.text.text == input.text.c_str());
+    CHECK(std::string(event.text.text) == text);
+}
+
+void testTextInputRejected()
+{
+    const TextInput text{"a"};
+    const TextInput empty{""};
+    std::vector<SDL_Event> events;
+    std::string error;
+
+    CHECK(!sdl3mcp::buildTextEvent(text, 0, true, kTimestamp, events, error));
+    CHECK(events.empty());
+    CHECK(error == "no window bound");
+
+    CHECK(!sdl3mcp::buildTextEvent(text, kWindowID, false, kTimestamp, events, error));
+    CHECK(events.empty());
+    CHECK(error == "text input is not active on the bound window");
+
+    /* A bound, active window is the only way to reach the empty-text check. */
+    CHECK(!sdl3mcp::buildTextEvent(empty, kWindowID, true, kTimestamp, events, error));
+    CHECK(events.empty());
+    CHECK(error == "text is empty");
+}
+
+/*
   A batch applies to a copy and commits it only on success, so a copy that walks
   a valid action and then fails must leave the original's state and events alone.
 */
@@ -393,6 +439,8 @@ int main()
     testDownRejectsKeyNeedingModifiers();
     testReleaseAll();
     testReset();
+    testTextInput();
+    testTextInputRejected();
     testCopyRollsBack();
     return 0;
 }

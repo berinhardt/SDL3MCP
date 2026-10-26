@@ -28,6 +28,9 @@ constexpr ChordModifier kChordModifiers[] = {
 constexpr char kModifierKeyError[] = "down/up require a key that needs no modifiers; use press";
 constexpr char kNotHeldError[] = "key is not held";
 constexpr char kChordModifierKeyError[] = "a chord key must not be a modifier";
+constexpr char kNoWindowError[] = "no window bound";
+constexpr char kTextInputInactiveError[] = "text input is not active on the bound window";
+constexpr char kEmptyTextError[] = "text is empty";
 
 /*
   A modifier key contributes its own bit, so the right-side keys are as
@@ -58,6 +61,33 @@ SDL_Keymod modifierBitForScancode(SDL_Scancode scancode) noexcept
 }
 
 } // namespace
+
+bool buildTextEvent(const TextInput &input, SDL_WindowID windowID, bool textInputActive,
+                    Uint64 timestamp, std::vector<SDL_Event> &events, std::string &error)
+{
+    error.clear();
+    if (windowID == 0) {
+        error = kNoWindowError;
+        return false;
+    }
+    if (!textInputActive) {
+        error = kTextInputInactiveError;
+        return false;
+    }
+    if (input.text.empty()) {
+        error = kEmptyTextError;
+        return false;
+    }
+
+    SDL_Event event{};
+    event.type = SDL_EVENT_TEXT_INPUT;
+    event.text.timestamp = timestamp;
+    event.text.windowID = windowID;
+    /* Borrowed, not copied: the batch must outlive the app's consumption. */
+    event.text.text = input.text.c_str();
+    events.push_back(event);
+    return true;
+}
 
 KeyReplayer::KeyReplayer(const KeyMap &keymap, SDL_WindowID windowID)
     : keymap_(&keymap), windowID_(windowID)

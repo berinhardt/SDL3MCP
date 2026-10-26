@@ -38,14 +38,17 @@ add_library(SDL3MCP ${sdl3mcp_library_type}
     src/tools.cpp
     src/session.cpp
     src/frame.cpp
+    src/transport.cpp
+    src/server.cpp
     src/stb_image_write_impl.cpp
 )
 add_library(SDL3MCP::SDL3MCP ALIAS SDL3MCP)
 
 target_compile_features(SDL3MCP PRIVATE cxx_std_20)
+find_package(Threads REQUIRED)
 target_link_libraries(SDL3MCP
     PUBLIC SDL3::SDL3
-    PRIVATE nlohmann_json::nlohmann_json
+    PRIVATE nlohmann_json::nlohmann_json Threads::Threads
 )
 set_target_properties(SDL3MCP PROPERTIES
     CXX_VISIBILITY_PRESET hidden

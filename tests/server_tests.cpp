@@ -215,10 +215,11 @@ void testNotificationsAndToolList()
 
     const nlohmann::json &tools = list["result"]["tools"];
     CHECK(tools.is_array());
-    CHECK(tools.size() == 3);
+    CHECK(tools.size() == 4);
     CHECK(tools[0]["name"] == "sdl_info");
     CHECK(tools[1]["name"] == "sdl_input");
     CHECK(tools[2]["name"] == "sdl_capture");
+    CHECK(tools[3]["name"] == "sdl_terminate");
     CHECK(!harness.server.failed());
 }
 

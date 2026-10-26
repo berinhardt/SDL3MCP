@@ -3,7 +3,7 @@
 SDL3MCP is a library that embeds an MCP server in any SDL3 application: public
 C API, C++20 internals, stdio transport, synthetic input, and PNG frame capture.
 `README.md` is the design contract and the implementation follows it: the
-transport, input replay, frame pipeline, and all three MCP tools are in `src/`,
+transport, input replay, frame pipeline, and all four MCP tools are in `src/`,
 and `examples/minimal` is a complete host.
 
 ## Current state
@@ -82,6 +82,11 @@ and `examples/minimal` is a complete host.
 - **Requests are serialized.** One server thread handles one message at a time,
   so a blocking `sdl_input`/`sdl_capture` delays later requests, including
   `ping`, by up to its timeout.
+- **`sdl_terminate` only sets a flag.** The server thread stores the request and
+  returns `termination requested`; it never calls SDL. `SDL3MCP_AppIterate`
+  exchanges the flag and pushes exactly one zeroed `SDL_EVENT_QUIT`, restoring
+  the flag to retry when `SDL_PushEvent` fails. It still returns
+  `SDL_APP_CONTINUE` and leaves the app's own quit handling untouched.
 - **fd ownership.** `NONE` leaves stdin/stdout untouched. `STDIO` duplicates the
   originals for MCP, redirects the host stdin to `/dev/null` and the host stdout
   to stderr, and restores both at shutdown. stderr stays separate and is where

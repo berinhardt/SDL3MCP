@@ -1,0 +1,13 @@
+{
+  "mcp": {
+    "servers": {
+      "sdl3mcp": {
+        "type": "local",
+        "command": [
+          "/home/darta/SDL3MCP/build/examples/minimal",
+          "--mcp"
+        ]
+      }
+    }
+  }
+}

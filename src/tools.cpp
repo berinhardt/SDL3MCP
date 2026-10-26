@@ -177,10 +177,27 @@ constexpr std::string_view kCaptureAnnotations = R"({
   "openWorldHint": false
 })";
 
+constexpr std::string_view kTerminateDescription =
+    "Ask the application to exit cleanly: the next SDL3MCP_AppIterate() pushes "
+    "one SDL_EVENT_QUIT so the app's own event loop can shut down.";
+
+constexpr std::string_view kTerminateSchema = R"({
+  "type": "object",
+  "properties": {},
+  "additionalProperties": false
+})";
+
+constexpr std::string_view kTerminateAnnotations = R"({
+  "readOnlyHint": false,
+  "destructiveHint": true,
+  "idempotentHint": false,
+  "openWorldHint": false
+})";
+
 std::vector<ToolDefinition> buildCatalog()
 {
     std::vector<ToolDefinition> tools;
-    tools.reserve(3);
+    tools.reserve(4);
 
     tools.push_back({"sdl_info", kInfoDescription, parseDefinition(kInfoSchema),
                      parseDefinition(kInfoAnnotations)});
@@ -188,6 +205,9 @@ std::vector<ToolDefinition> buildCatalog()
                      parseDefinition(kInputAnnotations)});
     tools.push_back({"sdl_capture", kCaptureDescription, parseDefinition(kCaptureSchema),
                      parseDefinition(kCaptureAnnotations)});
+    tools.push_back({"sdl_terminate", kTerminateDescription,
+                     parseDefinition(kTerminateSchema),
+                     parseDefinition(kTerminateAnnotations)});
 
     return tools;
 }

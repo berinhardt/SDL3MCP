@@ -44,6 +44,7 @@ events into the queue and hands the pixels you give it back to the agent.
 | `sdl_info` | Window title, size in points and pixels, pixel density, video driver, SDL version, held input, frame counters, capture statistics. |
 | `sdl_input` | Send a batch of key, text, mouse-move, mouse-button, scroll, or release-all actions. |
 | `sdl_capture` | Ask the app for a fresh frame, optionally cropped or downscaled, and receive it as an `image/png` content block. |
+| `sdl_terminate` | Ask the app to exit cleanly by pushing one `SDL_EVENT_QUIT` into its own event loop. |
 
 Typical agent loop:
 
@@ -973,6 +974,10 @@ Tool annotations:
 | `sdl_info` | `true` | `true` | `false` |
 | `sdl_input` | `false` | `false` | `false` |
 | `sdl_capture` | `true` | `false` | `false` |
+| `sdl_terminate` | `false` | `false` | `false` |
+
+`sdl_terminate` additionally sets `destructiveHint: true`, because asking the
+app to quit ends the session.
 
 ### `sdl_info`
 
@@ -1205,6 +1210,37 @@ when there was one:
 }
 ```
 
+### `sdl_terminate`
+
+```json
+{
+  "name": "sdl_terminate",
+  "description": "Ask the application to exit cleanly: the next SDL3MCP_AppIterate() pushes one SDL_EVENT_QUIT so the app's own event loop can shut down.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  },
+  "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": false,
+    "openWorldHint": false
+  }
+}
+```
+
+No arguments. The tool sets a flag and returns the text `termination requested`
+with `isError: false`. It does not call SDL, and it does not end the process:
+the app decides what a quit means.
+
+On the next `SDL3MCP_AppIterate`, after the usual batch and snapshot work, the
+library exchanges the flag and pushes exactly one zeroed `SDL_EVENT_QUIT` with
+`SDL_PushEvent`. If the push fails, the flag is restored and the next iterate
+retries; either way `SDL3MCP_AppIterate` still returns `SDL_APP_CONTINUE`, so
+the app's own quit handling runs unchanged. A second iterate with no new
+request pushes nothing.
+
 ### Example session
 
 ```text
@@ -1212,13 +1248,15 @@ when there was one:
 ← {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"sdl3mcp","version":"0.1.0"}}}
 → {"jsonrpc":"2.0","method":"notifications/initialized"}
 → {"jsonrpc":"2.0","id":2,"method":"tools/list"}
-← {"jsonrpc":"2.0","id":2,"result":{"tools":[ ... sdl_info, sdl_input, sdl_capture ... ]}}
+← {"jsonrpc":"2.0","id":2,"result":{"tools":[ ... sdl_info, sdl_input, sdl_capture, sdl_terminate ... ]}}
 → {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"sdl_input","arguments":{"actions":[{"type":"key","key":"right","action":"down"},{"type":"key","key":"space","action":"press"}]}}}
 ← {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"2 actions applied at frame 7"}],"isError":false}}
 → {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"sdl_capture","arguments":{"max_width":1280}}}
 ← {"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"1280x720 PNG, 91234 bytes, 34 ms"},{"type":"image","mimeType":"image/png","data":"iVBORw0KGgo..."}],"isError":false}}
 → {"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"sdl_input","arguments":{"actions":[{"type":"key","key":"right","action":"up"},{"type":"key","key":"escape","action":"press"}]}}}
 ← {"jsonrpc":"2.0","id":5,"result":{"content":[{"type":"text","text":"2 actions applied at frame 9"}],"isError":false}}
+→ {"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"sdl_terminate","arguments":{}}}
+← {"jsonrpc":"2.0","id":6,"result":{"content":[{"type":"text","text":"termination requested"}],"isError":false}}
 ```
 
 ## Threading and lifetime
@@ -1342,10 +1380,10 @@ Known limits in v0:
   `/dev/null`. Windows support is a TODO.
 - `log_level` is validated but not yet connected to a leveled logger.
 
-Plausible next steps: `sdl_window` for resize/title/fullscreen, `sdl_quit`,
-gamepad and touch actions, frame diffs, and a `sdl3mcp://frame/latest`
-resource. Anything added has to keep the six-call wiring and the "library never
-touches your renderer" rule intact.
+Plausible next steps: `sdl_window` for resize/title/fullscreen, gamepad and
+touch actions, frame diffs, and a `sdl3mcp://frame/latest` resource. Anything
+added has to keep the six-call wiring and the "library never touches your
+renderer" rule intact.
 
 ## Development
 
@@ -1381,9 +1419,9 @@ CMakeLists.txt
 Test suite (all registered with CTest): `header_c`, `header_cpp`,
 `configuration_tests`, `keymap_tests`, `input_tests`, `input_json_tests`,
 `replay_tests`, `mouse_tests`, `queue_tests`, `app_input_tests`,
-`input_tool_tests`, `capture_tests`, `capture_tool_tests`, `json_rpc_tests`,
-`session_tests`, `frame_tests`, `info_tests`, `server_tests`, and six
-`lifecycle_*` scenarios. When Python 3 is available, `readme_check` runs
+`input_tool_tests`, `capture_tests`, `capture_tool_tests`, `terminate_tests`,
+`json_rpc_tests`, `session_tests`, `frame_tests`, `info_tests`, `server_tests`,
+and six `lifecycle_*` scenarios. When Python 3 is available, `readme_check` runs
 `tests/check_readme.py`: it compiles both complete C examples, parses every
 JSON block, and checks the schemas, the example run path, and the loop order.
 

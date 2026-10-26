@@ -125,8 +125,8 @@ target_link_libraries(sdl3mcp_test_input_tool PRIVATE
 )
 add_test(NAME input_tool_tests COMMAND sdl3mcp_test_input_tool)
 # SDL's dummy video driver keeps process-wide allocations the test cannot free,
-# so leak detection is scoped off for the two dummy-driver integration tests
-# only. Every other test runs with ASan leak detection on.
+# so leak detection is scoped off for the dummy-driver integration tests only.
+# Every other test runs with ASan leak detection on.
 set_tests_properties(input_tool_tests PROPERTIES ENVIRONMENT
     "SDL_VIDEODRIVER=dummy;ASAN_OPTIONS=detect_leaks=0:halt_on_error=1")
 
@@ -156,6 +156,21 @@ target_link_libraries(sdl3mcp_test_capture_tool PRIVATE
 )
 add_test(NAME capture_tool_tests COMMAND sdl3mcp_test_capture_tool)
 set_tests_properties(capture_tool_tests PROPERTIES ENVIRONMENT
+    "SDL_VIDEODRIVER=dummy;ASAN_OPTIONS=detect_leaks=0:halt_on_error=1")
+
+add_executable(sdl3mcp_test_terminate terminate_tests.cpp)
+target_compile_features(sdl3mcp_test_terminate PRIVATE cxx_std_20)
+target_include_directories(sdl3mcp_test_terminate PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+)
+target_link_libraries(sdl3mcp_test_terminate PRIVATE
+    SDL3MCP::SDL3MCP
+    SDL3::SDL3
+    nlohmann_json::nlohmann_json
+    Threads::Threads
+)
+add_test(NAME terminate_tests COMMAND sdl3mcp_test_terminate)
+set_tests_properties(terminate_tests PROPERTIES ENVIRONMENT
     "SDL_VIDEODRIVER=dummy;ASAN_OPTIONS=detect_leaks=0:halt_on_error=1")
 
 add_executable(sdl3mcp_test_json_rpc json_rpc_tests.cpp)

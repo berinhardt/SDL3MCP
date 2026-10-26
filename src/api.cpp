@@ -105,6 +105,12 @@ struct LibraryState
     Session session;
     StdioIsolation isolation;
 
+    /*
+      Set by the server thread's sdl_terminate handler and exchanged by the app
+      thread, which owns the only SDL call (SDL_PushEvent).
+    */
+    std::atomic<bool> terminateRequested{false};
+
     /* Present only while the stdio server runs; owns its thread. */
     std::unique_ptr<Server> server;
 
@@ -669,6 +675,10 @@ ToolHandler makeToolHandler(LibraryState *state)
         if (call.name == "sdl_capture") {
             return captureResult(*state, call);
         }
+        if (call.name == "sdl_terminate") {
+            state->terminateRequested.store(true);
+            return textResult("termination requested", false);
+        }
         return textResult(kToolStubMessage, true);
     };
 }
@@ -858,6 +868,18 @@ extern "C" SDL_DECLSPEC SDL_AppResult SDLCALL SDL3MCP_AppIterate(void)
             applyNextBatch(*g_state, frame);
         }
         publishSnapshot(*g_state, frame);
+
+        /*
+          One quit request makes one SDL_EVENT_QUIT. A failed push restores the
+          flag so the next iterate retries instead of losing the request.
+        */
+        if (g_state->terminateRequested.exchange(false)) {
+            SDL_Event event{};
+            event.type = SDL_EVENT_QUIT;
+            if (!SDL_PushEvent(&event)) {
+                g_state->terminateRequested.store(true);
+            }
+        }
 
         return SDL_APP_CONTINUE;
     } catch (const std::exception &exception) {

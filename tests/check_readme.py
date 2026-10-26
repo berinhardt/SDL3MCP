@@ -7,6 +7,7 @@ the loop order is a bug. The checks are deliberately mechanical:
 - both complete C examples are compiled with ``gcc -std=c11 -fsyntax-only``;
 - every fenced ``json`` block parses;
 - the ``sdl_input`` and ``sdl_capture`` schemas match the implemented limits;
+- the ``sdl_terminate`` schema is the empty object with all four hints;
 - the quick start matches ``examples/minimal/main.c`` and contains R/G/B;
 - the documented run command points at ``<build>/examples/minimal``;
 - stale phrases from earlier drafts are gone;
@@ -79,6 +80,15 @@ def find_tool_schema(documents: list[object], name: str) -> object | None:
                 and document.get("name") == name
                 and "inputSchema" in document):
             return document["inputSchema"]
+    return None
+
+
+def find_tool_document(documents: list[object], name: str) -> dict | None:
+    for document in documents:
+        if (isinstance(document, dict)
+                and document.get("name") == name
+                and "inputSchema" in document):
+            return document
     return None
 
 
@@ -206,6 +216,38 @@ def check_capture_schema(documents: list[object], failures: list[str]) -> None:
             failures.append(f"sdl_capture region {field} must be an integer")
 
 
+def check_terminate_schema(documents: list[object], failures: list[str]) -> None:
+    tool = find_tool_document(documents, "sdl_terminate")
+    if tool is None:
+        failures.append("no sdl_terminate tool schema with an inputSchema in the README")
+        return
+
+    schema = tool["inputSchema"]
+    if not isinstance(schema, dict):
+        failures.append("sdl_terminate inputSchema must be an object")
+    else:
+        if schema.get("type") != "object":
+            failures.append("sdl_terminate schema type must be object")
+        if schema.get("properties") != {}:
+            failures.append("sdl_terminate schema properties must be empty")
+        if schema.get("additionalProperties") is not False:
+            failures.append("sdl_terminate schema must set additionalProperties false")
+
+    annotations = tool.get("annotations")
+    if not isinstance(annotations, dict):
+        failures.append("sdl_terminate schema has no annotations")
+        return
+    expected = {
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": False,
+        "openWorldHint": False,
+    }
+    for key, value in expected.items():
+        if annotations.get(key) != value:
+            failures.append(f"sdl_terminate annotation {key} must be {value}")
+
+
 def check_example_command(readme: str, failures: list[str]) -> None:
     if EXAMPLE_COMMAND not in readme:
         failures.append(f"README must document the example command '{EXAMPLE_COMMAND}'")
@@ -275,6 +317,7 @@ def main(argv: list[str] | None = None) -> int:
     documents = check_json_blocks(blocks, failures)
     check_input_schema(documents, failures)
     check_capture_schema(documents, failures)
+    check_terminate_schema(documents, failures)
     check_example_command(readme, failures)
     check_stale_phrases(readme, failures)
 

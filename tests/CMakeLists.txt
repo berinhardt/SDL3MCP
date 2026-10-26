@@ -86,3 +86,11 @@ target_link_libraries(sdl3mcp_test_session PRIVATE
     nlohmann_json::nlohmann_json
 )
 add_test(NAME session_tests COMMAND sdl3mcp_test_session)
+
+add_executable(sdl3mcp_test_frame frame_tests.cpp)
+target_compile_features(sdl3mcp_test_frame PRIVATE cxx_std_20)
+target_include_directories(sdl3mcp_test_frame PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+)
+target_link_libraries(sdl3mcp_test_frame PRIVATE SDL3MCP::SDL3MCP SDL3::SDL3)
+add_test(NAME frame_tests COMMAND sdl3mcp_test_frame)

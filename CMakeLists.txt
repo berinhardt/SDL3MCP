@@ -37,6 +37,8 @@ add_library(SDL3MCP ${sdl3mcp_library_type}
     src/json_rpc.cpp
     src/tools.cpp
     src/session.cpp
+    src/frame.cpp
+    src/stb_image_write_impl.cpp
 )
 add_library(SDL3MCP::SDL3MCP ALIAS SDL3MCP)
 
@@ -70,6 +72,9 @@ configure_file(
 target_include_directories(SDL3MCP PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
     "${SDL3MCP_GENERATED_DIR}"
+)
+target_include_directories(SDL3MCP PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb"
 )
 
 if(SDL3MCP_BUILD_TESTS)

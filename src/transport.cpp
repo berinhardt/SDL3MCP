@@ -4,7 +4,9 @@
 // "Platforms" in README.md; CMake rejects a WIN32 configure until this lands.
 #include "transport.hpp"
 
+#include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cstring>
 #include <string_view>
 
@@ -38,9 +40,13 @@ std::string Transport::lineLimitError() const
     return "input line exceeds the " + std::to_string(maxLineBytes_) + " byte limit";
 }
 
-ReadStatus Transport::readLine(std::string &line, std::string &error)
+ReadStatus Transport::readLine(std::string &line, std::string &error, int timeoutMs)
 {
     error.clear();
+
+    const bool bounded = timeoutMs >= 0;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
 
     for (;;) {
         const size_t newline = buffer_.find('\n');
@@ -67,10 +73,21 @@ ReadStatus Transport::readLine(std::string &line, std::string &error)
             return ReadStatus::Stopped;
         }
 
+        int pollTimeoutMs = kPollTimeoutMs;
+        if (bounded) {
+            const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                       deadline - std::chrono::steady_clock::now())
+                                       .count();
+            if (remaining <= 0) {
+                return ReadStatus::Timeout;
+            }
+            pollTimeoutMs = static_cast<int>(std::min<long long>(kPollTimeoutMs, remaining));
+        }
+
         pollfd descriptor{};
         descriptor.fd = readFd_;
         descriptor.events = POLLIN;
-        const int ready = ::poll(&descriptor, 1, kPollTimeoutMs);
+        const int ready = ::poll(&descriptor, 1, pollTimeoutMs);
         if (ready < 0) {
             const int errorCode = errno;
             if (errorCode == EINTR) {

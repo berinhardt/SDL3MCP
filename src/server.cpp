@@ -88,6 +88,10 @@ void Server::run()
             setFailure(error.empty() ? std::string("the transport could not be read") : error);
             return;
         }
+        /* Only a bounded read can time out; the server reads indefinitely. */
+        if (status == ReadStatus::Timeout) {
+            continue;
+        }
 
         try {
             if (!handleLine(line)) {

@@ -37,6 +37,8 @@ enum class ReadStatus
     Eof,
     /* stop() was called; nothing was read. */
     Stopped,
+    /* The caller's deadline passed with no complete line buffered. */
+    Timeout,
     /* Read failure, a line over the cap, or a peer that vanished mid-line. */
     Error
 };
@@ -49,8 +51,11 @@ public:
     /*
       Blocks until a full line is buffered, the peer closes, stop() is observed,
       or reading fails. `error` is filled only for Error and is cleared otherwise.
+      A negative `timeoutMs` waits indefinitely; otherwise Timeout is returned
+      once that many milliseconds pass without a complete line. Buffered partial
+      input survives a Timeout, so a caller can resume reading.
     */
-    ReadStatus readLine(std::string &line, std::string &error);
+    ReadStatus readLine(std::string &line, std::string &error, int timeoutMs = -1);
 
     /* Appends '\n' and writes every byte. False on a write error, such as EPIPE. */
     bool writeLine(std::string_view line);

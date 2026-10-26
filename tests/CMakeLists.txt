@@ -259,3 +259,28 @@ if(Python3_Interpreter_FOUND)
                      --source "${PROJECT_SOURCE_DIR}"
                      --build "${PROJECT_BINARY_DIR}")
 endif()
+
+# The supervisor tests drive the real executable over pipes, with a fake child
+# that speaks MCP without SDL, so no window or video driver is involved.
+if(SDL3MCP_BUILD_SUPERVISOR)
+    add_executable(sdl3mcp_fake_child supervisor_fake_child.cpp)
+    target_compile_features(sdl3mcp_fake_child PRIVATE cxx_std_20)
+    target_link_libraries(sdl3mcp_fake_child PRIVATE nlohmann_json::nlohmann_json)
+
+    add_executable(sdl3mcp_test_supervisor supervisor_tests.cpp)
+    target_compile_features(sdl3mcp_test_supervisor PRIVATE cxx_std_20)
+    target_include_directories(sdl3mcp_test_supervisor PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+    )
+    target_link_libraries(sdl3mcp_test_supervisor PRIVATE
+        sdl3mcp_supervisor_objects
+        sdl3mcp_objects
+        SDL3::SDL3
+        nlohmann_json::nlohmann_json
+        Threads::Threads
+    )
+    add_test(NAME supervisor_tests
+             COMMAND sdl3mcp_test_supervisor
+                     $<TARGET_FILE:sdl3mcp-supervisor>
+                     $<TARGET_FILE:sdl3mcp_fake_child>)
+endif()

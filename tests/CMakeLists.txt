@@ -32,3 +32,11 @@ target_include_directories(sdl3mcp_test_input PRIVATE
 )
 target_link_libraries(sdl3mcp_test_input PRIVATE SDL3MCP::SDL3MCP SDL3::SDL3)
 add_test(NAME input_tests COMMAND sdl3mcp_test_input)
+
+add_executable(sdl3mcp_test_replay replay_tests.cpp)
+target_compile_features(sdl3mcp_test_replay PRIVATE cxx_std_20)
+target_include_directories(sdl3mcp_test_replay PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+)
+target_link_libraries(sdl3mcp_test_replay PRIVATE SDL3MCP::SDL3MCP SDL3::SDL3)
+add_test(NAME replay_tests COMMAND sdl3mcp_test_replay)

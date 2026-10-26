@@ -4,8 +4,21 @@ project(SDL3MCP VERSION 0.1.0 LANGUAGES C CXX)
 
 option(SDL3MCP_BUILD_SHARED "Build SDL3MCP as a shared library" OFF)
 option(SDL3MCP_BUILD_TESTS "Build the SDL3MCP smoke tests" ${PROJECT_IS_TOP_LEVEL})
+option(SDL3MCP_USE_SYSTEM_JSON "Resolve nlohmann_json from the system before vendoring" ON)
 
 find_package(SDL3 CONFIG REQUIRED)
+
+if(SDL3MCP_USE_SYSTEM_JSON)
+    find_package(nlohmann_json CONFIG QUIET)
+endif()
+
+if(NOT TARGET nlohmann_json::nlohmann_json)
+    add_library(sdl3mcp_json INTERFACE)
+    target_include_directories(sdl3mcp_json INTERFACE
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party"
+    )
+    add_library(nlohmann_json::nlohmann_json ALIAS sdl3mcp_json)
+endif()
 
 if(SDL3MCP_BUILD_SHARED)
     set(sdl3mcp_library_type SHARED)
@@ -21,11 +34,15 @@ add_library(SDL3MCP ${sdl3mcp_library_type}
     src/mouse.cpp
     src/replay.cpp
     src/queue.cpp
+    src/json_rpc.cpp
 )
 add_library(SDL3MCP::SDL3MCP ALIAS SDL3MCP)
 
 target_compile_features(SDL3MCP PRIVATE cxx_std_20)
-target_link_libraries(SDL3MCP PUBLIC SDL3::SDL3)
+target_link_libraries(SDL3MCP
+    PUBLIC SDL3::SDL3
+    PRIVATE nlohmann_json::nlohmann_json
+)
 set_target_properties(SDL3MCP PROPERTIES
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN YES

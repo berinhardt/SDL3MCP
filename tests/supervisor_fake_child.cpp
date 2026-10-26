@@ -1,12 +1,18 @@
 /*
   A fake MCP child for the supervisor tests: it speaks the same JSON-RPC lines as
-  the real app but never touches SDL, a window, or a frame.
+  the real app but never touches SDL, a window, or a renderer.
 
   sdl_info reports a window that appears --window-delay-ms after start (or never
-  with --no-window), sdl_input and sdl_capture return fixed text, and
-  --exit-after-ms / --exit-code / --fail-initialize reproduce the failure paths.
-  Before every deliberate exit it writes one recognisable stderr line, so the
-  supervisor's failure text can be checked for recent child output.
+  with --no-window). sdl_input returns fixed text, and sdl_capture answers with a
+  real binary raw frame: one result line carrying format/width/height/byteLength
+  followed by exactly that many RGBA bytes. --capture-width/--capture-height set
+  its size, a region in the arguments overrides them, --capture-error and
+  --capture-rpc-error reproduce the two child failure shapes, and
+  --capture-mismatch announces a byteLength that does not match the dimensions
+  and sends no payload. --exit-after-ms / --exit-code / --fail-initialize
+  reproduce the process failure paths. Before every deliberate exit it writes one
+  recognisable stderr line, so the supervisor's failure text can be checked for
+  recent child output.
 
   sdl_terminate answers "termination requested" and exits, like the real
   library. --ignore-terminate keeps running instead (SIGTERM is ignored until
@@ -24,10 +30,13 @@
 
 #include <charconv>
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace
 {
@@ -40,9 +49,14 @@ struct Options
     int windowDelayMs = 0;
     int exitAfterMs = -1;
     int exitCode = 0;
+    int captureWidth = 8;
+    int captureHeight = 8;
     bool failInitialize = false;
     bool noWindow = false;
     bool ignoreTerminate = false;
+    bool captureTextError = false;
+    bool captureRpcError = false;
+    bool captureMismatch = false;
     std::string pidFile;
 };
 
@@ -72,12 +86,28 @@ bool parseOptions(int argc, char **argv, Options &options)
             }
         } else if (argument == "--pid-file" && hasValue) {
             options.pidFile = argv[++index];
+        } else if (argument == "--capture-width" && hasValue) {
+            if (!parseInteger(argv[++index], options.captureWidth) ||
+                options.captureWidth <= 0) {
+                return false;
+            }
+        } else if (argument == "--capture-height" && hasValue) {
+            if (!parseInteger(argv[++index], options.captureHeight) ||
+                options.captureHeight <= 0) {
+                return false;
+            }
         } else if (argument == "--fail-initialize") {
             options.failInitialize = true;
         } else if (argument == "--no-window") {
             options.noWindow = true;
         } else if (argument == "--ignore-terminate") {
             options.ignoreTerminate = true;
+        } else if (argument == "--capture-error") {
+            options.captureTextError = true;
+        } else if (argument == "--capture-rpc-error") {
+            options.captureRpcError = true;
+        } else if (argument == "--capture-mismatch") {
+            options.captureMismatch = true;
         } else {
             return false;
         }
@@ -130,6 +160,51 @@ void writeTextResult(const nlohmann::json &id, std::string_view text)
                                     })},
                         {"isError", false},
                     });
+}
+
+/*
+  The raw-framing capture result: one header line naming the payload size, then
+  exactly that many RGBA bytes with no newline. The mismatch mode announces a
+  size one pixel larger and writes nothing, so the supervisor must reject it
+  before reading.
+*/
+void writeCaptureFrame(const nlohmann::json &id, int width, int height, bool mismatched)
+{
+    const std::size_t byteLength = static_cast<std::size_t>(width) *
+                                   static_cast<std::size_t>(height) * 4;
+    const std::size_t announced = mismatched ? byteLength + 4 : byteLength;
+
+    const nlohmann::json header{
+        {"jsonrpc", "2.0"},
+        {"id", id},
+        {"result", nlohmann::json{
+             {"format", "rgba8888"},
+             {"width", width},
+             {"height", height},
+             {"byteLength", announced},
+         }},
+    };
+    std::string line = header.dump();
+    line.push_back('\n');
+    std::fwrite(line.data(), 1, line.size(), stdout);
+
+    if (!mismatched) {
+        std::vector<uint8_t> pixels(byteLength);
+        for (int y = 0; y < height; ++y) {
+            for (int x = 0; x < width; ++x) {
+                uint8_t *out = pixels.data() +
+                               (static_cast<std::size_t>(y) * static_cast<std::size_t>(width) +
+                                static_cast<std::size_t>(x)) *
+                                   4;
+                out[0] = static_cast<uint8_t>((x * 8 + y * 3) & 0xFF);
+                out[1] = static_cast<uint8_t>((y * 5) & 0xFF);
+                out[2] = static_cast<uint8_t>((x * 2) & 0xFF);
+                out[3] = 255;
+            }
+        }
+        std::fwrite(pixels.data(), 1, pixels.size(), stdout);
+    }
+    std::fflush(stdout);
 }
 
 nlohmann::json toolsResult()
@@ -208,7 +283,37 @@ void handleToolsCall(const nlohmann::json &id,
         return;
     }
     if (tool == "sdl_capture") {
-        writeTextResult(id, "fake sdl_capture ok");
+        if (options.captureTextError) {
+            writeResult(id, nlohmann::json{
+                                {"content", nlohmann::json::array({
+                                                nlohmann::json{{"type", "text"},
+                                                               {"text", "fake capture failed"}},
+                                            })},
+                                {"isError", true},
+                            });
+            return;
+        }
+        if (options.captureRpcError) {
+            writeError(id, -32603, "fake capture rpc failure");
+            return;
+        }
+
+        int width = options.captureWidth;
+        int height = options.captureHeight;
+        const auto arguments = params.find("arguments");
+        if (arguments != params.end() && arguments->is_object()) {
+            const auto region = arguments->find("region");
+            if (region != arguments->end() && region->is_object()) {
+                const auto regionWidth = region->find("width");
+                const auto regionHeight = region->find("height");
+                if (regionWidth != region->end() && regionWidth->is_number_integer() &&
+                    regionHeight != region->end() && regionHeight->is_number_integer()) {
+                    width = regionWidth->get<int>();
+                    height = regionHeight->get<int>();
+                }
+            }
+        }
+        writeCaptureFrame(id, width, height, options.captureMismatch);
         return;
     }
     if (tool == "sdl_terminate") {

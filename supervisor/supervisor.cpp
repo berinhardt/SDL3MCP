@@ -1,13 +1,19 @@
 #include "supervisor.hpp"
 
+#include "png.hpp"
+#include "scaling.hpp"
+
 #include <SDL3MCP/SDL3MCP_version.h>
 
 #include <algorithm>
 #include <chrono>
 #include <csignal>
+#include <cstdint>
 #include <exception>
+#include <limits>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <pthread.h>
 
@@ -21,6 +27,17 @@ constexpr std::string_view kServerName = "sdl3mcp-supervisor";
 constexpr int kWindowPollMs = 50;
 /* SIGTERM to SIGKILL grace when the application ignores the quit request. */
 constexpr int kTerminateGraceMs = 2000;
+
+/* The sdl_capture max_width policy the supervisor advertises and enforces. */
+constexpr int kCaptureMinWidth = 16;
+constexpr int kCaptureMaxWidth = 16384;
+
+/*
+  The largest raw frame the supervisor accepts from the child. It bounds the
+  allocation a hostile or broken child can request before one payload byte is
+  read; a larger byteLength is rejected without allocating it.
+*/
+constexpr uint64_t kMaxCaptureBytes = 64ull * 1024 * 1024;
 
 nlohmann::json textContent(std::string text)
 {
@@ -137,6 +154,125 @@ std::string describeWindow(const nlohmann::json &window)
     return text;
 }
 
+/* Reads a JSON integer, including unsigned values that still fit in int64_t. */
+bool readInteger(const nlohmann::json &object, const char *name, int64_t &value)
+{
+    const auto entry = object.find(name);
+    if (entry == object.end() || !entry->is_number_integer()) {
+        return false;
+    }
+    if (entry->is_number_unsigned()) {
+        const uint64_t raw = entry->get<uint64_t>();
+        if (raw > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+            return false;
+        }
+        value = static_cast<int64_t>(raw);
+        return true;
+    }
+    value = entry->get<int64_t>();
+    return true;
+}
+
+/* max_width is the supervisor's own argument: absent means no downscale. */
+bool parseMaxWidth(const nlohmann::json &arguments, int &maxWidth, std::string &error)
+{
+    maxWidth = 0;
+    if (arguments.find("max_width") == arguments.end()) {
+        return true;
+    }
+
+    int64_t value = 0;
+    if (!readInteger(arguments, "max_width", value)) {
+        error = "max_width must be an integer";
+        return false;
+    }
+    if (value < kCaptureMinWidth || value > kCaptureMaxWidth) {
+        error = "max_width " + std::to_string(value) + " must be between " +
+                std::to_string(kCaptureMinWidth) + " and " +
+                std::to_string(kCaptureMaxWidth);
+        return false;
+    }
+    maxWidth = static_cast<int>(value);
+    return true;
+}
+
+/*
+  Validates the child's raw-frame header before any payload byte is read, so a
+  mismatched or oversized byteLength is rejected instead of allocated. The
+  expected size uses 64-bit math: width * height * 4 can overflow an int.
+*/
+bool parseCaptureHeader(const nlohmann::json &result,
+                        int &width,
+                        int &height,
+                        size_t &byteLength,
+                        std::string &error)
+{
+    const auto format = result.find("format");
+    if (format == result.end() || !format->is_string() ||
+        format->get<std::string>() != "rgba8888") {
+        error = "the application sent a capture result without format rgba8888";
+        return false;
+    }
+
+    int64_t widthValue = 0;
+    int64_t heightValue = 0;
+    if (!readInteger(result, "width", widthValue) || widthValue <= 0 ||
+        !readInteger(result, "height", heightValue) || heightValue <= 0) {
+        error = "the application sent a capture result with invalid dimensions";
+        return false;
+    }
+
+    int64_t lengthValue = 0;
+    if (!readInteger(result, "byteLength", lengthValue) || lengthValue < 0) {
+        error = "the application sent a capture result without a valid byteLength";
+        return false;
+    }
+
+    const uint64_t expected = static_cast<uint64_t>(widthValue) *
+                              static_cast<uint64_t>(heightValue) * 4u;
+    if (static_cast<uint64_t>(lengthValue) != expected) {
+        error = "the application sent byteLength " + std::to_string(lengthValue) +
+                " for " + std::to_string(widthValue) + "x" +
+                std::to_string(heightValue) + " (expected " +
+                std::to_string(expected) + ")";
+        return false;
+    }
+    if (static_cast<uint64_t>(lengthValue) > kMaxCaptureBytes) {
+        error = "the application sent " + std::to_string(lengthValue) +
+                " frame bytes, above the " + std::to_string(kMaxCaptureBytes) +
+                " byte supervisor cap";
+        return false;
+    }
+
+    width = static_cast<int>(widthValue);
+    height = static_cast<int>(heightValue);
+    byteLength = static_cast<size_t>(lengthValue);
+    return true;
+}
+
+/* The image summary names the output, the source, its region, and the PNG size. */
+std::string captureSummary(const nlohmann::json &arguments,
+                           const Frame &output,
+                           int sourceWidth,
+                           int sourceHeight,
+                           size_t pngBytes)
+{
+    std::string text = std::to_string(output.width) + "x" +
+                       std::to_string(output.height) + " PNG from " +
+                       std::to_string(sourceWidth) + "x" + std::to_string(sourceHeight);
+
+    const auto region = arguments.find("region");
+    int64_t x = 0;
+    int64_t y = 0;
+    if (region != arguments.end() && region->is_object() &&
+        readInteger(*region, "x", x) && readInteger(*region, "y", y)) {
+        text += " at " + std::to_string(x) + "," + std::to_string(y);
+    }
+
+    text += ", " + std::to_string(pngBytes) + " bytes";
+    return text;
+}
+
 } // namespace
 
 nlohmann::json spawnToolDefinition()
@@ -163,6 +299,61 @@ nlohmann::json spawnToolDefinition()
     };
 }
 
+nlohmann::json supervisorCaptureToolDefinition()
+{
+    return nlohmann::json{
+        {"name", "sdl_capture"},
+        {"description",
+         "Ask the application for a fresh frame and return it as a PNG image block. "
+         "The optional region crops pixels from the full frame, using pixelWidth x "
+         "pixelHeight from sdl_info, with a top-left origin; it must fit inside the "
+         "frame and is applied before max_width downscaling. Use max_width to keep "
+         "the payload small."},
+        {"inputSchema",
+         nlohmann::json{
+             {"type", "object"},
+             {"properties", nlohmann::json{
+                  {"max_width", nlohmann::json{
+                                    {"type", "integer"},
+                                    {"minimum", kCaptureMinWidth},
+                                    {"maximum", kCaptureMaxWidth},
+                                }},
+                  {"timeout_ms", nlohmann::json{
+                                     {"type", "integer"},
+                                     {"minimum", 1},
+                                     {"maximum", 60000},
+                                 }},
+                  {"region", nlohmann::json{
+                                 {"type", "object"},
+                                 {"description",
+                                  "Crop rectangle in pixels of the full frame, "
+                                  "top-left origin."},
+                                 {"properties", nlohmann::json{
+                                      {"x", nlohmann::json{{"type", "integer"},
+                                                           {"minimum", 0}}},
+                                      {"y", nlohmann::json{{"type", "integer"},
+                                                           {"minimum", 0}}},
+                                      {"width", nlohmann::json{{"type", "integer"},
+                                                              {"minimum", 1}}},
+                                      {"height", nlohmann::json{{"type", "integer"},
+                                                                {"minimum", 1}}},
+                                  }},
+                                 {"required", nlohmann::json::array(
+                                                  {"x", "y", "width", "height"})},
+                                 {"additionalProperties", false},
+                             }},
+              }},
+             {"additionalProperties", false},
+         }},
+        {"annotations",
+         nlohmann::json{
+             {"readOnlyHint", true},
+             {"idempotentHint", false},
+             {"openWorldHint", false},
+         }},
+    };
+}
+
 nlohmann::json supervisorToolList(SupervisorState state, const nlohmann::json &childTools)
 {
     switch (state) {
@@ -172,10 +363,20 @@ nlohmann::json supervisorToolList(SupervisorState state, const nlohmann::json &c
         };
     case SupervisorState::Starting:
         return nlohmann::json{{"tools", nlohmann::json::array()}};
-    case SupervisorState::Running:
-        return nlohmann::json{
-            {"tools", childTools.is_array() ? childTools : nlohmann::json::array()},
-        };
+    case SupervisorState::Running: {
+        /* The child's sdl_capture has no max_width, so the supervisor's replaces it. */
+        nlohmann::json tools = nlohmann::json::array();
+        if (childTools.is_array()) {
+            for (const nlohmann::json &tool : childTools) {
+                if (tool.is_object() && tool.value("name", std::string()) == "sdl_capture") {
+                    tools.push_back(supervisorCaptureToolDefinition());
+                } else {
+                    tools.push_back(tool);
+                }
+            }
+        }
+        return nlohmann::json{{"tools", std::move(tools)}};
+    }
     }
     return nlohmann::json{{"tools", nlohmann::json::array()}};
 }
@@ -460,6 +661,15 @@ void Supervisor::handleToolsCall(const nlohmann::json &id, const nlohmann::json 
 
     if (state() != SupervisorState::Running) {
         writeToolResult(id, toolError("the application is not running; call spawn first"));
+        return;
+    }
+
+    /*
+      sdl_capture is the one tool the supervisor does not forward verbatim: the
+      child sends raw pixels, and the supervisor owns max_width, PNG, and base64.
+    */
+    if (toolName == "sdl_capture") {
+        writeJson(forwardCapture(id, arguments));
         return;
     }
 
@@ -816,6 +1026,123 @@ nlohmann::json Supervisor::forwardChildCall(const nlohmann::json &id,
             isError != result->end() && isError->is_boolean() && isError->get<bool>();
 
         return toolResultJson(id, forwarded);
+    }
+}
+
+nlohmann::json Supervisor::forwardCapture(const nlohmann::json &id,
+                                          const nlohmann::json &arguments)
+{
+    if (!childTransport_) {
+        return toolResultJson(id, toolError("the application is not running"));
+    }
+
+    int maxWidth = 0;
+    std::string argumentError;
+    if (!parseMaxWidth(arguments, maxWidth, argumentError)) {
+        return toolResultJson(id, toolError(std::move(argumentError)));
+    }
+
+    /* region and timeout_ms go to the child; max_width is supervisor-only. */
+    nlohmann::json forwarded = arguments;
+    forwarded.erase("max_width");
+
+    const long long requestId = nextChildRequestId_++;
+    const nlohmann::json request{
+        {"jsonrpc", "2.0"},
+        {"id", requestId},
+        {"method", "tools/call"},
+        {"params", nlohmann::json{{"name", "sdl_capture"}, {"arguments", forwarded}}},
+    };
+    if (!childTransport_->writeLine(request.dump())) {
+        return toolResultJson(id, toolError("cannot reach the application"));
+    }
+
+    for (;;) {
+        std::string line;
+        std::string error;
+        const ReadStatus status = childTransport_->readLine(line, error);
+        if (status != ReadStatus::Line) {
+            return toolResultJson(
+                id, toolError("the application closed its connection during sdl_capture"));
+        }
+
+        const nlohmann::json message = nlohmann::json::parse(line, nullptr, false);
+        if (message.is_discarded() || !message.is_object() || message.contains("method")) {
+            continue;
+        }
+        const auto responseId = message.find("id");
+        if (responseId == message.end() || *responseId != requestId) {
+            continue;
+        }
+
+        /* A JSON-RPC error from the child travels back unchanged. */
+        if (message.contains("error")) {
+            return nlohmann::json{
+                {"jsonrpc", "2.0"},
+                {"id", id},
+                {"error", message["error"]},
+            };
+        }
+
+        const auto result = message.find("result");
+        if (result == message.end() || !result->is_object()) {
+            return toolResultJson(
+                id, toolError("the application returned an invalid sdl_capture result"));
+        }
+
+        /* A text error result is the child's failure: pass it through unchanged. */
+        const auto isError = result->find("isError");
+        if (isError != result->end() && isError->is_boolean() && isError->get<bool>()) {
+            SupervisorToolResult failed;
+            const auto content = result->find("content");
+            failed.content =
+                content != result->end() ? *content : nlohmann::json::array();
+            failed.isError = true;
+            return toolResultJson(id, failed);
+        }
+
+        int sourceWidth = 0;
+        int sourceHeight = 0;
+        size_t byteLength = 0;
+        std::string headerError;
+        if (!parseCaptureHeader(*result, sourceWidth, sourceHeight, byteLength,
+                                headerError)) {
+            return toolResultJson(id, toolError(std::move(headerError)));
+        }
+
+        /* No deadline, like every other forwarded call: the child's timeout bounds it. */
+        std::vector<uint8_t> pixels;
+        if (!childTransport_->readBytes(byteLength, pixels, error)) {
+            return toolResultJson(
+                id, toolError("cannot read the frame from the application: " + error));
+        }
+
+        Frame frame;
+        frame.width = sourceWidth;
+        frame.height = sourceHeight;
+        frame.pixels = std::move(pixels);
+        if (maxWidth > 0) {
+            frame = downscaleFrame(frame, maxWidth);
+        }
+
+        const std::vector<uint8_t> png = encodePng(frame);
+        if (png.empty()) {
+            return toolResultJson(
+                id, toolError("PNG encoding failed for " + std::to_string(frame.width) +
+                              "x" + std::to_string(frame.height)));
+        }
+
+        SupervisorToolResult image;
+        image.content = nlohmann::json::array({
+            nlohmann::json{{"type", "text"},
+                           {"text", captureSummary(arguments, frame, sourceWidth,
+                                                   sourceHeight, png.size())}},
+            nlohmann::json{{"type", "image"},
+                           {"mimeType", "image/png"},
+                           {"data", base64Encode(png)}},
+        });
+        image.isError = false;
+        return toolResultJson(id, image);
     }
 }
 

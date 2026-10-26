@@ -66,7 +66,6 @@ add_library(sdl3mcp_objects OBJECT
     src/transport.cpp
     src/server.cpp
     src/stdio_isolation.cpp
-    src/stb_image_write_impl.cpp
 )
 add_library(SDL3MCP ${sdl3mcp_library_type} $<TARGET_OBJECTS:sdl3mcp_objects>)
 add_library(SDL3MCP::SDL3MCP ALIAS SDL3MCP)
@@ -105,7 +104,6 @@ target_include_directories(sdl3mcp_objects
         "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
         "$<BUILD_INTERFACE:${SDL3MCP_GENERATED_DIR}>"
     PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb"
         ${SDL3MCP_JSON_INCLUDE_DIRS}
 )
 target_include_directories(SDL3MCP PUBLIC
@@ -114,7 +112,6 @@ target_include_directories(SDL3MCP PUBLIC
     "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
 )
 target_include_directories(SDL3MCP PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb"
     ${SDL3MCP_JSON_INCLUDE_DIRS}
 )
 
@@ -125,9 +122,15 @@ endif()
 if(SDL3MCP_BUILD_SUPERVISOR)
     # The supervisor is POSIX-only: the top-level WIN32 guard above already
     # rejects Windows, and the implementation uses fork/exec and private pipes.
+    # The supervisor owns presentation: the library-to-supervisor link carries
+    # raw pixels, so downscaling, PNG, and base64 are compiled here only. stb is
+    # a private include of the supervisor objects, never of the library.
     add_library(sdl3mcp_supervisor_objects OBJECT
         supervisor/cli.cpp
         supervisor/child_process.cpp
+        supervisor/scaling.cpp
+        supervisor/png.cpp
+        supervisor/stb_image_write_impl.cpp
         supervisor/supervisor.cpp
     )
     target_compile_features(sdl3mcp_supervisor_objects PRIVATE cxx_std_20)
@@ -136,6 +139,7 @@ if(SDL3MCP_BUILD_SUPERVISOR)
             "${CMAKE_CURRENT_SOURCE_DIR}/supervisor"
         PRIVATE
             "${CMAKE_CURRENT_SOURCE_DIR}/src"
+            "${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb"
     )
     target_link_libraries(sdl3mcp_supervisor_objects
         PUBLIC

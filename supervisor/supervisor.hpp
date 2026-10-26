@@ -22,7 +22,14 @@
   single list_changed are published exactly once. Stdin EOF and SIGINT/SIGTERM
   stop the child the same SIGTERM/grace/SIGKILL way.
 
-  The supervisor never calls SDL. It only writes JSON to the child's pipes.
+  sdl_capture is the one proxied call the supervisor does not pass through
+  verbatim: the library answers with a raw RGBA header and payload, and the
+  supervisor downscales to max_width, encodes PNG, and base64s it so the
+  client-facing image block stays standard. tools/list therefore advertises the
+  supervisor's own sdl_capture definition while running.
+
+  The supervisor never calls SDL. It only writes JSON to the child's pipes and
+  reads its lines and raw frames.
 */
 
 #ifndef SDL3MCP_SUPERVISOR_SUPERVISOR_HPP
@@ -64,13 +71,18 @@ struct SupervisorToolResult
 
 /*
   The tools/list body for a state: `spawn` alone while idle, nothing while the
-  child starts, and exactly the committed child tools while running. Exposed so
-  the Starting view is testable without racing a live spawn.
+  child starts, and the committed child tools while running. While running,
+  sdl_capture is replaced with the supervisor's own definition because
+  downscaling is supervisor policy; every other tool keeps the child's entry
+  verbatim. Exposed so the Starting view is testable without racing a live spawn.
 */
 nlohmann::json supervisorToolList(SupervisorState state, const nlohmann::json &childTools);
 
 /* The spawn tool as advertised while idle. */
 nlohmann::json spawnToolDefinition();
+
+/* The sdl_capture the supervisor advertises while running, with max_width. */
+nlohmann::json supervisorCaptureToolDefinition();
 
 class Supervisor
 {
@@ -121,6 +133,13 @@ private:
     nlohmann::json forwardChildCall(const nlohmann::json &id,
                                     const std::string &name,
                                     const nlohmann::json &arguments);
+    /*
+      sdl_capture is forwarded specially: the child answers the raw header plus
+      pixel bytes, and the supervisor downscales, PNG-encodes, and base64-encodes
+      before replying with the usual image block.
+    */
+    nlohmann::json forwardCapture(const nlohmann::json &id,
+                                  const nlohmann::json &arguments);
 
     bool writeJson(const nlohmann::json &message);
     void sendToolsListChanged();

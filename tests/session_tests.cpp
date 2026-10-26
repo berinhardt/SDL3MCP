@@ -381,10 +381,9 @@ void testCaptureSchema()
     /* No top-level required member: every parameter is optional. */
     CHECK(!schema.contains("required"));
 
-    const nlohmann::json &maxWidth = schema["properties"]["max_width"];
-    CHECK(maxWidth["type"] == "integer");
-    CHECK(maxWidth["minimum"] == 16);
-    CHECK(maxWidth["maximum"] == 16384);
+    /* max_width is supervisor policy: the library schema does not advertise it. */
+    CHECK(!schema["properties"].contains("max_width"));
+    CHECK(schema["properties"].size() == 2);
 
     const nlohmann::json &timeout = schema["properties"]["timeout_ms"];
     CHECK(timeout["type"] == "integer");
@@ -481,11 +480,11 @@ void testToolCalls()
         /* The request id keeps its JSON type. */
         const SessionResult result = dispatch(
             session,
-            R"({"jsonrpc":"2.0","id":"cap","method":"tools/call","params":{"name":"sdl_capture","arguments":{"max_width":1280}}})");
+            R"({"jsonrpc":"2.0","id":"cap","method":"tools/call","params":{"name":"sdl_capture","arguments":{"timeout_ms":1280}}})");
         CHECK(result.toolCall.has_value());
         CHECK(result.toolCall->id.is_string());
         CHECK(result.toolCall->id == "cap");
-        CHECK(result.toolCall->arguments["max_width"] == 1280);
+        CHECK(result.toolCall->arguments["timeout_ms"] == 1280);
     }
     {
         /* The session only dispatches; it never executes a tool. */

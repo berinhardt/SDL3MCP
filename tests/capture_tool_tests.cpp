@@ -1,7 +1,7 @@
 /*
   The capture path end to end through the public API: JSON-RPC on pipes, the
   session, the capture state, SDL3MCP_FrameRequested/WriteFrame on the app
-  thread, the pure frame pipeline, and sdl_info reporting the resulting stats.
+  thread, the library's crop, and sdl_info reporting the resulting stats.
 
   The dummy video driver gives us a real software renderer with no display. The
   app loop clears a known color every iteration, answers a pending request by
@@ -9,10 +9,10 @@
   presents. The client runs on its own thread because sdl_capture blocks until
   the app answers.
 
-  The two successful captures prove the two interesting shapes: a region is
-  cropped before any downscale, and no region returns the full drawable size.
-  The PNG header is checked directly, so a wrong crop or a wrong surface
-  conversion cannot hide behind a valid image block.
+  A capture is one JSON-RPC result line naming format/width/height/byteLength,
+  immediately followed by exactly that many raw RGBA bytes. The checks here read
+  the payload back for a known colour, so a wrong crop, a wrong surface
+  conversion, or a stray newline cannot hide behind a valid-looking header.
 */
 
 #include <SDL3MCP/SDL3MCP.h>
@@ -82,18 +82,23 @@ void writeAll(int fd, std::string_view data)
     }
 }
 
-/* Reads one newline-terminated line, failing instead of hanging on a dead server. */
-std::string readLine(int fd, std::chrono::milliseconds timeout = 10000ms)
+void writeLine(int fd, const nlohmann::json &message)
 {
+    writeAll(fd, message.dump() + "\n");
+}
+
+/*
+  Reads framed messages from the server: one line at a time, or exactly the
+  announced number of raw frame bytes. Anything read past a newline stays in
+  `pending` for the next call.
+*/
+struct MessageReader
+{
+    int fd = -1;
     std::string pending;
-    const auto deadline = std::chrono::steady_clock::now() + timeout;
 
-    for (;;) {
-        const std::size_t newline = pending.find('\n');
-        if (newline != std::string::npos) {
-            return pending.substr(0, newline);
-        }
-
+    void fill(std::chrono::steady_clock::time_point deadline)
+    {
         const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
             deadline - std::chrono::steady_clock::now());
         CHECK(remaining > 0ms);
@@ -103,7 +108,7 @@ std::string readLine(int fd, std::chrono::milliseconds timeout = 10000ms)
         descriptor.events = POLLIN;
         const int ready = ::poll(&descriptor, 1, static_cast<int>(remaining.count()));
         if (ready < 0 && errno == EINTR) {
-            continue;
+            return;
         }
         CHECK(ready > 0);
 
@@ -112,91 +117,119 @@ std::string readLine(int fd, std::chrono::milliseconds timeout = 10000ms)
         CHECK(count > 0);
         pending.append(chunk, static_cast<std::size_t>(count));
     }
-}
 
-void writeLine(int fd, const nlohmann::json &message)
+    std::string readLine(std::chrono::milliseconds timeout = 10000ms)
+    {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        for (;;) {
+            const std::size_t newline = pending.find('\n');
+            if (newline != std::string::npos) {
+                std::string line = pending.substr(0, newline);
+                pending.erase(0, newline + 1);
+                return line;
+            }
+            fill(deadline);
+        }
+    }
+
+    void readExact(std::size_t count, std::vector<uint8_t> &out)
+    {
+        out.clear();
+        out.reserve(count);
+
+        const std::size_t buffered = std::min(count, pending.size());
+        out.insert(out.end(), pending.begin(),
+                   pending.begin() + static_cast<std::ptrdiff_t>(buffered));
+        pending.erase(0, buffered);
+
+        const auto deadline = std::chrono::steady_clock::now() + 10000ms;
+        while (out.size() < count) {
+            if (pending.empty()) {
+                fill(deadline);
+            }
+            const std::size_t take = std::min(count - out.size(), pending.size());
+            out.insert(out.end(), pending.begin(),
+                       pending.begin() + static_cast<std::ptrdiff_t>(take));
+            pending.erase(0, take);
+        }
+    }
+};
+
+/* One capture: the validated result line plus the bytes that followed it. */
+struct CaptureResponse
 {
-    writeAll(fd, message.dump() + "\n");
+    nlohmann::json header;
+    std::vector<uint8_t> pixels;
+};
+
+CaptureResponse readCapture(MessageReader &reader, int id)
+{
+    const nlohmann::json message = nlohmann::json::parse(reader.readLine());
+    CHECK(message["jsonrpc"] == "2.0");
+    CHECK(message["id"] == id);
+    CHECK(message.contains("result"));
+
+    const nlohmann::json &result = message["result"];
+    CHECK(result["format"] == "rgba8888");
+    CHECK(result["width"].is_number_integer());
+    CHECK(result["height"].is_number_integer());
+    CHECK(result["byteLength"].is_number_integer());
+
+    CaptureResponse capture;
+    capture.header = result;
+    const std::size_t byteLength = result["byteLength"].get<std::size_t>();
+    CHECK(byteLength == static_cast<std::size_t>(result["width"].get<int>()) *
+                            static_cast<std::size_t>(result["height"].get<int>()) * 4);
+    reader.readExact(byteLength, capture.pixels);
+    return capture;
 }
 
-nlohmann::json call(int requestsFd, int responsesFd, int id, const std::string &name,
+void requestCapture(int requestsFd, int id, nlohmann::json arguments)
+{
+    writeLine(requestsFd, nlohmann::json{
+                              {"jsonrpc", "2.0"},
+                              {"id", id},
+                              {"method", "tools/call"},
+                              {"params", nlohmann::json{{"name", "sdl_capture"},
+                                                        {"arguments", std::move(arguments)}}},
+                          });
+}
+
+nlohmann::json call(int requestsFd,
+                    MessageReader &reader,
+                    int id,
+                    const std::string &name,
                     nlohmann::json arguments)
 {
-    const nlohmann::json request{
-        {"jsonrpc", "2.0"},
-        {"id", id},
-        {"method", "tools/call"},
-        {"params", nlohmann::json{{"name", name}, {"arguments", std::move(arguments)}}},
-    };
-    writeLine(requestsFd, request);
-    return nlohmann::json::parse(readLine(responsesFd));
+    writeLine(requestsFd, nlohmann::json{
+                              {"jsonrpc", "2.0"},
+                              {"id", id},
+                              {"method", "tools/call"},
+                              {"params", nlohmann::json{{"name", name},
+                                                        {"arguments", std::move(arguments)}}},
+                          });
+    return nlohmann::json::parse(reader.readLine());
 }
 
-int base64Value(char character)
+/* The app clears with this colour every frame. */
+constexpr std::array<uint8_t, 4> kClearColor{10, 20, 30, 255};
+
+bool isClearColor(const std::vector<uint8_t> &pixels, std::size_t index)
 {
-    if (character >= 'A' && character <= 'Z') {
-        return character - 'A';
-    }
-    if (character >= 'a' && character <= 'z') {
-        return character - 'a' + 26;
-    }
-    if (character >= '0' && character <= '9') {
-        return character - '0' + 52;
-    }
-    if (character == '+') {
-        return 62;
-    }
-    if (character == '/') {
-        return 63;
-    }
-    return -1;
+    const std::size_t offset = index * 4;
+    CHECK(offset + 4 <= pixels.size());
+    return std::array<uint8_t, 4>{pixels[offset], pixels[offset + 1],
+                                  pixels[offset + 2], pixels[offset + 3]} == kClearColor;
 }
 
-std::vector<uint8_t> base64Decode(std::string_view text)
+bool allPixelsAreClearColor(const std::vector<uint8_t> &pixels)
 {
-    std::vector<uint8_t> decoded;
-    uint32_t buffer = 0;
-    int bits = 0;
-
-    for (const char character : text) {
-        if (character == '=') {
-            break;
-        }
-        const int value = base64Value(character);
-        CHECK(value >= 0);
-        buffer = (buffer << 6) | static_cast<uint32_t>(value);
-        bits += 6;
-        if (bits >= 8) {
-            bits -= 8;
-            decoded.push_back(static_cast<uint8_t>((buffer >> bits) & 0xFFu));
-            buffer &= (1u << bits) - 1u;
+    for (std::size_t index = 0; index < pixels.size() / 4; ++index) {
+        if (!isClearColor(pixels, index)) {
+            return false;
         }
     }
-    return decoded;
-}
-
-uint32_t readBigEndian32(const std::vector<uint8_t> &data, std::size_t offset)
-{
-    CHECK(offset + 4 <= data.size());
-    return (static_cast<uint32_t>(data[offset]) << 24) |
-           (static_cast<uint32_t>(data[offset + 1]) << 16) |
-           (static_cast<uint32_t>(data[offset + 2]) << 8) |
-           static_cast<uint32_t>(data[offset + 3]);
-}
-
-bool isPngWithSize(const std::vector<uint8_t> &png, uint32_t width, uint32_t height)
-{
-    constexpr std::array<uint8_t, 8> signature{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
-    if (png.size() < 33) {
-        return false;
-    }
-    if (!std::equal(signature.begin(), signature.end(), png.begin())) {
-        return false;
-    }
-    if (png[12] != 'I' || png[13] != 'H' || png[14] != 'D' || png[15] != 'R') {
-        return false;
-    }
-    return readBigEndian32(png, 16) == width && readBigEndian32(png, 20) == height;
+    return true;
 }
 
 nlohmann::json parseInfo(const nlohmann::json &response)
@@ -210,81 +243,69 @@ nlohmann::json parseInfo(const nlohmann::json &response)
 }
 
 /* The client half: one ordered conversation, asserted response by response. */
-void runClient(int requestsFd, int responsesFd)
+void runClient(int requestsFd, MessageReader &reader)
 {
     writeAll(requestsFd, R"({"jsonrpc":"2.0","id":1,"method":"initialize",)"
                          R"("params":{"protocolVersion":"2025-11-25"}})" "\n");
-    const nlohmann::json initialized = nlohmann::json::parse(readLine(responsesFd));
+    const nlohmann::json initialized = nlohmann::json::parse(reader.readLine());
     CHECK(initialized["id"] == 1);
     CHECK(initialized["result"]["protocolVersion"] == "2025-11-25");
 
     writeAll(requestsFd, R"({"jsonrpc":"2.0","method":"notifications/initialized"})" "\n");
 
+    /* A region crops in the library, so the framed dimensions are the region's. */
     nlohmann::json region;
     region["x"] = 0;
     region["y"] = 0;
     region["width"] = 10;
     region["height"] = 10;
-    nlohmann::json regionArguments;
-    regionArguments["region"] = region;
+    requestCapture(requestsFd, 2, nlohmann::json{{"region", region}});
+    const CaptureResponse cropped = readCapture(reader, 2);
+    CHECK(cropped.header["width"] == 10);
+    CHECK(cropped.header["height"] == 10);
+    CHECK(cropped.header["byteLength"] == 10 * 10 * 4);
+    CHECK(cropped.pixels.size() == 10 * 10 * 4);
+    CHECK(allPixelsAreClearColor(cropped.pixels));
 
-    const nlohmann::json cropped =
-        call(requestsFd, responsesFd, 2, "sdl_capture", regionArguments);
-    CHECK(cropped["result"]["isError"] == false);
-    const nlohmann::json &croppedContent = cropped["result"]["content"];
-    CHECK(croppedContent.is_array());
-    CHECK(croppedContent.size() == 2);
-    CHECK(croppedContent[0]["type"] == "text");
-    CHECK(croppedContent[1]["type"] == "image");
-    CHECK(croppedContent[1]["mimeType"] == "image/png");
-
-    const std::string croppedText = croppedContent[0]["text"].get<std::string>();
-    CHECK(croppedText.find("10x10") != std::string::npos);
-    CHECK(croppedText.find("from 10x10 at 0,0") != std::string::npos);
-    CHECK(isPngWithSize(
-        base64Decode(croppedContent[1]["data"].get<std::string>()), 10, 10));
-
-    const nlohmann::json full =
-        call(requestsFd, responsesFd, 3, "sdl_capture", nlohmann::json::object());
-    CHECK(full["result"]["isError"] == false);
-    const nlohmann::json &fullContent = full["result"]["content"];
-    CHECK(fullContent.is_array());
-    CHECK(fullContent.size() == 2);
-    CHECK(fullContent[0]["type"] == "text");
-    CHECK(fullContent[1]["type"] == "image");
-    CHECK(fullContent[1]["mimeType"] == "image/png");
-
-    const std::string fullText = fullContent[0]["text"].get<std::string>();
-    CHECK(fullText.rfind("64x64 PNG", 0) == 0);
-    CHECK(isPngWithSize(base64Decode(fullContent[1]["data"].get<std::string>()), 64, 64));
+    /* No region returns the full drawable size with exactly one payload. */
+    requestCapture(requestsFd, 3, nlohmann::json::object());
+    const CaptureResponse full = readCapture(reader, 3);
+    CHECK(full.header["width"] == 64);
+    CHECK(full.header["height"] == 64);
+    CHECK(full.header["byteLength"] == 64 * 64 * 4);
+    CHECK(full.pixels.size() == 64 * 64 * 4);
+    CHECK(allPixelsAreClearColor(full.pixels));
+    CHECK(reader.pending.empty());
 
     const nlohmann::json info =
-        parseInfo(call(requestsFd, responsesFd, 4, "sdl_info", nlohmann::json::object()));
+        parseInfo(call(requestsFd, reader, 4, "sdl_info", nlohmann::json::object()));
     CHECK(info["capture"]["count"].get<uint64_t>() >= 2);
     CHECK(info["capture"]["lastWidth"] == 64);
     CHECK(info["capture"]["lastHeight"] == 64);
-    CHECK(info["capture"]["lastBytes"].get<uint64_t>() > 0);
+    /* lastBytes is the raw RGBA size of the last frame, not a PNG size. */
+    CHECK(info["capture"]["lastBytes"].get<uint64_t>() == 64u * 64u * 4u);
     CHECK(info["capture"]["pending"] == false);
 
     /* Invalid arguments fail before a request is started. */
     const nlohmann::json unknown =
-        call(requestsFd, responsesFd, 5, "sdl_capture", nlohmann::json{{"bogus", 1}});
+        call(requestsFd, reader, 5, "sdl_capture", nlohmann::json{{"bogus", 1}});
     CHECK(unknown["result"]["isError"] == true);
 
     nlohmann::json badRegion;
     badRegion["x"] = 0;
     badRegion["y"] = 0;
     badRegion["width"] = 10;
-    const nlohmann::json missingHeight = call(requestsFd, responsesFd, 6, "sdl_capture",
-                                              nlohmann::json{{"region", badRegion}});
+    const nlohmann::json missingHeight =
+        call(requestsFd, reader, 6, "sdl_capture", nlohmann::json{{"region", badRegion}});
     CHECK(missingHeight["result"]["isError"] == true);
 
-    const nlohmann::json tooNarrow =
-        call(requestsFd, responsesFd, 7, "sdl_capture", nlohmann::json{{"max_width", 15}});
-    CHECK(tooNarrow["result"]["isError"] == true);
+    /* max_width is supervisor policy now: a direct library client may not send it. */
+    const nlohmann::json maxWidth =
+        call(requestsFd, reader, 7, "sdl_capture", nlohmann::json{{"max_width", 320}});
+    CHECK(maxWidth["result"]["isError"] == true);
 
     const nlohmann::json afterInvalid =
-        parseInfo(call(requestsFd, responsesFd, 8, "sdl_info", nlohmann::json::object()));
+        parseInfo(call(requestsFd, reader, 8, "sdl_info", nlohmann::json::object()));
     CHECK(afterInvalid["capture"]["pending"] == false);
 }
 
@@ -297,7 +318,8 @@ void writeFrameIfRequested(SDL_Renderer *renderer, SDL_Window *window)
 
     SDL_Surface *surface = SDL_RenderReadPixels(renderer, nullptr);
     CHECK(surface != nullptr);
-    SDL_Surface *rgba = SDL_ConvertSurface(surface, SDL_PIXELFORMAT_RGBA8888);
+    /* RGBA32 is the byte-order alias for bytes R,G,B,A, which is what WriteFrame wants. */
+    SDL_Surface *rgba = SDL_ConvertSurface(surface, SDL_PIXELFORMAT_RGBA32);
     SDL_DestroySurface(surface);
     CHECK(rgba != nullptr);
 
@@ -353,15 +375,19 @@ int main()
     CHECK(SDL3MCP_AppInit(&configuration, 0, nullptr) == SDL_APP_CONTINUE);
     CHECK(SDL3MCP_SetWindow(window) == SDL_APP_CONTINUE);
 
+    MessageReader reader;
+    reader.fd = responses.readFd;
+
     std::atomic<bool> clientDone{false};
-    std::thread client([&requests, &responses, &clientDone] {
-        runClient(requests.writeFd, responses.readFd);
+    std::thread client([&requests, &reader, &clientDone] {
+        runClient(requests.writeFd, reader);
         clientDone.store(true);
     });
 
     const auto deadline = std::chrono::steady_clock::now() + 30s;
     while (!clientDone.load() && std::chrono::steady_clock::now() < deadline) {
-        CHECK(SDL_SetRenderDrawColor(renderer, 10, 20, 30, 255));
+        CHECK(SDL_SetRenderDrawColor(renderer, kClearColor[0], kClearColor[1],
+                                     kClearColor[2], kClearColor[3]));
         CHECK(SDL_RenderClear(renderer));
         writeFrameIfRequested(renderer, window);
         CHECK(SDL_RenderPresent(renderer));

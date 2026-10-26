@@ -263,6 +263,34 @@ endif()
 # The supervisor tests drive the real executable over pipes, with a fake child
 # that speaks MCP without SDL, so no window or video driver is involved.
 if(SDL3MCP_BUILD_SUPERVISOR)
+    add_executable(sdl3mcp_test_supervisor_scaling supervisor_scaling_tests.cpp)
+    target_compile_features(sdl3mcp_test_supervisor_scaling PRIVATE cxx_std_20)
+    target_include_directories(sdl3mcp_test_supervisor_scaling PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../supervisor"
+    )
+    target_link_libraries(sdl3mcp_test_supervisor_scaling PRIVATE
+        sdl3mcp_supervisor_objects
+        sdl3mcp_objects
+        SDL3::SDL3
+        Threads::Threads
+    )
+    add_test(NAME supervisor_scaling_tests COMMAND sdl3mcp_test_supervisor_scaling)
+
+    add_executable(sdl3mcp_test_supervisor_png supervisor_png_tests.cpp)
+    target_compile_features(sdl3mcp_test_supervisor_png PRIVATE cxx_std_20)
+    target_include_directories(sdl3mcp_test_supervisor_png PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../supervisor"
+    )
+    target_link_libraries(sdl3mcp_test_supervisor_png PRIVATE
+        sdl3mcp_supervisor_objects
+        sdl3mcp_objects
+        SDL3::SDL3
+        Threads::Threads
+    )
+    add_test(NAME supervisor_png_tests COMMAND sdl3mcp_test_supervisor_png)
+
     add_executable(sdl3mcp_fake_child supervisor_fake_child.cpp)
     target_compile_features(sdl3mcp_fake_child PRIVATE cxx_std_20)
     target_link_libraries(sdl3mcp_fake_child PRIVATE nlohmann_json::nlohmann_json)

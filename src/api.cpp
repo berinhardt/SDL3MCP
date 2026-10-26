@@ -13,42 +13,61 @@
   private duplicates of the original stdin/stdout so a host printf can no longer
   corrupt the JSON-RPC stream.
 
-  Tool execution for sdl_input and sdl_capture is deliberately still a stub and
-  arrives on its own steps; sdl_info is answered from a copied snapshot.
+  sdl_input runs on the server thread and only fills the input queue; the app
+  thread turns a taken batch into SDL events in AppIterate. sdl_capture is still
+  a stub and arrives on its own step; sdl_info is answered from a copied
+  snapshot.
 */
 
 #include <SDL3MCP/SDL3MCP.h>
 
+#include "app_input.hpp"
 #include "configuration.hpp"
 #include "info.hpp"
+#include "input_json.hpp"
 #include "keymap.hpp"
+#include "mouse.hpp"
 #include "queue.hpp"
+#include "replay.hpp"
 #include "server.hpp"
 #include "session.hpp"
 #include "stdio_isolation.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <exception>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
 namespace
 {
 
+using sdl3mcp::AppliedBatchPlan;
 using sdl3mcp::Configuration;
 using sdl3mcp::InfoSnapshot;
+using sdl3mcp::InputBatch;
+using sdl3mcp::InputOutcome;
 using sdl3mcp::InputQueue;
+using sdl3mcp::InputStatus;
 using sdl3mcp::KeyMap;
+using sdl3mcp::KeyReplayer;
+using sdl3mcp::MouseButton;
+using sdl3mcp::MouseMetrics;
+using sdl3mcp::MouseReplayer;
 using sdl3mcp::Server;
 using sdl3mcp::Session;
 using sdl3mcp::StdioIsolation;
+using sdl3mcp::TakenBatch;
 using sdl3mcp::ToolCall;
 using sdl3mcp::ToolHandler;
 using sdl3mcp::ToolResult;
@@ -59,12 +78,19 @@ constexpr const char *kToolStubMessage = "tool execution is not implemented yet"
 struct LibraryState
 {
     explicit LibraryState(Configuration configuration)
-        : configuration(std::move(configuration))
+        : configuration(std::move(configuration)),
+          keyReplayer(keyMap, 0),
+          mouseReplayer(0, MouseMetrics{})
     {
     }
 
     Configuration configuration;
     KeyMap keyMap;
+
+    /* App thread only: replay state committed by the next applied batch. */
+    KeyReplayer keyReplayer;
+    MouseReplayer mouseReplayer;
+
     InputQueue inputQueue;
     Session session;
     StdioIsolation isolation;
@@ -74,7 +100,17 @@ struct LibraryState
 
     /* App thread only. The server thread has no way to reach it. */
     SDL_Window *window = nullptr;
+    SDL_WindowID windowID = 0;
     uint64_t frameCounter = 0;
+    uint64_t appliedFrame = 0;
+
+    /*
+      The batch taken this frame. It stays here until the frame after it was
+      applied, because its text strings are what the pushed text events point at.
+    */
+    std::optional<TakenBatch> pendingBatch;
+    bool pendingNeedsComplete = false;
+    uint64_t pendingAppliedFrame = 0;
 
     /*
       The sdl_info payload. The app thread is the only writer because every
@@ -156,15 +192,192 @@ ToolResult textResult(std::string text, bool isError)
     return result;
 }
 
+/* The wire name of a held button, matching the sdl_info example. */
+std::string_view buttonName(MouseButton button)
+{
+    switch (button) {
+    case MouseButton::Left:
+        return "left";
+    case MouseButton::Middle:
+        return "middle";
+    case MouseButton::Right:
+        return "right";
+    case MouseButton::X1:
+        return "x1";
+    case MouseButton::X2:
+        return "x2";
+    }
+    return {};
+}
+
+/* App thread only. Releases held input, pushing the events only for a window. */
+void releaseHeldInput(LibraryState &state)
+{
+    std::vector<SDL_Event> events;
+    const Uint64 timestamp = SDL_GetTicksNS();
+    state.keyReplayer.releaseAllKeys(timestamp, events);
+    state.mouseReplayer.releaseAllButtons(timestamp, events);
+
+    if (state.windowID != 0) {
+        for (SDL_Event &event : events) {
+            SDL_PushEvent(&event);
+        }
+    }
+    SDL_SetModState(state.keyReplayer.modifiers());
+}
+
 /*
-  The server thread dispatcher. sdl_info answers from the published copy;
-  the other two tools are not implemented yet. Neither branch touches SDL.
+  App thread only. Completes the previous batch one frame after it was applied,
+  which is when the app has consumed its events and the text may be freed.
 */
-ToolHandler makeToolHandler(const LibraryState *state)
+void completePendingBatch(LibraryState &state, uint64_t frame)
+{
+    if (!state.pendingBatch.has_value() || frame <= state.pendingAppliedFrame) {
+        return;
+    }
+    if (state.pendingNeedsComplete) {
+        state.inputQueue.complete(state.pendingBatch->seq);
+    }
+    state.pendingBatch.reset();
+}
+
+/* True when every event reached SDL's queue; modifiers are mirrored either way. */
+bool pushPlanEvents(const LibraryState &state, AppliedBatchPlan &plan)
+{
+    bool allPushed = true;
+    for (std::size_t index = 0; index < plan.eventsByAction.size(); ++index) {
+        const std::optional<SDL_FPoint> &warp = plan.warpsByAction[index];
+        if (warp.has_value() && state.window != nullptr) {
+            SDL_WarpMouseInWindow(state.window, warp->x, warp->y);
+        }
+        for (SDL_Event &event : plan.eventsByAction[index]) {
+            if (!SDL_PushEvent(&event)) {
+                allPushed = false;
+                break;
+            }
+        }
+        if (!allPushed) {
+            break;
+        }
+    }
+    SDL_SetModState(state.keyReplayer.modifiers());
+    return allPushed;
+}
+
+/*
+  App thread only. Takes at most one batch per frame, builds its plan, and either
+  publishes it to SDL's queue or fails it back to the waiting sdl_input call.
+*/
+void applyNextBatch(LibraryState &state, uint64_t frame)
+{
+    std::optional<TakenBatch> taken = state.inputQueue.takeBatch();
+    if (!taken.has_value()) {
+        return;
+    }
+
+    /* Move before building: the plan's text events borrow this batch's strings. */
+    state.pendingBatch = std::move(taken);
+    const TakenBatch &pending = *state.pendingBatch;
+
+    const bool textInputActive = state.window != nullptr && SDL_TextInputActive(state.window);
+    AppliedBatchPlan plan{state.keyReplayer, state.mouseReplayer};
+    std::string error;
+    if (!sdl3mcp::buildBatchPlan(pending.batch, state.keyReplayer, state.mouseReplayer,
+                                 state.windowID, textInputActive, SDL_GetTicksNS(), plan,
+                                 error)) {
+        state.inputQueue.markApplied(pending.seq, frame, std::move(error));
+        state.pendingBatch.reset();
+        return;
+    }
+
+    state.keyReplayer = plan.keyState;
+    state.mouseReplayer = plan.mouseState;
+
+    if (!pushPlanEvents(state, plan)) {
+        /* Nothing was rolled back; only the acknowledgement is missing. */
+        state.inputQueue.markApplied(pending.seq, frame, std::string("SDL event queue full"));
+        state.pendingNeedsComplete = false;
+        return;
+    }
+
+    state.appliedFrame = frame;
+    state.inputQueue.markApplied(pending.seq, frame, std::nullopt);
+    state.pendingNeedsComplete = true;
+    state.pendingAppliedFrame = frame;
+}
+
+/* App thread only. Rewrites the snapshot the server thread may read at any time. */
+void publishSnapshot(LibraryState &state, uint64_t frame)
+{
+    InfoSnapshot snapshot = state.snapshotInfo();
+    snapshot.frame = frame;
+    snapshot.appliedFrame = state.appliedFrame;
+
+    snapshot.heldKeys.clear();
+    for (const SDL_Scancode scancode : state.keyReplayer.heldKeys()) {
+        const std::string_view name = state.keyMap.canonicalName(scancode);
+        if (!name.empty()) {
+            snapshot.heldKeys.emplace_back(name);
+        }
+    }
+    snapshot.heldButtons.clear();
+    for (const MouseButton button : state.mouseReplayer.heldButtons()) {
+        snapshot.heldButtons.emplace_back(buttonName(button));
+    }
+
+    WindowInfo window;
+    if (state.window != nullptr && measureWindow(state.window, window)) {
+        snapshot.window = std::move(window);
+    }
+    state.publishInfo(std::move(snapshot));
+}
+
+/* Server thread: parses the arguments, queues the batch, and waits for the app. */
+ToolResult inputResult(LibraryState &state, const ToolCall &call)
+{
+    std::string error;
+    std::optional<InputBatch> batch = sdl3mcp::parseInputArguments(call.arguments, error);
+    if (!batch.has_value()) {
+        return textResult(std::move(error), true);
+    }
+
+    const std::size_t actionCount = batch->actions.size();
+    const auto timeout = std::chrono::milliseconds(state.configuration.value().frame_timeout_ms);
+    InputOutcome outcome;
+    state.inputQueue.submit(std::move(*batch), timeout, outcome);
+
+    switch (outcome.status) {
+    case InputStatus::Applied:
+        return textResult(std::to_string(actionCount) + " actions applied at frame " +
+                              std::to_string(outcome.appliedFrame),
+                          false);
+    case InputStatus::AppliedUnconfirmed:
+        return textResult("applied at frame " + std::to_string(outcome.appliedFrame) +
+                              " but not confirmed before the timeout",
+                          true);
+    case InputStatus::Cancelled:
+        return textResult("input not applied; is SDL3MCP_AppIterate called every loop?", true);
+    case InputStatus::Failed:
+        return textResult(outcome.error, true);
+    case InputStatus::Stopped:
+        return textResult("SDL3MCP is shutting down", true);
+    }
+    return textResult("unknown input outcome", true);
+}
+
+/*
+  The server thread dispatcher. sdl_info answers from the published copy and
+  sdl_input blocks in the queue; capture is not implemented yet. Only the queue
+  crosses the boundary, never SDL.
+*/
+ToolHandler makeToolHandler(LibraryState *state)
 {
     return [state](const ToolCall &call) {
         if (call.name == "sdl_info") {
             return textResult(sdl3mcp::infoToJson(state->snapshotInfo()).dump(2), false);
+        }
+        if (call.name == "sdl_input") {
+            return inputResult(*state, call);
         }
         return textResult(kToolStubMessage, true);
     };
@@ -180,6 +393,7 @@ void teardownState() noexcept
     if (g_state) {
         try {
             g_state->inputQueue.stop();
+            releaseHeldInput(*g_state);
             if (g_state->server) {
                 g_state->server->stop();
                 g_state->server->join();
@@ -278,6 +492,12 @@ extern "C" SDL_DECLSPEC SDL_AppResult SDLCALL SDL3MCP_SetWindow(SDL_Window *wind
 
         if (window == nullptr) {
             g_state->window = nullptr;
+            g_state->windowID = 0;
+            g_state->keyReplayer.reset();
+            g_state->keyReplayer.setWindowID(0);
+            g_state->mouseReplayer.reset();
+            g_state->mouseReplayer.setWindowID(0);
+
             InfoSnapshot snapshot = g_state->snapshotInfo();
             snapshot.window = WindowInfo{};
             g_state->publishInfo(std::move(snapshot));
@@ -295,7 +515,22 @@ extern "C" SDL_DECLSPEC SDL_AppResult SDLCALL SDL3MCP_SetWindow(SDL_Window *wind
             return SDL_APP_FAILURE;
         }
 
+        /* A rebind starts from clean input state: nothing held crosses windows. */
+        const SDL_WindowID windowID = SDL_GetWindowID(window);
         g_state->window = window;
+        g_state->windowID = windowID;
+        g_state->keyReplayer.setWindowID(windowID);
+        g_state->keyReplayer.reset();
+        g_state->mouseReplayer.setWindowID(windowID);
+        g_state->mouseReplayer.setMetrics(MouseMetrics{
+            static_cast<float>(info.width), static_cast<float>(info.height),
+            info.relativeMouseMode, g_state->configuration.value().warp_cursor});
+        g_state->mouseReplayer.reset();
+        float mouseX = 0.0F;
+        float mouseY = 0.0F;
+        SDL_GetMouseState(&mouseX, &mouseY);
+        g_state->mouseReplayer.setCursor(mouseX, mouseY);
+
         InfoSnapshot snapshot = g_state->snapshotInfo();
         snapshot.window = std::move(info);
         const char *driver = SDL_GetCurrentVideoDriver();
@@ -325,14 +560,13 @@ extern "C" SDL_DECLSPEC SDL_AppResult SDLCALL SDL3MCP_AppIterate(void)
         }
 
         ++g_state->frameCounter;
+        const uint64_t frame = g_state->frameCounter;
 
-        InfoSnapshot snapshot = g_state->snapshotInfo();
-        snapshot.frame = g_state->frameCounter;
-        WindowInfo window;
-        if (g_state->window != nullptr && measureWindow(g_state->window, window)) {
-            snapshot.window = std::move(window);
+        completePendingBatch(*g_state, frame);
+        if (!g_state->pendingBatch.has_value()) {
+            applyNextBatch(*g_state, frame);
         }
-        g_state->publishInfo(std::move(snapshot));
+        publishSnapshot(*g_state, frame);
 
         return SDL_APP_CONTINUE;
     } catch (const std::exception &exception) {

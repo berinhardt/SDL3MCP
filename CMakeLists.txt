@@ -34,6 +34,7 @@ add_library(SDL3MCP ${sdl3mcp_library_type}
     src/input_json.cpp
     src/mouse.cpp
     src/replay.cpp
+    src/app_input.cpp
     src/queue.cpp
     src/json_rpc.cpp
     src/tools.cpp

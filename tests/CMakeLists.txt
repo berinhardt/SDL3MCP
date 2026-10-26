@@ -75,6 +75,33 @@ target_link_libraries(sdl3mcp_test_queue PRIVATE
 )
 add_test(NAME queue_tests COMMAND sdl3mcp_test_queue)
 
+add_executable(sdl3mcp_test_app_input app_input_tests.cpp)
+target_compile_features(sdl3mcp_test_app_input PRIVATE cxx_std_20)
+target_include_directories(sdl3mcp_test_app_input PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+)
+target_link_libraries(sdl3mcp_test_app_input PRIVATE
+    SDL3MCP::SDL3MCP
+    SDL3::SDL3
+    nlohmann_json::nlohmann_json
+    Threads::Threads
+)
+add_test(NAME app_input_tests COMMAND sdl3mcp_test_app_input)
+
+add_executable(sdl3mcp_test_input_tool input_tool_tests.cpp)
+target_compile_features(sdl3mcp_test_input_tool PRIVATE cxx_std_20)
+target_include_directories(sdl3mcp_test_input_tool PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+)
+target_link_libraries(sdl3mcp_test_input_tool PRIVATE
+    SDL3MCP::SDL3MCP
+    SDL3::SDL3
+    nlohmann_json::nlohmann_json
+    Threads::Threads
+)
+add_test(NAME input_tool_tests COMMAND sdl3mcp_test_input_tool)
+set_tests_properties(input_tool_tests PROPERTIES ENVIRONMENT "SDL_VIDEODRIVER=dummy")
+
 add_executable(sdl3mcp_test_json_rpc json_rpc_tests.cpp)
 target_compile_features(sdl3mcp_test_json_rpc PRIVATE cxx_std_20)
 target_include_directories(sdl3mcp_test_json_rpc PRIVATE

@@ -173,6 +173,33 @@ cmake --build build-shared --parallel
 ctest --test-dir build-shared --output-on-failure
 ```
 
+The shared library exports only the six public C entry points while its C++
+internals stay hidden, so unit tests that include the private `src/` headers
+link the library's object files instead of the shared object. The sources are
+compiled once in an object library that both the library and those tests
+consume.
+
+`CMakePresets.json` adds optional presets for those two configurations and for
+the sanitizer runs. They live under `build/<preset>` and do not replace the
+`cmake -S . -B build` flow above:
+
+```sh
+cmake --list-presets=all
+
+cmake --preset debug
+cmake --build --preset debug --parallel
+ctest --preset debug
+```
+
+The `shared` preset is the same sequence with `--preset shared`. The `asan`
+preset compiles with `-fsanitize=address,undefined` and runs the full suite with
+leak detection on; only the two SDL dummy-video-driver integration tests
+(`input_tool_tests`, `capture_tool_tests`) set `ASAN_OPTIONS=detect_leaks=0`,
+because SDL keeps process-wide allocations those tests cannot free. The `tsan`
+preset compiles with `-fsanitize=thread` and runs only `queue_tests` and
+`server_tests`, the two thread handoffs the design depends on. Sanitizer runs
+are local only; there is no CI workflow.
+
 ### Embedding
 
 ```cmake

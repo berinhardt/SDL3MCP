@@ -15,7 +15,11 @@ and `examples/minimal` is a complete host.
 - Build and test with `cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
   -DSDL3MCP_BUILD_EXAMPLES=ON`, then `cmake --build build --parallel`, then
   `ctest --test-dir build --output-on-failure`. For the shared configuration use
-  a separate directory with `-DSDL3MCP_BUILD_SHARED=ON`.
+  a separate directory with `-DSDL3MCP_BUILD_SHARED=ON`. `CMakePresets.json`
+  wraps the same configurations as `debug`, `shared`, `asan`, and `tsan`
+  presets (the `asan` suite runs with leak detection on and `tsan` filters to
+  `queue_tests` and `server_tests`). The direct `cmake -S . -B build` flow stays
+  the documented path and no CI workflow runs the presets.
 - The example target is `minimal`, built from `examples/CMakeLists.txt`, so the
   binary is `build/examples/minimal`; run `./build/examples/minimal --mcp` from
   the repository root (or `cd build && ./examples/minimal --mcp`). There is no
@@ -92,6 +96,11 @@ and `examples/minimal` is a complete host.
   The shared build sets `DEFINE_SYMBOL "DLL_EXPORT"`; the static build defines
   `SDL_STATIC_LIB` privately. Do not add a private dllimport/export macro such
   as `SDL3MCP_DECLSPEC`, `SDL3MCP_BUILDING_LIBRARY`, or `SDL3MCP_STATIC`.
+- **A shared build exports only the C surface.** The C++ internals stay hidden
+  (`CXX_VISIBILITY_PRESET hidden`), so unit tests that include `src/` headers
+  link the object library `sdl3mcp_objects` rather than the shared object. The
+  sources are compiled once; do not add a second static copy for the tests or
+  drop the hidden visibility to make them link.
 - **The transport and stdio isolation are POSIX-only; Windows is a TODO.**
   `poll`/`read`/`write`, `dup`/`dup2`, `/dev/null`, and blocking `SIGPIPE` on
   the server thread are the shipped paths. `CMakeLists.txt` rejects a `WIN32`

@@ -43,7 +43,10 @@ else()
     set(sdl3mcp_library_type STATIC)
 endif()
 
-add_library(SDL3MCP ${sdl3mcp_library_type}
+# The translation units live in an object library so unit tests that include
+# the private src/ headers can link them directly: a shared library hides those
+# symbols from its dynamic symbol table.
+add_library(sdl3mcp_objects OBJECT
     src/api.cpp
     src/configuration.cpp
     src/keymap.cpp
@@ -64,15 +67,17 @@ add_library(SDL3MCP ${sdl3mcp_library_type}
     src/stdio_isolation.cpp
     src/stb_image_write_impl.cpp
 )
+add_library(SDL3MCP ${sdl3mcp_library_type} $<TARGET_OBJECTS:sdl3mcp_objects>)
 add_library(SDL3MCP::SDL3MCP ALIAS SDL3MCP)
 
-target_compile_features(SDL3MCP PRIVATE cxx_std_20)
+target_compile_features(sdl3mcp_objects PRIVATE cxx_std_20)
 find_package(Threads REQUIRED)
+target_link_libraries(sdl3mcp_objects PRIVATE SDL3::SDL3 Threads::Threads)
 target_link_libraries(SDL3MCP
     PUBLIC SDL3::SDL3
     PRIVATE Threads::Threads
 )
-set_target_properties(SDL3MCP PROPERTIES
+set_target_properties(sdl3mcp_objects PROPERTIES
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN YES
     POSITION_INDEPENDENT_CODE ON
@@ -80,10 +85,10 @@ set_target_properties(SDL3MCP PROPERTIES
 
 if(SDL3MCP_BUILD_SHARED)
     # SDL's SDL_DECLSPEC expands to __declspec(dllexport) when DLL_EXPORT is
-    # defined, which is what DEFINE_SYMBOL sets for shared builds.
-    set_target_properties(SDL3MCP PROPERTIES DEFINE_SYMBOL "DLL_EXPORT")
+    # defined, which is what DEFINE_SYMBOL sets for a shared library.
+    target_compile_definitions(sdl3mcp_objects PRIVATE DLL_EXPORT)
 else()
-    target_compile_definitions(SDL3MCP PRIVATE SDL_STATIC_LIB)
+    target_compile_definitions(sdl3mcp_objects PRIVATE SDL_STATIC_LIB)
 endif()
 
 set(SDL3MCP_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -94,6 +99,14 @@ configure_file(
     @ONLY
 )
 
+target_include_directories(sdl3mcp_objects
+    PUBLIC
+        "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+        "$<BUILD_INTERFACE:${SDL3MCP_GENERATED_DIR}>"
+    PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb"
+        ${SDL3MCP_JSON_INCLUDE_DIRS}
+)
 target_include_directories(SDL3MCP PUBLIC
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
     "$<BUILD_INTERFACE:${SDL3MCP_GENERATED_DIR}>"

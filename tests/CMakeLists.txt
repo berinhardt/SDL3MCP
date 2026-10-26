@@ -8,3 +8,11 @@ add_executable(sdl3mcp_test_header_cpp header_cpp.cpp)
 target_compile_features(sdl3mcp_test_header_cpp PRIVATE cxx_std_20)
 target_link_libraries(sdl3mcp_test_header_cpp PRIVATE SDL3MCP::SDL3MCP)
 add_test(NAME header_cpp COMMAND sdl3mcp_test_header_cpp)
+
+add_executable(sdl3mcp_test_configuration configuration_tests.cpp)
+target_compile_features(sdl3mcp_test_configuration PRIVATE cxx_std_20)
+target_include_directories(sdl3mcp_test_configuration PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+)
+target_link_libraries(sdl3mcp_test_configuration PRIVATE SDL3MCP::SDL3MCP SDL3::SDL3)
+add_test(NAME configuration_tests COMMAND sdl3mcp_test_configuration)

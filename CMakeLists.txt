@@ -13,7 +13,10 @@ else()
     set(sdl3mcp_library_type STATIC)
 endif()
 
-add_library(SDL3MCP ${sdl3mcp_library_type} src/api.cpp)
+add_library(SDL3MCP ${sdl3mcp_library_type}
+    src/api.cpp
+    src/configuration.cpp
+)
 add_library(SDL3MCP::SDL3MCP ALIAS SDL3MCP)
 
 target_compile_features(SDL3MCP PRIVATE cxx_std_20)

@@ -2,6 +2,9 @@ cmake_minimum_required(VERSION 3.21)
 
 project(SDL3MCP VERSION 0.1.0 LANGUAGES C CXX)
 
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
+
 option(SDL3MCP_BUILD_SHARED "Build SDL3MCP as a shared library" OFF)
 option(SDL3MCP_BUILD_TESTS "Build the SDL3MCP smoke tests" ${PROJECT_IS_TOP_LEVEL})
 option(SDL3MCP_BUILD_EXAMPLES "Build the SDL3MCP examples" OFF)
@@ -19,6 +22,15 @@ if(NOT TARGET nlohmann_json::nlohmann_json)
         "${CMAKE_CURRENT_SOURCE_DIR}/third_party"
     )
     add_library(nlohmann_json::nlohmann_json ALIAS sdl3mcp_json)
+endif()
+
+# nlohmann/json is header-only and private. Only its include path is taken, so
+# the exported target never asks a consumer to have nlohmann installed.
+get_target_property(SDL3MCP_JSON_INCLUDE_DIRS
+    nlohmann_json::nlohmann_json INTERFACE_INCLUDE_DIRECTORIES
+)
+if(NOT SDL3MCP_JSON_INCLUDE_DIRS)
+    set(SDL3MCP_JSON_INCLUDE_DIRS "")
 endif()
 
 if(SDL3MCP_BUILD_SHARED)
@@ -54,7 +66,7 @@ target_compile_features(SDL3MCP PRIVATE cxx_std_20)
 find_package(Threads REQUIRED)
 target_link_libraries(SDL3MCP
     PUBLIC SDL3::SDL3
-    PRIVATE nlohmann_json::nlohmann_json Threads::Threads
+    PRIVATE Threads::Threads
 )
 set_target_properties(SDL3MCP PROPERTIES
     CXX_VISIBILITY_PRESET hidden
@@ -79,11 +91,13 @@ configure_file(
 )
 
 target_include_directories(SDL3MCP PUBLIC
-    "${CMAKE_CURRENT_SOURCE_DIR}/include"
-    "${SDL3MCP_GENERATED_DIR}"
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+    "$<BUILD_INTERFACE:${SDL3MCP_GENERATED_DIR}>"
+    "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
 )
 target_include_directories(SDL3MCP PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb"
+    ${SDL3MCP_JSON_INCLUDE_DIRS}
 )
 
 if(SDL3MCP_BUILD_EXAMPLES)
@@ -94,3 +108,44 @@ if(SDL3MCP_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
 endif()
+
+# Only the library is packaged: tests and examples are never installed.
+install(TARGETS SDL3MCP EXPORT SDL3MCPTargets
+    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+    LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+    ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+    INCLUDES DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+)
+
+install(FILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/SDL3MCP/SDL3MCP.h"
+    "${SDL3MCP_GENERATED_DIR}/SDL3MCP/SDL3MCP_version.h"
+    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/SDL3MCP"
+)
+
+install(FILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE"
+    "${CMAKE_CURRENT_SOURCE_DIR}/README.md"
+    DESTINATION "${CMAKE_INSTALL_DOCDIR}"
+)
+
+configure_package_config_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/SDL3MCPConfig.cmake.in"
+    "${SDL3MCP_GENERATED_DIR}/SDL3MCPConfig.cmake"
+    INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/SDL3MCP"
+)
+write_basic_package_version_file(
+    "${SDL3MCP_GENERATED_DIR}/SDL3MCPConfigVersion.cmake"
+    VERSION "${PROJECT_VERSION}"
+    COMPATIBILITY SameMajorVersion
+)
+install(FILES
+    "${SDL3MCP_GENERATED_DIR}/SDL3MCPConfig.cmake"
+    "${SDL3MCP_GENERATED_DIR}/SDL3MCPConfigVersion.cmake"
+    DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/SDL3MCP"
+)
+
+install(EXPORT SDL3MCPTargets
+    NAMESPACE SDL3MCP::
+    DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/SDL3MCP"
+)

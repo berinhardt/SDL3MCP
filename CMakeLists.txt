@@ -1,0 +1,51 @@
+cmake_minimum_required(VERSION 3.21)
+
+project(SDL3MCP VERSION 0.1.0 LANGUAGES C CXX)
+
+option(SDL3MCP_BUILD_SHARED "Build SDL3MCP as a shared library" OFF)
+option(SDL3MCP_BUILD_TESTS "Build the SDL3MCP smoke tests" ${PROJECT_IS_TOP_LEVEL})
+
+find_package(SDL3 CONFIG REQUIRED)
+
+if(SDL3MCP_BUILD_SHARED)
+    set(sdl3mcp_library_type SHARED)
+else()
+    set(sdl3mcp_library_type STATIC)
+endif()
+
+add_library(SDL3MCP ${sdl3mcp_library_type} src/api.cpp)
+add_library(SDL3MCP::SDL3MCP ALIAS SDL3MCP)
+
+target_compile_features(SDL3MCP PRIVATE cxx_std_20)
+target_link_libraries(SDL3MCP PUBLIC SDL3::SDL3)
+set_target_properties(SDL3MCP PROPERTIES
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN YES
+    POSITION_INDEPENDENT_CODE ON
+)
+
+if(SDL3MCP_BUILD_SHARED)
+    # SDL's SDL_DECLSPEC expands to __declspec(dllexport) when DLL_EXPORT is
+    # defined, which is what DEFINE_SYMBOL sets for shared builds.
+    set_target_properties(SDL3MCP PROPERTIES DEFINE_SYMBOL "DLL_EXPORT")
+else()
+    target_compile_definitions(SDL3MCP PRIVATE SDL_STATIC_LIB)
+endif()
+
+set(SDL3MCP_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+file(MAKE_DIRECTORY "${SDL3MCP_GENERATED_DIR}/SDL3MCP")
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/SDL3MCP/SDL3MCP_version.h.in"
+    "${SDL3MCP_GENERATED_DIR}/SDL3MCP/SDL3MCP_version.h"
+    @ONLY
+)
+
+target_include_directories(SDL3MCP PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    "${SDL3MCP_GENERATED_DIR}"
+)
+
+if(SDL3MCP_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()

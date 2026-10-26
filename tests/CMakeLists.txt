@@ -1,0 +1,10 @@
+add_executable(sdl3mcp_test_header_c header_c.c)
+set_target_properties(sdl3mcp_test_header_c PROPERTIES LINKER_LANGUAGE CXX)
+target_compile_features(sdl3mcp_test_header_c PRIVATE c_std_11)
+target_link_libraries(sdl3mcp_test_header_c PRIVATE SDL3MCP::SDL3MCP)
+add_test(NAME header_c COMMAND sdl3mcp_test_header_c)
+
+add_executable(sdl3mcp_test_header_cpp header_cpp.cpp)
+target_compile_features(sdl3mcp_test_header_cpp PRIVATE cxx_std_20)
+target_link_libraries(sdl3mcp_test_header_cpp PRIVATE SDL3MCP::SDL3MCP)
+add_test(NAME header_cpp COMMAND sdl3mcp_test_header_cpp)

@@ -1002,4 +1002,4 @@ Behavior changes get a regression test.
 
 ## License
 
-zlib, the same license as SDL3. See `LICENSE` once the repository has one.
+zlib, the same license as SDL3. See `LICENSE`.

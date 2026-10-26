@@ -1,17 +1,21 @@
 # AGENTS.md
 
-SDL3MCP is a planned library that embeds an MCP server in any SDL3 application:
-public C API, C++20 internals, stdio transport, synthetic input, and PNG frame
-capture. **There is no implementation yet.** The repository is `README.md` only,
-on an unborn `master` branch; `README.md` is the design contract.
+SDL3MCP is a library that embeds an MCP server in any SDL3 application: public
+C API, C++20 internals, stdio transport, synthetic input, and PNG frame capture.
+`README.md` is the design contract, and the repository holds the first compiling
+slice: `LICENSE`, the CMake skeleton, the public header, and smoke tests. Only
+`SDL3MCP_AppShutdown` is implemented; the other five entry points are declared
+but deliberately undefined.
 
 ## Current state
 
-- Only `README.md` exists. No `CMakeLists.txt`, `src/`, `tests/`, or CI. Do not
-  invent build/test commands or assume those paths are populated.
-- The README examples were syntax-checked with
-  `gcc -std=c11 -fsyntax-only $(pkg-config --cflags sdl3)` against SDL 3.4.18.
-  When code lands, replace this note with the real build/test commands.
+- `README.md` (the spec), `LICENSE`, `CMakeLists.txt`, `include/SDL3MCP/`,
+  `src/api.cpp`, and `tests/` exist. There is no transport, input, frame, or MCP
+  code yet.
+- Build and test with `cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug`, then
+  `cmake --build build --parallel`, then
+  `ctest --test-dir build --output-on-failure`. For the shared configuration use
+  a separate directory with `-DSDL3MCP_BUILD_SHARED=ON`.
 - Target SDL 3.2+. There, `SDL_RenderReadPixels(renderer, rect)` returns an
   `SDL_Surface *`; the old five-argument form is retired.
 
@@ -38,6 +42,10 @@ on an unborn `master` branch; `README.md` is the design contract.
   `SDL3MCP_DefaultConfiguration()`. Use `SDL3MCP_Configuration` (the original
   brief's `SDL3MCP_Configuratio` was a typo) and `(void)` prototypes. The C API
   is C11 and never throws; C++ exceptions stop at the boundary.
+- **Linkage follows SDL.** Public symbols carry `SDL_DECLSPEC` and `SDLCALL`.
+  The shared build sets `DEFINE_SYMBOL "DLL_EXPORT"`; the static build defines
+  `SDL_STATIC_LIB` privately. Do not add a private dllimport/export macro such
+  as `SDL3MCP_DECLSPEC`, `SDL3MCP_BUILDING_LIBRARY`, or `SDL3MCP_STATIC`.
 - **Dependencies stay SDL3-only at runtime.** `stb_image_write.h` and
   `nlohmann/json.hpp` are resolved system-first with a vendored fallback in
   `third_party/`.

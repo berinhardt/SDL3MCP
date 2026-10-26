@@ -283,4 +283,16 @@ if(SDL3MCP_BUILD_SUPERVISOR)
              COMMAND sdl3mcp_test_supervisor
                      $<TARGET_FILE:sdl3mcp-supervisor>
                      $<TARGET_FILE:sdl3mcp_fake_child>)
+
+    # The same binary again, this time driving the real example through the
+    # proxy. The dummy video driver gives a real software renderer headless.
+    if(SDL3MCP_BUILD_EXAMPLES)
+        add_test(NAME supervisor_real_app
+                 COMMAND sdl3mcp_test_supervisor
+                         $<TARGET_FILE:sdl3mcp-supervisor>
+                         $<TARGET_FILE:sdl3mcp_fake_child>
+                         $<TARGET_FILE:minimal>)
+        set_tests_properties(supervisor_real_app PROPERTIES ENVIRONMENT
+            "SDL_VIDEODRIVER=dummy;ASAN_OPTIONS=detect_leaks=0:halt_on_error=1")
+    endif()
 endif()

@@ -9,6 +9,7 @@ namespace
 {
 
 constexpr std::string_view kStartupTimeoutOption = "--startup-timeout-ms";
+constexpr std::string_view kTerminateTimeoutOption = "--terminate-timeout-ms";
 constexpr std::string_view kTargetOption = "--target";
 
 bool parsePositiveInteger(std::string_view text, int &value)
@@ -52,6 +53,20 @@ CliParseResult parseCommandLine(const std::vector<std::string> &arguments)
             continue;
         }
 
+        if (argument == kTerminateTimeoutOption) {
+            if (index + 1 >= arguments.size()) {
+                result.error = "--terminate-timeout-ms requires a value";
+                return result;
+            }
+            if (!parsePositiveInteger(arguments[index + 1],
+                                      result.options.terminateTimeoutMs)) {
+                result.error = "--terminate-timeout-ms requires a positive integer";
+                return result;
+            }
+            index += 2;
+            continue;
+        }
+
         if (argument == kTargetOption) {
             if (index + 1 >= arguments.size() || arguments[index + 1].empty()) {
                 result.error = "--target requires an executable";
@@ -74,7 +89,8 @@ CliParseResult parseCommandLine(const std::vector<std::string> &arguments)
 
 std::string usageLine()
 {
-    return "usage: sdl3mcp-supervisor [--startup-timeout-ms N] --target <executable> [app args...]";
+    return "usage: sdl3mcp-supervisor [--startup-timeout-ms N] "
+           "[--terminate-timeout-ms N] --target <executable> [app args...]";
 }
 
 } // namespace sdl3mcp

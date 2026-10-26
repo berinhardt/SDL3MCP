@@ -10,6 +10,8 @@ the loop order is a bug. The checks are deliberately mechanical:
 - the ``sdl_terminate`` schema is the empty object with all four hints;
 - the quick start matches ``examples/minimal/main.c`` and contains R/G/B;
 - the documented run command points at ``<build>/examples/minimal``;
+- the supervisor section documents ``sdl3mcp-supervisor --target`` and its
+  Idle/Starting/Running states;
 - stale phrases from earlier drafts are gone;
 - ``SDL3MCP_AppIterate`` is the last call, after ``SDL_RenderPresent``.
 """
@@ -26,6 +28,7 @@ from pathlib import Path
 
 EXAMPLE_COMMAND = "./build/examples/minimal --mcp"
 WRONG_EXAMPLE_PATH = "examples/minimal/minimal"
+SUPERVISOR_STATES = ("Idle", "Starting", "Running")
 
 STALE_PHRASES = (
     "F+2",
@@ -255,6 +258,19 @@ def check_example_command(readme: str, failures: list[str]) -> None:
         failures.append(f"README must not reference '{WRONG_EXAMPLE_PATH}'")
 
 
+def check_supervisor_docs(readme: str, failures: list[str]) -> None:
+    """The supervisor is part of the shipped binary, so its contract is checked."""
+    if "## Supervisor" not in readme:
+        failures.append("README has no Supervisor section")
+    if "sdl3mcp-supervisor" not in readme:
+        failures.append("README does not document the sdl3mcp-supervisor command")
+    if "--target" not in readme:
+        failures.append("README does not document the supervisor's --target option")
+    for state in SUPERVISOR_STATES:
+        if f"`{state}`" not in readme:
+            failures.append(f"README does not document the supervisor {state} state")
+
+
 def check_stale_phrases(readme: str, failures: list[str]) -> None:
     haystack = readme.lower()
     for phrase in STALE_PHRASES:
@@ -319,6 +335,7 @@ def main(argv: list[str] | None = None) -> int:
     check_capture_schema(documents, failures)
     check_terminate_schema(documents, failures)
     check_example_command(readme, failures)
+    check_supervisor_docs(readme, failures)
     check_stale_phrases(readme, failures)
 
     for index, body in enumerate(complete_examples, start=1):

@@ -18,10 +18,12 @@ namespace sdl3mcp
 {
 
 constexpr int kDefaultStartupTimeoutMs = 10000;
+constexpr int kDefaultTerminateTimeoutMs = 60000;
 
 struct SupervisorOptions
 {
     int startupTimeoutMs = kDefaultStartupTimeoutMs;
+    int terminateTimeoutMs = kDefaultTerminateTimeoutMs;
     std::string target;
     /* Child argv after argv[0], passed through unchanged. */
     std::vector<std::string> targetArguments;

@@ -25,8 +25,16 @@ and `examples/minimal` is a complete host.
   the repository root (or `cd build && ./examples/minimal --mcp`). There is no
   `examples/minimal/minimal`.
 - `tests/check_readme.py` compiles the README's two complete C examples, parses
-  every JSON block, and checks the schemas, the run command, and the loop order.
-  CTest registers it as `readme_check` when Python 3 is found.
+  every JSON block, and checks the schemas, the run command, the supervisor
+  states, and the loop order. CTest registers it as `readme_check` when Python 3
+  is found.
+- `SDL3MCP_BUILD_SUPERVISOR=ON` builds `build/sdl3mcp-supervisor`, the optional
+  single-endpoint supervisor over a restartable app. Its sources live in
+  `supervisor/` and its tests are `supervisor_tests` (fake MCP child over real
+  pipes) and `supervisor_real_app` (the real `examples/minimal` under
+  `SDL_VIDEODRIVER=dummy`); the second is registered only when examples are
+  built. `opencode.json` in the repository root points the local MCP client at
+  the supervisor.
 - Target SDL 3.2+. There, `SDL_RenderReadPixels(renderer, rect)` returns an
   `SDL_Surface *`; the old five-argument form is retired. Keep examples on 3.2
   APIs (no `SDL_RenderDebugText` or other 3.4-only calls).
@@ -87,6 +95,33 @@ and `examples/minimal` is a complete host.
   exchanges the flag and pushes exactly one zeroed `SDL_EVENT_QUIT`, restoring
   the flag to retry when `SDL_PushEvent` fails. It still returns
   `SDL_APP_CONTINUE` and leaves the app's own quit handling untouched.
+- **The supervisor is an optional separate process with one state machine.** It
+  speaks MCP on its own stdio and runs one target child at a time. `Idle`
+  advertises only `spawn`, `Starting` advertises nothing, and `Running` mirrors
+  the committed child tools. `spawn` is synchronous: fork/exec, initialize,
+  `tools/list`, then poll `sdl_info` until a window is bound or
+  `--startup-timeout-ms` expires. A second `spawn` while not idle is an error.
+  Every transition that changes the tool view sends one
+  `notifications/tools/list_changed`; do not make it fire twice or cache the
+  tool list on the client side.
+- **The terminate watchdog is supervisor policy, not library policy.**
+  `sdl_terminate` is forwarded like any other running tool, but its timer starts
+  before the forward and the supervisor waits for the child to exit. Clean exit
+  returns the text `terminated`; on `--terminate-timeout-ms` (default 60000) the
+  watchdog sends SIGTERM, waits about two seconds, then SIGKILL, and says the
+  termination was forced. The child's exit handler, whether from the request, a
+  crash, or the watchdog, restores `Idle`/`spawn` and sends the single
+  `list_changed`.
+- **Supervisor shutdown never orphans the child.** stdin EOF, SIGINT/SIGTERM,
+  and a normal return all run the same shutdown: SIGTERM, grace, SIGKILL, then
+  join and reap. Signals are blocked process-wide and consumed by a `sigwait`
+  thread because the handler cannot take the state or writer mutexes.
+- **The supervisor reuses the library plumbing.** CLI parsing, the line
+  transport, and JSON-RPC dispatch come from `supervisor/cli.*`,
+  `src/transport.*`, and `src/json_rpc.*`; the supervisor links
+  `sdl3mcp_objects` and `sdl3mcp_supervisor_objects` rather than duplicating
+  them. It never calls SDL and is POSIX-only (`fork`/`exec`, pipes, signals),
+  matching the platform stance above.
 - **fd ownership.** `NONE` leaves stdin/stdout untouched. `STDIO` duplicates the
   originals for MCP, redirects the host stdin to `/dev/null` and the host stdout
   to stderr, and restores both at shutdown. stderr stays separate and is where

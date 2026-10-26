@@ -2,10 +2,17 @@
   The supervisor end to end: the real executable is started as a child of the
   test, driven over real pipes with per-line timeouts, and pointed at the fake
   MCP child. That covers the CLI, the line loop, the state machine, fork/exec,
-  the proxy, and shutdown in the same code the shipped binary runs.
+  the proxy, the terminate watchdog, and shutdown in the same code the shipped
+  binary runs.
 
-  The test says nothing about SDL: neither side initialises video, so a failure
-  is a protocol or process bug, not a driver problem.
+  When a third argument names examples/minimal, the same client also drives the
+  real library through the proxy under SDL_VIDEODRIVER=dummy: spawn, sdl_info,
+  sdl_input, sdl_capture and sdl_terminate. The fake child keeps every protocol
+  scenario deterministic; the real app proves the two halves meet.
+
+  The test says nothing about SDL for the fake scenarios: neither side
+  initialises video, so a failure is a protocol or process bug, not a driver
+  problem.
 */
 
 #include "cli.hpp"
@@ -22,12 +29,15 @@
 
 #include <cerrno>
 #include <chrono>
+#include <climits>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
 #include <string>
 #include <thread>
 #include <vector>
+
+#include <dirent.h>
 
 namespace
 {
@@ -160,7 +170,8 @@ struct SupervisorClient
 
     /* Sends a request and returns its response, collecting notifications. */
     nlohmann::json request(const std::string &method,
-                           nlohmann::json params = nlohmann::json::object())
+                           nlohmann::json params = nlohmann::json::object(),
+                           int timeoutMs = kLineTimeoutMs)
     {
         const int id = nextId++;
         const nlohmann::json message{
@@ -172,7 +183,7 @@ struct SupervisorClient
         CHECK(transport->writeLine(message.dump()));
 
         for (;;) {
-            nlohmann::json received = readMessage();
+            nlohmann::json received = readMessage(timeoutMs);
             if (received.contains("method")) {
                 notifications.push_back(std::move(received));
                 continue;
@@ -198,15 +209,20 @@ struct SupervisorClient
     nlohmann::json toolsList() { return request("tools/list"); }
 
     nlohmann::json callTool(const std::string &name,
-                            nlohmann::json arguments = nlohmann::json::object())
+                            nlohmann::json arguments = nlohmann::json::object(),
+                            int timeoutMs = kLineTimeoutMs)
     {
         return request("tools/call", nlohmann::json{
                                          {"name", name},
                                          {"arguments", std::move(arguments)},
-                                     });
+                                     },
+                       timeoutMs);
     }
 
-    nlohmann::json spawn() { return callTool("spawn"); }
+    nlohmann::json spawn(int timeoutMs = kLineTimeoutMs)
+    {
+        return callTool("spawn", nlohmann::json::object(), timeoutMs);
+    }
 
     size_t listChangedCount() const
     {
@@ -286,12 +302,62 @@ bool processIsAlive(pid_t pid)
     return errno != ESRCH;
 }
 
+/* True when some process is still executing `executable` (by resolved path). */
+bool anyProcessUsesExecutable(const std::string &executable)
+{
+    char resolved[PATH_MAX];
+    if (::realpath(executable.c_str(), resolved) == nullptr) {
+        return false;
+    }
+
+    DIR *directory = ::opendir("/proc");
+    if (directory == nullptr) {
+        return false;
+    }
+
+    bool found = false;
+    while (const dirent *entry = ::readdir(directory)) {
+        if (entry->d_name[0] < '0' || entry->d_name[0] > '9') {
+            continue;
+        }
+        const std::string link = std::string("/proc/") + entry->d_name + "/exe";
+        char target[PATH_MAX];
+        const ssize_t length = ::readlink(link.c_str(), target, sizeof target - 1);
+        if (length <= 0) {
+            continue;
+        }
+        target[length] = '\0';
+        if (std::string(target) == resolved) {
+            found = true;
+            break;
+        }
+    }
+
+    ::closedir(directory);
+    return found;
+}
+
+bool waitForNoProcessUsingExecutable(const std::string &executable, int timeoutMs)
+{
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(timeoutMs);
+    while (anyProcessUsesExecutable(executable)) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return true;
+}
+
 void testCommandLine()
 {
     const sdl3mcp::CliParseResult parsed = sdl3mcp::parseCommandLine(
-        {"--startup-timeout-ms", "250", "--target", "/bin/app", "--fullscreen", "-v"});
+        {"--startup-timeout-ms", "250", "--terminate-timeout-ms", "750", "--target",
+         "/bin/app", "--fullscreen", "-v"});
     CHECK(parsed.ok);
     CHECK(parsed.options.startupTimeoutMs == 250);
+    CHECK(parsed.options.terminateTimeoutMs == 750);
     CHECK(parsed.options.target == "/bin/app");
     CHECK((parsed.options.targetArguments ==
            std::vector<std::string>{"--fullscreen", "-v"}));
@@ -300,6 +366,7 @@ void testCommandLine()
         sdl3mcp::parseCommandLine({"--target", "app"});
     CHECK(defaults.ok);
     CHECK(defaults.options.startupTimeoutMs == sdl3mcp::kDefaultStartupTimeoutMs);
+    CHECK(defaults.options.terminateTimeoutMs == sdl3mcp::kDefaultTerminateTimeoutMs);
     CHECK(defaults.options.targetArguments.empty());
 
     CHECK(!sdl3mcp::parseCommandLine({}).ok);
@@ -308,6 +375,8 @@ void testCommandLine()
     CHECK(!sdl3mcp::parseCommandLine({"app"}).ok);
     CHECK(!sdl3mcp::parseCommandLine({"--startup-timeout-ms", "0", "--target", "app"}).ok);
     CHECK(!sdl3mcp::parseCommandLine({"--startup-timeout-ms", "10"}).ok);
+    CHECK(!sdl3mcp::parseCommandLine({"--terminate-timeout-ms", "0", "--target", "app"}).ok);
+    CHECK(!sdl3mcp::parseCommandLine({"--terminate-timeout-ms", "10"}).ok);
 }
 
 void testToolListViews()
@@ -382,7 +451,9 @@ void testSpawnAndProxy(const std::string &supervisor,
     CHECK(client.listChangedCount() >= 2);
 
     const std::vector<std::string> names = toolNames(client.toolsList());
-    CHECK((names == std::vector<std::string>{"sdl_info", "sdl_input", "sdl_capture"}));
+    CHECK((names ==
+           std::vector<std::string>{"sdl_info", "sdl_input", "sdl_capture",
+                                    "sdl_terminate"}));
 
     /* Proxied sdl_info keeps the child's payload. */
     const nlohmann::json info = client.callTool("sdl_info");
@@ -526,6 +597,171 @@ void testWindowTimeout(const std::string &supervisor, const std::string &fakeChi
     CHECK(client.process.waitForExit(kLineTimeoutMs));
 }
 
+/*
+  The app answers sdl_terminate and exits; the supervisor waits for that exit
+  and publishes Idle exactly once. No watchdog kill is needed.
+*/
+void testTerminateNormal(const std::string &supervisor,
+                         const std::string &fakeChild,
+                         const std::string &pidFile)
+{
+    SupervisorClient client;
+    client.start(supervisor, {"--terminate-timeout-ms", "5000", "--target", fakeChild,
+                              "--pid-file", pidFile});
+    CHECK(!client.initialize().contains("error"));
+
+    CHECK(!client.spawn().contains("error"));
+    const pid_t childPid = readPidFile(pidFile);
+    CHECK(childPid > 0);
+
+    const nlohmann::json terminated = client.callTool("sdl_terminate");
+    CHECK(terminated["result"]["isError"] == false);
+    CHECK(spawnText(terminated) == "terminated");
+
+    const std::vector<std::string> names = toolNames(client.toolsList());
+    CHECK((names == std::vector<std::string>{"spawn"}));
+    /* Starting, Running, and the exit: one announcement each, no duplicate. */
+    CHECK(client.listChangedCount() == 3);
+    CHECK(!processIsAlive(childPid));
+
+    client.process.closeStdin();
+    CHECK(client.process.waitForExit(kLineTimeoutMs));
+}
+
+/*
+  A child that ignores SIGTERM must still be gone: the watchdog SIGTERMs, waits
+  its grace, then SIGKILLs, and the result says the termination was forced.
+*/
+void testTerminateWatchdog(const std::string &supervisor,
+                           const std::string &fakeChild,
+                           const std::string &pidFile)
+{
+    SupervisorClient client;
+    client.start(supervisor, {"--terminate-timeout-ms", "300", "--target", fakeChild,
+                              "--ignore-terminate", "--pid-file", pidFile});
+    CHECK(!client.initialize().contains("error"));
+
+    CHECK(!client.spawn().contains("error"));
+    const pid_t childPid = readPidFile(pidFile);
+    CHECK(childPid > 0);
+
+    const auto started = std::chrono::steady_clock::now();
+    const nlohmann::json terminated = client.callTool("sdl_terminate");
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - started)
+                             .count();
+
+    CHECK(terminated["result"]["isError"] == false);
+    CHECK(spawnText(terminated).find("termination was forced") != std::string::npos);
+    /* The 300 ms budget plus the ~2 s grace, not an unbounded wait. */
+    CHECK(elapsed >= 300);
+    CHECK(elapsed < 10000);
+
+    const std::vector<std::string> names = toolNames(client.toolsList());
+    CHECK((names == std::vector<std::string>{"spawn"}));
+    CHECK(client.listChangedCount() == 3);
+    CHECK(!processIsAlive(childPid));
+
+    client.process.closeStdin();
+    CHECK(client.process.waitForExit(kLineTimeoutMs));
+}
+
+/* SIGINT and SIGTERM end the supervisor without leaving the child behind. */
+void testSignalsStopChild(const std::string &supervisor, const std::string &fakeChild)
+{
+    for (const int signalNumber : {SIGTERM, SIGINT}) {
+        const std::string pidFile = makeTempPath();
+
+        SupervisorClient client;
+        client.start(supervisor, {"--target", fakeChild, "--pid-file", pidFile});
+        CHECK(!client.initialize().contains("error"));
+        CHECK(!client.spawn().contains("error"));
+
+        const pid_t childPid = readPidFile(pidFile);
+        CHECK(childPid > 0);
+        CHECK(client.process.pid > 0);
+
+        CHECK(::kill(client.process.pid, signalNumber) == 0);
+        CHECK(client.process.waitForExit(kLineTimeoutMs));
+        CHECK(!processIsAlive(childPid));
+
+        ::unlink(pidFile.c_str());
+    }
+}
+
+/*
+  The real example through the proxy: no fake child, real SDL under the dummy
+  driver, and the full spawn -> info -> input -> capture -> terminate round trip,
+  ending back at `spawn` with no process left behind.
+*/
+void testRealExample(const std::string &supervisor, const std::string &example)
+{
+    SupervisorClient client;
+    client.start(supervisor, {"--startup-timeout-ms", "15000",
+                              "--terminate-timeout-ms", "10000", "--target", example,
+                              "--mcp"});
+    CHECK(!client.initialize().contains("error"));
+
+    const std::vector<std::string> idleNames = toolNames(client.toolsList());
+    CHECK((idleNames == std::vector<std::string>{"spawn"}));
+
+    const nlohmann::json spawn = client.spawn(20000);
+    CHECK(spawn["result"]["isError"] == false);
+    CHECK(spawnText(spawn).find("SDL3MCP demo") != std::string::npos);
+
+    const std::vector<std::string> runningNames = toolNames(client.toolsList());
+    for (const char *name : {"sdl_info", "sdl_input", "sdl_capture", "sdl_terminate"}) {
+        bool found = false;
+        for (const std::string &running : runningNames) {
+            found = found || running == name;
+        }
+        CHECK(found);
+    }
+
+    const nlohmann::json info = client.callTool("sdl_info");
+    CHECK(info["result"]["isError"] == false);
+    const nlohmann::json payload = nlohmann::json::parse(spawnText(info));
+    CHECK(payload["window"].is_object());
+    CHECK(payload["window"]["pixelWidth"].is_number_integer());
+    CHECK(payload["window"]["pixelWidth"].get<int>() > 0);
+    CHECK(payload["window"]["pixelHeight"].get<int>() > 0);
+
+    const nlohmann::json input = client.callTool(
+        "sdl_input", nlohmann::json{{"actions", nlohmann::json::array({
+                                                    nlohmann::json{{"type", "key"},
+                                                                   {"key", "r"},
+                                                                   {"action", "press"}},
+                                                })}});
+    CHECK(input["result"]["isError"] == false);
+    CHECK(spawnText(input).find("applied") != std::string::npos);
+
+    const nlohmann::json capture =
+        client.callTool("sdl_capture", nlohmann::json{{"max_width", 320}});
+    CHECK(capture["result"]["isError"] == false);
+
+    bool sawImage = false;
+    for (const nlohmann::json &block : capture["result"]["content"]) {
+        if (block.value("type", std::string()) != "image") {
+            continue;
+        }
+        sawImage = true;
+        CHECK(block.value("mimeType", std::string()) == "image/png");
+        CHECK(block.value("data", std::string()).size() > 100);
+    }
+    CHECK(sawImage);
+
+    const nlohmann::json terminated = client.callTool("sdl_terminate");
+    CHECK(terminated["result"]["isError"] == false);
+    CHECK(spawnText(terminated) == "terminated");
+
+    const std::vector<std::string> backToIdle = toolNames(client.toolsList());
+    CHECK((backToIdle == std::vector<std::string>{"spawn"}));
+
+    client.process.closeStdin();
+    CHECK(client.process.waitForExit(kLineTimeoutMs * 2));
+    CHECK(waitForNoProcessUsingExecutable(example, 3000));
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -547,6 +783,21 @@ int main(int argc, char **argv)
     testInitializeFailure(supervisor, fakeChild);
     testNonexistentTarget(supervisor);
     testWindowTimeout(supervisor, fakeChild);
+
+    const std::string terminatePidFile = makeTempPath();
+    testTerminateNormal(supervisor, fakeChild, terminatePidFile);
+    ::unlink(terminatePidFile.c_str());
+
+    const std::string watchdogPidFile = makeTempPath();
+    testTerminateWatchdog(supervisor, fakeChild, watchdogPidFile);
+    ::unlink(watchdogPidFile.c_str());
+
+    testSignalsStopChild(supervisor, fakeChild);
+
+    /* The second CTest registration adds the real example as argv[3]. */
+    if (argc >= 4) {
+        testRealExample(supervisor, argv[3]);
+    }
 
     std::printf("supervisor_tests: all checks passed\n");
     return 0;

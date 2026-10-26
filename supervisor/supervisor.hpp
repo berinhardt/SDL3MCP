@@ -16,6 +16,12 @@
   notifications share one writer mutex, so a monitor notification can never
   interleave with a request's response.
 
+  sdl_terminate is forwarded and then waited on for --terminate-timeout-ms; a
+  child that ignores the quit request gets SIGTERM, a short grace, and SIGKILL.
+  Every exit path funnels through the same monitor thread, so Idle/spawn and the
+  single list_changed are published exactly once. Stdin EOF and SIGINT/SIGTERM
+  stop the child the same SIGTERM/grace/SIGKILL way.
+
   The supervisor never calls SDL. It only writes JSON to the child's pipes.
 */
 
@@ -103,6 +109,9 @@ private:
     SupervisorToolResult spawn();
     bool startChild(Deadline deadline, nlohmann::json &window, std::string &failure);
     SupervisorToolResult failSpawn(const std::string &reason);
+    SupervisorToolResult terminate(const nlohmann::json &arguments);
+    /* Waits briefly for the exit handler to publish Idle after a child exit. */
+    void awaitChildExitHandled(ChildProcess *process);
 
     bool requestChild(std::string_view method,
                       const nlohmann::json &params,

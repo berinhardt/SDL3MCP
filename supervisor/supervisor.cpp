@@ -19,6 +19,8 @@ namespace
 constexpr std::string_view kProtocolVersion = "2025-11-25";
 constexpr std::string_view kServerName = "sdl3mcp-supervisor";
 constexpr int kWindowPollMs = 50;
+/* SIGTERM to SIGKILL grace when the application ignores the quit request. */
+constexpr int kTerminateGraceMs = 2000;
 
 nlohmann::json textContent(std::string text)
 {
@@ -300,6 +302,8 @@ void Supervisor::monitorLoop()
             state_ = SupervisorState::Idle;
             childTools_ = nlohmann::json::array();
         }
+        /* Wake a terminate call waiting for the exit to be published. */
+        monitorCondition_.notify_all();
 
         sendToolsListChanged();
     }
@@ -315,7 +319,7 @@ void Supervisor::shutdown()
     transport_.stop();
 
     if (child_) {
-        child_->terminate();
+        child_->terminate(kTerminateGraceMs);
     }
     if (monitor_.joinable()) {
         monitor_.join();
@@ -454,6 +458,16 @@ void Supervisor::handleToolsCall(const nlohmann::json &id, const nlohmann::json 
 
     if (state() != SupervisorState::Running) {
         writeToolResult(id, toolError("the application is not running; call spawn first"));
+        return;
+    }
+
+    /*
+      sdl_terminate is forwarded like any other tool, but the supervisor then
+      owns the exit: a quit request the app ignores must not leave a live child
+      behind one stable MCP endpoint.
+    */
+    if (toolName == "sdl_terminate") {
+        writeToolResult(id, terminate(arguments));
         return;
     }
 
@@ -609,6 +623,54 @@ SupervisorToolResult Supervisor::failSpawn(const std::string &reason)
         text += "\napplication stderr (last lines):\n" + stderrTail;
     }
     return toolError(std::move(text));
+}
+
+SupervisorToolResult Supervisor::terminate(const nlohmann::json &arguments)
+{
+    ChildProcess *process = nullptr;
+    {
+        const std::lock_guard<std::mutex> lock(stateMutex_);
+        if (state_ != SupervisorState::Running || !child_) {
+            return toolError("the application is not running; call spawn first");
+        }
+        process = child_.get();
+    }
+
+    /* The timer covers the forward call and the wait for the exit together. */
+    const Deadline deadline = std::chrono::steady_clock::now() +
+                              std::chrono::milliseconds(options_.terminateTimeoutMs);
+
+    nlohmann::json ignored;
+    std::string error;
+    const nlohmann::json params{
+        {"name", "sdl_terminate"},
+        {"arguments", arguments},
+    };
+    /*
+      The child normally answers "termination requested" before it exits, but it
+      may close its pipe first. Either way the exit below decides the result.
+    */
+    (void)requestChild("tools/call", params, ignored, deadline, error);
+
+    if (process->waitForExit(remainingMs(deadline))) {
+        awaitChildExitHandled(process);
+        return toolOk("terminated");
+    }
+
+    process->terminate(kTerminateGraceMs);
+    awaitChildExitHandled(process);
+
+    return toolOk("termination was forced: the application did not exit within " +
+                  std::to_string(options_.terminateTimeoutMs) +
+                  " ms, so it was sent SIGTERM and then SIGKILL");
+}
+
+void Supervisor::awaitChildExitHandled(ChildProcess *process)
+{
+    std::unique_lock<std::mutex> lock(stateMutex_);
+    monitorCondition_.wait_for(lock, std::chrono::seconds(5), [this, process] {
+        return stopping_ || state_ != SupervisorState::Running || child_.get() != process;
+    });
 }
 
 bool Supervisor::requestChild(std::string_view method,

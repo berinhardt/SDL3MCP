@@ -8,6 +8,10 @@
   Before every deliberate exit it writes one recognisable stderr line, so the
   supervisor's failure text can be checked for recent child output.
 
+  sdl_terminate answers "termination requested" and exits, like the real
+  library. --ignore-terminate keeps running instead (SIGTERM is ignored until
+  SIGKILL), so the supervisor's terminate watchdog can be exercised.
+
   --pid-file exists only so a test can prove the child is gone after the
   supervisor stops; it writes the child's own pid.
 */
@@ -15,6 +19,7 @@
 #include <nlohmann/json.hpp>
 
 #include <poll.h>
+#include <signal.h>
 #include <unistd.h>
 
 #include <charconv>
@@ -37,6 +42,7 @@ struct Options
     int exitCode = 0;
     bool failInitialize = false;
     bool noWindow = false;
+    bool ignoreTerminate = false;
     std::string pidFile;
 };
 
@@ -70,6 +76,8 @@ bool parseOptions(int argc, char **argv, Options &options)
             options.failInitialize = true;
         } else if (argument == "--no-window") {
             options.noWindow = true;
+        } else if (argument == "--ignore-terminate") {
+            options.ignoreTerminate = true;
         } else {
             return false;
         }
@@ -127,7 +135,8 @@ void writeTextResult(const nlohmann::json &id, std::string_view text)
 nlohmann::json toolsResult()
 {
     nlohmann::json tools = nlohmann::json::array();
-    for (const std::string_view name : {"sdl_info", "sdl_input", "sdl_capture"}) {
+    for (const std::string_view name :
+         {"sdl_info", "sdl_input", "sdl_capture", "sdl_terminate"}) {
         tools.push_back(nlohmann::json{
             {"name", std::string(name)},
             {"description", "fake child tool"},
@@ -170,6 +179,14 @@ nlohmann::json infoText(const Options &options,
     };
 }
 
+void exitWithLine(std::string_view reason, int code)
+{
+    std::fprintf(stderr, "fake-child: exiting: %.*s (code %d)\n",
+                 static_cast<int>(reason.size()), reason.data(), code);
+    std::fflush(stderr);
+    std::exit(code);
+}
+
 void handleToolsCall(const nlohmann::json &id,
                      const nlohmann::json &params,
                      const Options &options,
@@ -192,6 +209,13 @@ void handleToolsCall(const nlohmann::json &id,
     }
     if (tool == "sdl_capture") {
         writeTextResult(id, "fake sdl_capture ok");
+        return;
+    }
+    if (tool == "sdl_terminate") {
+        writeTextResult(id, "termination requested");
+        if (!options.ignoreTerminate) {
+            exitWithLine("terminate requested", options.exitCode);
+        }
         return;
     }
 
@@ -253,14 +277,6 @@ void handleMessage(const nlohmann::json &message,
     writeError(*id, -32601, "Method not found: " + name);
 }
 
-void exitWithLine(std::string_view reason, int code)
-{
-    std::fprintf(stderr, "fake-child: exiting: %.*s (code %d)\n",
-                 static_cast<int>(reason.size()), reason.data(), code);
-    std::fflush(stderr);
-    std::exit(code);
-}
-
 } // namespace
 
 int main(int argc, char **argv)
@@ -269,6 +285,10 @@ int main(int argc, char **argv)
     if (!parseOptions(argc, argv, options)) {
         std::fprintf(stderr, "fake-child: invalid arguments\n");
         return 2;
+    }
+
+    if (options.ignoreTerminate) {
+        ::signal(SIGTERM, SIG_IGN);
     }
 
     writePidFile(options.pidFile);

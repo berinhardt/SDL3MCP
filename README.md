@@ -26,6 +26,7 @@ events into the queue and hands the pixels you give it back to the agent.
 - [Running it](#running-it)
 - [Configuration](#configuration)
 - [Command line](#command-line)
+- [Supervisor](#supervisor)
 - [Public API](#public-api)
 - [Frame pipeline](#frame-pipeline)
 - [Input model](#input-model)
@@ -157,6 +158,7 @@ Targets and options:
 | --- | --- | --- |
 | `SDL3MCP_BUILD_SHARED` | `OFF` | Build a shared library instead of a static one. |
 | `SDL3MCP_BUILD_EXAMPLES` | `OFF` | Build the `minimal` executable from `examples/minimal/main.c`. |
+| `SDL3MCP_BUILD_SUPERVISOR` | `OFF` | Build the `sdl3mcp-supervisor` executable that runs an app as a restartable child. |
 | `SDL3MCP_BUILD_TESTS` | `ON` if top-level | Build the unit tests and register them with CTest. |
 | `SDL3MCP_USE_SYSTEM_JSON` | `ON` | Try `find_package(nlohmann_json CONFIG QUIET)` before using the vendored header. |
 
@@ -620,6 +622,111 @@ because stdout may already be the transport.
 Propagate any non-`SDL_APP_CONTINUE` result out of `SDL_AppInit`; `--mcp-help`
 and `--mcp-version` use `SDL_APP_SUCCESS` as a clean way to exit before a window
 is opened.
+
+## Supervisor
+
+The library speaks MCP on the app's own stdin/stdout, so a client that starts the
+app directly loses its endpoint whenever the app exits or crashes.
+`sdl3mcp-supervisor` is an optional executable that keeps one MCP connection
+alive across app restarts: it speaks MCP on its own stdin/stdout and runs the app
+as a child process behind it. The client keeps the same pipe; only the tools
+change when the child comes and goes.
+
+Build it alongside the example:
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DSDL3MCP_BUILD_EXAMPLES=ON -DSDL3MCP_BUILD_SUPERVISOR=ON
+cmake --build build --parallel
+```
+
+### Supervisor command line
+
+```text
+sdl3mcp-supervisor [--startup-timeout-ms N] [--terminate-timeout-ms N] --target <executable> [app args...]
+```
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--startup-timeout-ms N` | `10000` | Budget for fork/exec, the MCP handshake, and the first `sdl_info` that reports a bound window. |
+| `--terminate-timeout-ms N` | `60000` | How long `sdl_terminate` may take before the watchdog sends SIGTERM and then SIGKILL. |
+| `--target <executable>` | *(required)* | The app to run. Everything after it is passed to the app verbatim. |
+
+Options are parsed only before `--target`; after it, a flag that looks like a
+supervisor option belongs to the app. The supervisor never calls SDL, so it has
+no window, renderer, or video driver of its own.
+
+### States and `tools/list`
+
+| State | `tools/list` | When |
+| --- | --- | --- |
+| `Idle` | `spawn` only | At startup, and again after the child exits for any reason. |
+| `Starting` | empty | Between accepting `spawn` and the child reporting a window. |
+| `Running` | exactly the child's tools | While the child is alive. |
+
+`spawn` is the supervisor's own tool and is never forwarded. It starts one child
+(synchronously, so there is never more than one), completes the MCP handshake,
+and waits until `sdl_info` reports a bound window. On failure the result is an
+error that includes the child's recent stderr, and the supervisor returns to
+`Idle`.
+
+While `Running`, every other `tools/call` is forwarded to the child verbatim:
+the arguments go in unchanged, the child's content blocks and `isError` come
+back unchanged, and a JSON-RPC error from the child is returned unchanged.
+`initialize`, `ping`, and `tools/list` are always answered by the supervisor.
+If the child exits or crashes on its own, the exit handler clears the committed
+tools, sends `notifications/tools/list_changed`, and puts `spawn` back. Each
+transition sends that notification exactly once, so a client should call
+`tools/list` on each notification rather than cache the tool set.
+
+### Terminating the app
+
+`sdl_terminate` still means "ask the app to quit cleanly": the supervisor
+forwards the call, then waits for the child to actually exit within
+`--terminate-timeout-ms`. If the child exits, the result is the text
+`terminated`. If the deadline passes, the supervisor sends SIGTERM, waits about
+two seconds, sends SIGKILL, and returns a text result that says termination was
+forced. Either way the exit handler restores `Idle`/`spawn` and sends one
+`notifications/tools/list_changed`.
+
+The watchdog exists because `sdl_terminate` only pushes a quit event: an app
+that ignores `SDL_EVENT_QUIT`, hangs in a render loop, or never returns from
+`SDL_AppIterate` would otherwise keep the child alive forever behind a
+working-looking MCP endpoint.
+
+### Stopping the supervisor
+
+Supervisor stdin EOF, SIGINT, SIGTERM, and a normal return all stop the child
+before the supervisor exits: SIGTERM, a grace period, then SIGKILL if it is
+still alive. The child is reaped by the supervisor, so stopping the client never
+leaves an orphan app behind.
+
+### Client configuration
+
+A local client can point at the supervisor instead of the app. This is the
+`opencode.json` used during development; run it from the repository root so the
+relative paths resolve:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "sdl3mcp": {
+        "type": "local",
+        "command": [
+          "build/sdl3mcp-supervisor",
+          "--target",
+          "build/examples/minimal",
+          "--mcp"
+        ]
+      }
+    }
+  }
+}
+```
+
+The supervisor is POSIX-only, like the rest of the project: it uses
+`fork`/`exec`, pipes, and POSIX signals. `CMakeLists.txt` rejects a Windows
+configure rather than shipping an untested path.
 
 ## Public API
 
@@ -1412,6 +1519,7 @@ src/png.hpp, src/stb_image_write_impl.cpp
 third_party/stb/                   vendored stb_image_write.h
 third_party/nlohmann/              vendored json.hpp fallback
 examples/minimal/main.c           the quick-start app
+supervisor/                       the supervisor executable: CLI, child process, proxy
 tests/                             unit and integration tests, check_readme.py
 CMakeLists.txt
 ```
@@ -1421,9 +1529,13 @@ Test suite (all registered with CTest): `header_c`, `header_cpp`,
 `replay_tests`, `mouse_tests`, `queue_tests`, `app_input_tests`,
 `input_tool_tests`, `capture_tests`, `capture_tool_tests`, `terminate_tests`,
 `json_rpc_tests`, `session_tests`, `frame_tests`, `info_tests`, `server_tests`,
-and six `lifecycle_*` scenarios. When Python 3 is available, `readme_check` runs
-`tests/check_readme.py`: it compiles both complete C examples, parses every
-JSON block, and checks the schemas, the example run path, and the loop order.
+and six `lifecycle_*` scenarios. With `SDL3MCP_BUILD_SUPERVISOR=ON` it also adds
+`supervisor_tests`, which drives the real supervisor binary against a fake MCP
+child, and `supervisor_real_app`, which repeats the round trip through
+`examples/minimal` under `SDL_VIDEODRIVER=dummy`. When Python 3 is available,
+`readme_check` runs `tests/check_readme.py`: it compiles both complete C
+examples, parses every JSON block, and checks the schemas, the example run path,
+the supervisor states, and the loop order.
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DSDL3MCP_BUILD_EXAMPLES=ON

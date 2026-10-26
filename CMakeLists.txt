@@ -20,6 +20,7 @@ add_library(SDL3MCP ${sdl3mcp_library_type}
     src/input.cpp
     src/mouse.cpp
     src/replay.cpp
+    src/queue.cpp
 )
 add_library(SDL3MCP::SDL3MCP ALIAS SDL3MCP)
 

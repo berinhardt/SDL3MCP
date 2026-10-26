@@ -16,6 +16,7 @@ endif()
 add_library(SDL3MCP ${sdl3mcp_library_type}
     src/api.cpp
     src/configuration.cpp
+    src/keymap.cpp
 )
 add_library(SDL3MCP::SDL3MCP ALIAS SDL3MCP)
 

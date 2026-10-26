@@ -16,3 +16,11 @@ target_include_directories(sdl3mcp_test_configuration PRIVATE
 )
 target_link_libraries(sdl3mcp_test_configuration PRIVATE SDL3MCP::SDL3MCP SDL3::SDL3)
 add_test(NAME configuration_tests COMMAND sdl3mcp_test_configuration)
+
+add_executable(sdl3mcp_test_keymap keymap_tests.cpp)
+target_compile_features(sdl3mcp_test_keymap PRIVATE cxx_std_20)
+target_include_directories(sdl3mcp_test_keymap PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+)
+target_link_libraries(sdl3mcp_test_keymap PRIVATE SDL3MCP::SDL3MCP SDL3::SDL3)
+add_test(NAME keymap_tests COMMAND sdl3mcp_test_keymap)

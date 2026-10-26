@@ -202,3 +202,13 @@ foreach(scenario none help version error uninitialized stdio_pipes)
     add_test(NAME lifecycle_${scenario}
              COMMAND sdl3mcp_test_lifecycle ${scenario})
 endforeach()
+
+# The README is the contract, so its code, schemas, and run command are checked.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME readme_check
+             COMMAND "${Python3_EXECUTABLE}"
+                     "${CMAKE_CURRENT_SOURCE_DIR}/check_readme.py"
+                     --source "${PROJECT_SOURCE_DIR}"
+                     --build "${PROJECT_BINARY_DIR}")
+endif()

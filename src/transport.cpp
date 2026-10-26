@@ -1,3 +1,7 @@
+// TODO(windows): this transport uses POSIX poll/read/write and relies on the
+// server thread blocking SIGPIPE. Windows needs binary stdio (_setmode with
+// _O_BINARY) and a PeekNamedPipe/WaitForSingleObject reader wake-up. See
+// "Platforms" in README.md; CMake rejects a WIN32 configure until this lands.
 #include "transport.hpp"
 
 #include <cerrno>

@@ -92,6 +92,16 @@ and `examples/minimal` is a complete host.
   The shared build sets `DEFINE_SYMBOL "DLL_EXPORT"`; the static build defines
   `SDL_STATIC_LIB` privately. Do not add a private dllimport/export macro such
   as `SDL3MCP_DECLSPEC`, `SDL3MCP_BUILDING_LIBRARY`, or `SDL3MCP_STATIC`.
+- **The transport and stdio isolation are POSIX-only; Windows is a TODO.**
+  `poll`/`read`/`write`, `dup`/`dup2`, `/dev/null`, and blocking `SIGPIPE` on
+  the server thread are the shipped paths. `CMakeLists.txt` rejects a `WIN32`
+  configure with a `FATAL_ERROR`, and `src/transport.cpp` and
+  `src/stdio_isolation.cpp` carry a `TODO(windows)` comment naming the work:
+  binary stdio (`_setmode` with `_O_BINARY`), a Win32 reader wake-up
+  (`PeekNamedPipe`/`WaitForSingleObject`), `_dup`/`_dup2` with `NUL` for stdio
+  isolation, and test guards. Do not add untested Win32 code; later Windows
+  work removes the guard, adds those paths, and extends the test matrix to a
+  Windows host or CI.
 - **Dependencies stay SDL3-only at runtime.** `stb_image_write.h` is vendored in
   `third_party/stb` and compiled once in `src/stb_image_write_impl.cpp`.
   `nlohmann/json.hpp` is resolved system-first (`SDL3MCP_USE_SYSTEM_JSON`) with

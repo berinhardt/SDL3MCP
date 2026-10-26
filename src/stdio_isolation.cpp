@@ -1,3 +1,6 @@
+// TODO(windows): fd isolation uses POSIX dup/dup2 and /dev/null. Windows needs
+// _dup/_dup2 with the NUL device and binary stdio (_setmode with _O_BINARY).
+// See "Platforms" in README.md; CMake rejects a WIN32 configure until then.
 #include "stdio_isolation.hpp"
 
 #include <cerrno>

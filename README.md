@@ -20,6 +20,7 @@ events into the queue and hands the pixels you give it back to the agent.
 - [What the agent can do](#what-the-agent-can-do)
 - [How it works](#how-it-works)
 - [Requirements](#requirements)
+- [Platforms](#platforms)
 - [Build](#build)
 - [Quick start](#quick-start)
 - [Running it](#running-it)
@@ -118,6 +119,28 @@ the same rule: the frame you receive was written after the request arrived.
 
 No other runtime dependencies. The public header includes only `<SDL3/SDL.h>`
 and the C standard headers.
+
+## Platforms
+
+- **Linux and macOS are supported** through the POSIX transport: `poll` for
+  idle and shutdown wake-up, `read`/`write` on the duplicated descriptors,
+  `dup`/`dup2` for fd isolation, `/dev/null` for the host-descriptor redirect,
+  and `SIGPIPE` blocked on the server thread so a client that closes its stdout
+  cannot kill the app.
+- **Windows is a TODO, not implemented.** A Windows configure fails with a
+  `FATAL_ERROR` instead of producing a library that cannot work. The missing
+  pieces are:
+  - binary stdio: `_setmode(_fileno(stdin), _O_BINARY)` and the same for
+    stdout, because the transport frames one message per newline and must not
+    let the CRT translate `\r\n`;
+  - a Win32 reader wake-up: `PeekNamedPipe`/`WaitForSingleObject` in place of
+    `poll`, so the read loop sees shutdown without input and keeps the existing
+    idle timeout;
+  - stdio isolation via `_dup`/`_dup2` and the `NUL` device in place of
+    `dup`/`dup2` and `/dev/null`, plus handling `ERROR_NO_DATA`/broken-pipe
+    writes instead of relying on `SIGPIPE`;
+  - test guards that skip the POSIX-only scenarios on Windows, and a Windows CI
+    matrix so the guard above can be removed only against a real Windows host.
 
 ## Build
 

@@ -2,6 +2,10 @@ cmake_minimum_required(VERSION 3.21)
 
 project(SDL3MCP VERSION 0.1.0 LANGUAGES C CXX)
 
+if(WIN32)
+    message(FATAL_ERROR "SDL3MCP: Windows support is a TODO (binary stdio, Win32 transport wake-up, stdio isolation); see README Platforms.")
+endif()
+
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 

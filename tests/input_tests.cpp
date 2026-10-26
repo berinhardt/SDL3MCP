@@ -4,18 +4,33 @@
 
 #include <SDL3/SDL.h>
 
+#include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <variant>
+#include <vector>
 
 namespace
 {
 
+using sdl3mcp::InputAction;
+using sdl3mcp::InputBatch;
+using sdl3mcp::KeyAction;
 using sdl3mcp::KeyChord;
+using sdl3mcp::KeyInput;
 using sdl3mcp::KeyMap;
 using sdl3mcp::Modifier;
+using sdl3mcp::MouseButton;
+using sdl3mcp::MouseButtonAction;
+using sdl3mcp::MouseButtonInput;
+using sdl3mcp::MouseMoveInput;
+using sdl3mcp::ReleaseAllInput;
+using sdl3mcp::ScrollInput;
+using sdl3mcp::TextInput;
 
 constexpr SDL_Keymod kLeftSideMask =
     SDL_KMOD_LCTRL | SDL_KMOD_LSHIFT | SDL_KMOD_LALT | SDL_KMOD_LGUI;
@@ -274,6 +289,228 @@ void testUnsupportedModifierIfProducible()
     }
 }
 
+/*
+  Structural validation is pure: no SDL init, no window, no KeyMap. Every case
+  below is therefore a plain call on a hand-built batch.
+*/
+
+InputBatch batchWith(const InputAction &action)
+{
+    return InputBatch{{action}};
+}
+
+void expectValidBatch(const InputBatch &batch)
+{
+    const std::optional<std::string> error = sdl3mcp::validateStructure(batch);
+    CHECK(!error.has_value());
+}
+
+void expectBatchError(const InputBatch &batch, std::string_view fragment)
+{
+    const std::optional<std::string> error = sdl3mcp::validateStructure(batch);
+    CHECK(error.has_value());
+    CHECK(!error->empty());
+    CHECK(error->find('\n') == std::string::npos);
+    CHECK(error->find(fragment) != std::string::npos);
+}
+
+void expectIndexedError(const InputBatch &batch, std::size_t index, std::string_view fragment)
+{
+    const std::optional<std::string> error = sdl3mcp::validateStructure(batch);
+    CHECK(error.has_value());
+    const std::string prefix = "actions[" + std::to_string(index) + "]: ";
+    CHECK(error->rfind(prefix, 0) == 0);
+    CHECK(error->find(fragment) != std::string::npos);
+}
+
+void testValidBatch()
+{
+    InputBatch batch;
+    batch.actions = {
+        KeyInput{"s", KeyAction::Press, {Modifier::Ctrl}},
+        TextInput{"hello"},
+        MouseMoveInput{MouseMoveInput::Mode::Absolute, 10.0F, 20.0F},
+        MouseButtonInput{MouseButton::Left, MouseButtonAction::Click, 1.0F, 2.0F, 1},
+        ScrollInput{0.0F, 120.0F},
+        ReleaseAllInput{},
+    };
+    expectValidBatch(batch);
+}
+
+void testActionCountLimits()
+{
+    const InputBatch empty;
+    expectBatchError(empty, "at least one action");
+    /* The batch rules describe the array, so they carry no action index. */
+    CHECK(sdl3mcp::validateStructure(empty)->rfind("actions[", 0) != 0);
+
+    InputBatch maxBatch;
+    maxBatch.actions.assign(sdl3mcp::kMaxActionsPerBatch, InputAction{ReleaseAllInput{}});
+    CHECK(maxBatch.actions.size() == 256);
+    expectValidBatch(maxBatch);
+
+    maxBatch.actions.push_back(InputAction{ReleaseAllInput{}});
+    expectBatchError(maxBatch, "maximum is 256");
+    CHECK(sdl3mcp::validateStructure(maxBatch)->rfind("actions[", 0) != 0);
+}
+
+void testKeyValidation()
+{
+    expectBatchError(batchWith(KeyInput{"", KeyAction::Press, {}}), "empty");
+    expectBatchError(batchWith(KeyInput{std::string(65, 'k'), KeyAction::Press, {}}),
+                     "maximum is 64");
+    expectValidBatch(batchWith(KeyInput{std::string(64, 'k'), KeyAction::Press, {}}));
+
+    const std::vector<Modifier> fourModifiers = {Modifier::Ctrl, Modifier::Shift, Modifier::Alt,
+                                                 Modifier::Gui};
+    const std::vector<Modifier> fiveModifiers = {Modifier::Ctrl, Modifier::Shift, Modifier::Alt,
+                                                 Modifier::Gui, Modifier::Ctrl};
+    expectValidBatch(batchWith(KeyInput{"s", KeyAction::Press, fourModifiers}));
+    expectBatchError(batchWith(KeyInput{"s", KeyAction::Press, fiveModifiers}),
+                     "maximum is 4");
+
+    expectBatchError(batchWith(KeyInput{"s", KeyAction::Down, {Modifier::Ctrl}}),
+                     "modifiers are only valid for press");
+    expectBatchError(batchWith(KeyInput{"s", KeyAction::Up, {Modifier::Ctrl}}),
+                     "modifiers are only valid for press");
+    expectValidBatch(batchWith(KeyInput{"s", KeyAction::Down, {}}));
+    expectValidBatch(batchWith(KeyInput{"s", KeyAction::Up, {}}));
+
+    expectBatchError(batchWith(KeyInput{"s", static_cast<KeyAction>(3), {}}),
+                     "unknown key action");
+
+    /* Chord syntax and unknown names belong to the app thread, not here. */
+    expectValidBatch(batchWith(KeyInput{"ctrl+s", KeyAction::Press, {}}));
+    expectValidBatch(batchWith(KeyInput{"notakey", KeyAction::Press, {}}));
+}
+
+void testTextValidation()
+{
+    expectBatchError(batchWith(TextInput{""}), "empty");
+    expectBatchError(batchWith(TextInput{std::string(1025, 'a')}), "maximum is 1024");
+    expectValidBatch(batchWith(TextInput{std::string(1024, 'a')}));
+
+    /* The limit is bytes: 512 two-byte characters fill it exactly. */
+    std::string twoByteCharacters;
+    for (int index = 0; index < 512; ++index) {
+        twoByteCharacters += encodeUtf8(0xE9);
+    }
+    CHECK(twoByteCharacters.size() == 1024);
+    expectValidBatch(batchWith(TextInput{twoByteCharacters}));
+    expectBatchError(batchWith(TextInput{twoByteCharacters + encodeUtf8(0xE9)}),
+                     "maximum is 1024");
+}
+
+void testMouseMoveValidation()
+{
+    constexpr float nan = std::numeric_limits<float>::quiet_NaN();
+    constexpr float infinity = std::numeric_limits<float>::infinity();
+
+    expectValidBatch(batchWith(MouseMoveInput{}));
+    expectValidBatch(batchWith(MouseMoveInput{MouseMoveInput::Mode::Absolute, 640.0F, 480.0F}));
+    expectValidBatch(batchWith(MouseMoveInput{MouseMoveInput::Mode::Relative, -3.0F, 4.0F}));
+
+    expectBatchError(batchWith(MouseMoveInput{MouseMoveInput::Mode::Absolute, nan, 0.0F}),
+                     "mouse move x must be finite");
+    expectBatchError(batchWith(MouseMoveInput{MouseMoveInput::Mode::Relative, 0.0F, infinity}),
+                     "mouse move y must be finite");
+    expectBatchError(batchWith(MouseMoveInput{static_cast<MouseMoveInput::Mode>(2), 0.0F, 0.0F}),
+                     "unknown mouse move mode");
+}
+
+void testMouseButtonValidation()
+{
+    constexpr float nan = std::numeric_limits<float>::quiet_NaN();
+
+    expectValidBatch(batchWith(MouseButtonInput{MouseButton::Left, MouseButtonAction::Click,
+                                                std::nullopt, std::nullopt, 1}));
+    expectValidBatch(
+        batchWith(MouseButtonInput{MouseButton::X2, MouseButtonAction::Down, 10.0F, 20.0F, 1}));
+
+    expectBatchError(batchWith(
+                         MouseButtonInput{MouseButton::Left, MouseButtonAction::Click, 10.0F,
+                                          std::nullopt, 1}),
+                     "x and y must be provided together");
+    expectBatchError(batchWith(
+                         MouseButtonInput{MouseButton::Left, MouseButtonAction::Click, std::nullopt,
+                                          20.0F, 1}),
+                     "x and y must be provided together");
+    expectBatchError(batchWith(MouseButtonInput{MouseButton::Left, MouseButtonAction::Click, nan,
+                                                20.0F, 1}),
+                     "mouse button x must be finite");
+    expectBatchError(batchWith(MouseButtonInput{MouseButton::Left, MouseButtonAction::Up, 10.0F,
+                                                nan, 1}),
+                     "mouse button y must be finite");
+
+    for (const int clicks : {0, 4}) {
+        expectBatchError(batchWith(MouseButtonInput{MouseButton::Left, MouseButtonAction::Click,
+                                                    std::nullopt, std::nullopt, clicks}),
+                         "clicks must be between 1 and 3");
+    }
+    for (const int clicks : {1, 3}) {
+        expectValidBatch(batchWith(MouseButtonInput{MouseButton::Left, MouseButtonAction::Click,
+                                                    std::nullopt, std::nullopt, clicks}));
+    }
+
+    expectBatchError(batchWith(MouseButtonInput{static_cast<MouseButton>(5),
+                                                MouseButtonAction::Click, std::nullopt,
+                                                std::nullopt, 1}),
+                     "unknown mouse button");
+    expectBatchError(batchWith(MouseButtonInput{MouseButton::Left,
+                                                static_cast<MouseButtonAction>(3), std::nullopt,
+                                                std::nullopt, 1}),
+                     "unknown mouse button action");
+}
+
+void testScrollValidation()
+{
+    constexpr float nan = std::numeric_limits<float>::quiet_NaN();
+    constexpr float infinity = std::numeric_limits<float>::infinity();
+
+    expectValidBatch(batchWith(ScrollInput{0.0F, 120.0F}));
+    expectValidBatch(batchWith(ScrollInput{-1.5F, -120.0F}));
+    expectBatchError(batchWith(ScrollInput{nan, 0.0F}), "scroll x must be finite");
+    expectBatchError(batchWith(ScrollInput{0.0F, infinity}), "scroll y must be finite");
+}
+
+void testReleaseAllValidation() { expectValidBatch(batchWith(ReleaseAllInput{})); }
+
+/* Each action type reports its own index, using the 0-based array position. */
+void testActionIndexes()
+{
+    InputBatch batch;
+    batch.actions.assign(5, InputAction{ReleaseAllInput{}});
+
+    batch.actions[2] = KeyInput{"", KeyAction::Press, {}};
+    expectIndexedError(batch, 2, "key must not be empty");
+
+    batch.actions[2] = TextInput{""};
+    expectIndexedError(batch, 2, "text must not be empty");
+
+    batch.actions[2] = MouseMoveInput{MouseMoveInput::Mode::Absolute,
+                                      std::numeric_limits<float>::quiet_NaN(), 0.0F};
+    expectIndexedError(batch, 2, "mouse move x must be finite");
+
+    batch.actions[2] = MouseButtonInput{MouseButton::Left, MouseButtonAction::Click, 1.0F,
+                                        std::nullopt, 1};
+    expectIndexedError(batch, 2, "x and y must be provided together");
+
+    batch.actions[2] = ScrollInput{0.0F, std::numeric_limits<float>::quiet_NaN()};
+    expectIndexedError(batch, 2, "scroll y must be finite");
+
+    for (const std::size_t index : {std::size_t{0}, std::size_t{1}, std::size_t{4}}) {
+        InputBatch indexed;
+        indexed.actions.assign(6, InputAction{ReleaseAllInput{}});
+        indexed.actions[index] = TextInput{""};
+        expectIndexedError(indexed, index, "text must not be empty");
+    }
+
+    /* The first offending action wins. */
+    InputBatch twoBad;
+    twoBad.actions = {TextInput{""}, KeyInput{"", KeyAction::Press, {}}};
+    expectIndexedError(twoBad, 0, "text must not be empty");
+}
+
 } // namespace
 
 int main()
@@ -290,5 +527,14 @@ int main()
     testChordErrors();
     testOnlyLeftSideBits();
     testUnsupportedModifierIfProducible();
+    testValidBatch();
+    testActionCountLimits();
+    testKeyValidation();
+    testTextValidation();
+    testMouseMoveValidation();
+    testMouseButtonValidation();
+    testScrollValidation();
+    testReleaseAllValidation();
+    testActionIndexes();
     return 0;
 }

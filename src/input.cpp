@@ -1,5 +1,6 @@
 #include "input.hpp"
 
+#include <cmath>
 #include <cstddef>
 #include <optional>
 #include <string>
@@ -142,6 +143,129 @@ std::optional<KeyChord> resolveChord(std::string_view spec,
     return toChord(*binding, modifiers, error);
 }
 
+/*
+  Names the last enumerator of an enum, so a value cast in from the wire is
+  checked rather than trusted: an unknown value must not fall through a switch
+  into a default and be applied as something else.
+*/
+template <typename Enum>
+bool isKnownEnumValue(Enum value, Enum last) noexcept
+{
+    const int raw = static_cast<int>(value);
+    return raw >= 0 && raw <= static_cast<int>(last);
+}
+
+std::optional<std::string> validateKeyInput(const KeyInput &input)
+{
+    if (!isKnownEnumValue(input.action, KeyAction::Press)) {
+        return "unknown key action";
+    }
+    if (input.key.empty()) {
+        return "key must not be empty";
+    }
+    if (input.key.size() > kMaxKeyBytes) {
+        return "key is " + std::to_string(input.key.size()) + " bytes; the maximum is "
+               + std::to_string(kMaxKeyBytes);
+    }
+    if (input.modifiers.size() > kMaxModifiersPerKey) {
+        return "key has " + std::to_string(input.modifiers.size()) + " modifiers; the maximum is "
+               + std::to_string(kMaxModifiersPerKey);
+    }
+    /* A held key carries no modifier mask, so modifiers cannot mean anything. */
+    if (input.action != KeyAction::Press && !input.modifiers.empty()) {
+        return "modifiers are only valid for press";
+    }
+    return std::nullopt;
+}
+
+std::optional<std::string> validateTextInput(const TextInput &input)
+{
+    if (input.text.empty()) {
+        return "text must not be empty";
+    }
+    /* The limit is bytes; splitting at UTF-8 boundaries is the replay step's job. */
+    if (input.text.size() > kMaxTextBytes) {
+        return "text is " + std::to_string(input.text.size()) + " bytes; the maximum is "
+               + std::to_string(kMaxTextBytes);
+    }
+    return std::nullopt;
+}
+
+std::optional<std::string> validateMouseMoveInput(const MouseMoveInput &input)
+{
+    if (!isKnownEnumValue(input.mode, MouseMoveInput::Mode::Relative)) {
+        return "unknown mouse move mode";
+    }
+    if (!std::isfinite(input.x)) {
+        return "mouse move x must be finite";
+    }
+    if (!std::isfinite(input.y)) {
+        return "mouse move y must be finite";
+    }
+    return std::nullopt;
+}
+
+std::optional<std::string> validateMouseButtonInput(const MouseButtonInput &input)
+{
+    if (!isKnownEnumValue(input.button, MouseButton::X2)) {
+        return "unknown mouse button";
+    }
+    if (!isKnownEnumValue(input.action, MouseButtonAction::Click)) {
+        return "unknown mouse button action";
+    }
+    if (input.x.has_value() != input.y.has_value()) {
+        return "x and y must be provided together";
+    }
+    if (input.x.has_value() && !std::isfinite(*input.x)) {
+        return "mouse button x must be finite";
+    }
+    if (input.y.has_value() && !std::isfinite(*input.y)) {
+        return "mouse button y must be finite";
+    }
+    if (input.clicks < kMinClicks || input.clicks > kMaxClicks) {
+        return "clicks must be between " + std::to_string(kMinClicks) + " and "
+               + std::to_string(kMaxClicks);
+    }
+    return std::nullopt;
+}
+
+std::optional<std::string> validateScrollInput(const ScrollInput &input)
+{
+    if (!std::isfinite(input.x)) {
+        return "scroll x must be finite";
+    }
+    if (!std::isfinite(input.y)) {
+        return "scroll y must be finite";
+    }
+    return std::nullopt;
+}
+
+/* Dispatch without a generic lambda, so each rule stays a named function. */
+struct ActionValidator
+{
+    std::optional<std::string> operator()(const KeyInput &input) const
+    {
+        return validateKeyInput(input);
+    }
+    std::optional<std::string> operator()(const TextInput &input) const
+    {
+        return validateTextInput(input);
+    }
+    std::optional<std::string> operator()(const MouseMoveInput &input) const
+    {
+        return validateMouseMoveInput(input);
+    }
+    std::optional<std::string> operator()(const MouseButtonInput &input) const
+    {
+        return validateMouseButtonInput(input);
+    }
+    std::optional<std::string> operator()(const ScrollInput &input) const
+    {
+        return validateScrollInput(input);
+    }
+    std::optional<std::string> operator()(const ReleaseAllInput &) const { return std::nullopt; }
+};
+
 } // namespace
 
 std::optional<Modifier> parseModifier(std::string_view name)
@@ -180,6 +304,26 @@ SDL_Keymod modifierBit(Modifier modifier)
         return SDL_KMOD_LGUI;
     }
     return SDL_KMOD_NONE;
+}
+
+std::optional<std::string> validateStructure(const InputBatch &batch)
+{
+    if (batch.actions.empty()) {
+        return "the batch must contain at least one action";
+    }
+    if (batch.actions.size() > kMaxActionsPerBatch) {
+        return "the batch has " + std::to_string(batch.actions.size()) + " actions; the maximum is "
+               + std::to_string(kMaxActionsPerBatch);
+    }
+
+    for (std::size_t index = 0; index < batch.actions.size(); ++index) {
+        const std::optional<std::string> error =
+            std::visit(ActionValidator{}, batch.actions[index]);
+        if (error.has_value()) {
+            return "actions[" + std::to_string(index) + "]: " + *error;
+        }
+    }
+    return std::nullopt;
 }
 
 std::optional<KeyChord> resolveKey(std::string_view spec,

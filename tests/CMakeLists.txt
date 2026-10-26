@@ -74,3 +74,15 @@ target_link_libraries(sdl3mcp_test_json_rpc PRIVATE
     nlohmann_json::nlohmann_json
 )
 add_test(NAME json_rpc_tests COMMAND sdl3mcp_test_json_rpc)
+
+add_executable(sdl3mcp_test_session session_tests.cpp)
+target_compile_features(sdl3mcp_test_session PRIVATE cxx_std_20)
+target_include_directories(sdl3mcp_test_session PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+)
+target_link_libraries(sdl3mcp_test_session PRIVATE
+    SDL3MCP::SDL3MCP
+    SDL3::SDL3
+    nlohmann_json::nlohmann_json
+)
+add_test(NAME session_tests COMMAND sdl3mcp_test_session)

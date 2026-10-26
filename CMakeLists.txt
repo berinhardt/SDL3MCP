@@ -35,6 +35,8 @@ add_library(SDL3MCP ${sdl3mcp_library_type}
     src/replay.cpp
     src/queue.cpp
     src/json_rpc.cpp
+    src/tools.cpp
+    src/session.cpp
 )
 add_library(SDL3MCP::SDL3MCP ALIAS SDL3MCP)
 

@@ -107,3 +107,20 @@ target_link_libraries(sdl3mcp_test_server PRIVATE
     Threads::Threads
 )
 add_test(NAME server_tests COMMAND sdl3mcp_test_server)
+
+add_executable(sdl3mcp_test_lifecycle lifecycle_tests.cpp)
+target_compile_features(sdl3mcp_test_lifecycle PRIVATE cxx_std_20)
+target_include_directories(sdl3mcp_test_lifecycle PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+)
+target_link_libraries(sdl3mcp_test_lifecycle PRIVATE
+    SDL3MCP::SDL3MCP
+    SDL3::SDL3
+    Threads::Threads
+    nlohmann_json::nlohmann_json
+)
+# One lifecycle per process, so every scenario is its own CTest.
+foreach(scenario none help version error uninitialized stdio_pipes)
+    add_test(NAME lifecycle_${scenario}
+             COMMAND sdl3mcp_test_lifecycle ${scenario})
+endforeach()

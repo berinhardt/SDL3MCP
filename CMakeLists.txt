@@ -40,6 +40,7 @@ add_library(SDL3MCP ${sdl3mcp_library_type}
     src/frame.cpp
     src/transport.cpp
     src/server.cpp
+    src/stdio_isolation.cpp
     src/stb_image_write_impl.cpp
 )
 add_library(SDL3MCP::SDL3MCP ALIAS SDL3MCP)

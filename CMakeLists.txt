@@ -15,7 +15,11 @@ option(SDL3MCP_BUILD_EXAMPLES "Build the SDL3MCP examples" OFF)
 option(SDL3MCP_BUILD_SUPERVISOR "Build the sdl3mcp-supervisor executable" OFF)
 option(SDL3MCP_USE_SYSTEM_JSON "Resolve nlohmann_json from the system before vendoring" ON)
 
-find_package(SDL3 CONFIG REQUIRED)
+# A parent project that vendors SDL through add_subdirectory already defines the
+# target; reusing it keeps one SDL in the process and avoids the system install.
+if(NOT TARGET SDL3::SDL3)
+    find_package(SDL3 CONFIG REQUIRED)
+endif()
 
 if(SDL3MCP_USE_SYSTEM_JSON)
     find_package(nlohmann_json CONFIG QUIET)
@@ -168,43 +172,48 @@ if(SDL3MCP_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
 
-# Only the library is packaged: tests and examples are never installed.
-install(TARGETS SDL3MCP EXPORT SDL3MCPTargets
-    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
-    LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
-    ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
-    INCLUDES DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
-)
+# Packaging only happens when SDL3MCP is the top-level project: an embedded
+# build's SDL3 target is not in any export set, so an export here would fail to
+# generate.
+if(PROJECT_IS_TOP_LEVEL)
+    # Only the library is packaged: tests and examples are never installed.
+    install(TARGETS SDL3MCP EXPORT SDL3MCPTargets
+        RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+        LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+        ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+        INCLUDES DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+    )
 
-install(FILES
-    "${CMAKE_CURRENT_SOURCE_DIR}/include/SDL3MCP/SDL3MCP.h"
-    "${SDL3MCP_GENERATED_DIR}/SDL3MCP/SDL3MCP_version.h"
-    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/SDL3MCP"
-)
+    install(FILES
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/SDL3MCP/SDL3MCP.h"
+        "${SDL3MCP_GENERATED_DIR}/SDL3MCP/SDL3MCP_version.h"
+        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/SDL3MCP"
+    )
 
-install(FILES
-    "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE"
-    "${CMAKE_CURRENT_SOURCE_DIR}/README.md"
-    DESTINATION "${CMAKE_INSTALL_DOCDIR}"
-)
+    install(FILES
+        "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE"
+        "${CMAKE_CURRENT_SOURCE_DIR}/README.md"
+        DESTINATION "${CMAKE_INSTALL_DOCDIR}"
+    )
 
-configure_package_config_file(
-    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/SDL3MCPConfig.cmake.in"
-    "${SDL3MCP_GENERATED_DIR}/SDL3MCPConfig.cmake"
-    INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/SDL3MCP"
-)
-write_basic_package_version_file(
-    "${SDL3MCP_GENERATED_DIR}/SDL3MCPConfigVersion.cmake"
-    VERSION "${PROJECT_VERSION}"
-    COMPATIBILITY SameMajorVersion
-)
-install(FILES
-    "${SDL3MCP_GENERATED_DIR}/SDL3MCPConfig.cmake"
-    "${SDL3MCP_GENERATED_DIR}/SDL3MCPConfigVersion.cmake"
-    DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/SDL3MCP"
-)
+    configure_package_config_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/SDL3MCPConfig.cmake.in"
+        "${SDL3MCP_GENERATED_DIR}/SDL3MCPConfig.cmake"
+        INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/SDL3MCP"
+    )
+    write_basic_package_version_file(
+        "${SDL3MCP_GENERATED_DIR}/SDL3MCPConfigVersion.cmake"
+        VERSION "${PROJECT_VERSION}"
+        COMPATIBILITY SameMajorVersion
+    )
+    install(FILES
+        "${SDL3MCP_GENERATED_DIR}/SDL3MCPConfig.cmake"
+        "${SDL3MCP_GENERATED_DIR}/SDL3MCPConfigVersion.cmake"
+        DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/SDL3MCP"
+    )
 
-install(EXPORT SDL3MCPTargets
-    NAMESPACE SDL3MCP::
-    DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/SDL3MCP"
-)
+    install(EXPORT SDL3MCPTargets
+        NAMESPACE SDL3MCP::
+        DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/SDL3MCP"
+    )
+endif()

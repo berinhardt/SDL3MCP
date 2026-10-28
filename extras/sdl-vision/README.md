@@ -15,6 +15,30 @@ cp extras/sdl-vision/sdl-vision.md ~/.config/opencode/agents/sdl-vision.md
 cp extras/sdl-vision/SKILL.md ~/.config/opencode/skills/sdl-vision/SKILL.md
 ```
 
+```json
+{
+  "mcp": {
+    "servers": {
+      "sdl3mcp": {
+        "type": "local",
+        "command": [
+          "/path/to/SDL3MCP/build/sdl3mcp-supervisor",
+          "--target",
+          "/path/to/SDL3MCP/build/examples/minimal",
+          "--mcp"
+        ]
+      }
+    }
+  }
+}
+```
+
+Use absolute paths, or keep the repository's relative paths and start the client
+from the repository root, because the supervisor resolves them against the
+workspace directory. The `--mcp` after `--target` is the app's own flag, not a
+supervisor option: `--target` consumes everything after it. Build both with
+`-DSDL3MCP_BUILD_SUPERVISOR=ON`, as the main README describes.
+
 The agent needs an MCP server named `sdl3mcp` and a vision-capable model. It
 ships configured for `opencode-go/minimax-m3`.
 

@@ -25,6 +25,4 @@ framing instead of an `image/png` block, and rejects `max_width`.
 
 ## Limits
 
-The model reads layout, text, and visual state reliably; its colour estimates
-are rough, so exact colours and pixel values should be decoded numerically from
-the PNG instead.
+The model is strongest on layout and visible text. Its colour and visual-state reports are unreliable: in a test against examples/minimal it called a red background black and a green background teal. Decode the PNG numerically for any colour, pixel value, or dimension, and swap the model in the agent frontmatter for a stronger vision model if state accuracy matters.

@@ -28,6 +28,7 @@ Never conclude from the summary string, from `typeof`, or from probing the retur
 ## How to answer
 
 - Describe only what is visible. Mark anything inferred as an inference and flag uncertainty.
-- Quote visible text verbatim, name UI elements, and give positions and colours when they matter to the question.
+- Quote visible text verbatim, name UI elements, and give positions when they matter to the question. Give a colour only as an approximation, never as a hex or a measured value, and say when the frame is a uniform field instead of guessing its shade.
+- If the frame is a single flat colour or looks empty, say that and quote the summary text; do not invent elements to satisfy the question.
 - Answer the questions first; add observations only when they change the answer.
 - Keep the reply concise. No preamble, no offers to help further.

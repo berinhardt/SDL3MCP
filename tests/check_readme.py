@@ -9,6 +9,8 @@ the loop order is a bug. The checks are deliberately mechanical:
 - the ``sdl_input`` schema matches the implemented limits;
 - the ``sdl_capture`` schemas match both sides: region + timeout_ms for the
   library's raw framing and max_width for the supervisor's image block;
+- the region prose names the captured frame's dimensions, not the window's;
+- the public ``SDL3MCP_WriteFrame`` signature takes explicit width and height;
 - the ``sdl_terminate`` schema is the empty object with all four hints;
 - the quick start matches ``examples/minimal/main.c`` and contains R/G/B;
 - the documented run command points at ``<build>/examples/minimal``;
@@ -38,6 +40,7 @@ STALE_PHRASES = (
     "32 bytes",
     "requires window focus",
     "actions queued",
+    "at SDL_GetWindowSizeInPixels",
 )
 
 
@@ -272,6 +275,20 @@ def check_capture_framing_prose(readme: str, failures: list[str]) -> None:
     lowered = readme.lower()
     if "library" not in lowered or "supervisor" not in lowered:
         failures.append("README must state which side owns the capture presentation")
+    # The region is in pixels of the frame the app wrote, not of the window, so
+    # the documented bounds must be the capture statistics.
+    for required in ("capture.lastWidth", "capture.lastHeight"):
+        if required not in readme:
+            failures.append(f"README does not document the region against {required!r}")
+
+
+def check_write_frame_signature(readme: str, failures: list[str]) -> None:
+    """Explicit dimensions are the contract: the app, not the window, decides."""
+    signature = "SDL3MCP_WriteFrame(const uint8_t *data, size_t size, int width, int height)"
+    if signature not in readme:
+        failures.append(f"README must document '{signature}'")
+    if "SDL3MCP_WriteFrame(const uint8_t *data, size_t size);" in readme:
+        failures.append("README still documents the two-argument SDL3MCP_WriteFrame")
 
 
 def check_terminate_schema(documents: list[object], failures: list[str]) -> None:
@@ -389,6 +406,7 @@ def main(argv: list[str] | None = None) -> int:
     check_input_schema(documents, failures)
     check_capture_schemas(documents, failures)
     check_capture_framing_prose(readme, failures)
+    check_write_frame_signature(readme, failures)
     check_terminate_schema(documents, failures)
     check_example_command(readme, failures)
     check_supervisor_docs(readme, failures)

@@ -576,7 +576,7 @@ ToolResult captureResult(LibraryState &state, const ToolCall &call)
                               std::to_string(arguments->timeout.count()) +
                               " ms. The app must call SDL3MCP_WriteFrame() when "
                               "SDL3MCP_FrameRequested() returns true, with tightly packed "
-                              "RGBA8888 at SDL_GetWindowSizeInPixels().";
+                              "RGBA8888, its width, and its height.";
         if (!failure.empty()) {
             message += " Last drop: " + failure + ".";
         }
@@ -859,22 +859,11 @@ extern "C" SDL_DECLSPEC bool SDLCALL SDL3MCP_FrameRequested(void)
     }
 }
 
-extern "C" SDL_DECLSPEC void SDLCALL SDL3MCP_WriteFrame(const uint8_t *data, size_t size)
+extern "C" SDL_DECLSPEC void SDLCALL
+SDL3MCP_WriteFrame(const uint8_t *data, size_t size, int width, int height)
 {
     try {
         if (!g_state || !g_state->capture.pending()) {
-            return;
-        }
-        if (g_state->window == nullptr) {
-            g_state->capture.recordFailure("no window bound");
-            return;
-        }
-
-        int width = 0;
-        int height = 0;
-        if (!SDL_GetWindowSizeInPixels(g_state->window, &width, &height) || width <= 0 ||
-            height <= 0) {
-            g_state->capture.recordFailure("window has zero drawable pixels");
             return;
         }
 

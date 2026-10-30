@@ -5,8 +5,8 @@
 
   A Frame is always tightly packed RGBA8888 with `width * height * 4` bytes and
   a top-left origin. validateFrame() is the gate that establishes the invariant
-  from SDL3MCP_WriteFrame's raw pointer and the bound window size; cropFrame()
-  trusts it and only guards its own arguments.
+  from SDL3MCP_WriteFrame's raw pointer and the app-supplied dimensions;
+  cropFrame() trusts it and only guards its own arguments.
 
   Presentation (downscaling, PNG, base64) is the supervisor's policy and lives in
   supervisor/, so the library never references stb.

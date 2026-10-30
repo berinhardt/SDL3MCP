@@ -158,6 +158,18 @@ add_test(NAME capture_tool_tests COMMAND sdl3mcp_test_capture_tool)
 set_tests_properties(capture_tool_tests PROPERTIES ENVIRONMENT
     "SDL_VIDEODRIVER=dummy;ASAN_OPTIONS=detect_leaks=0:halt_on_error=1")
 
+add_executable(sdl3mcp_test_frame_size frame_size_tests.cpp)
+target_compile_features(sdl3mcp_test_frame_size PRIVATE cxx_std_20)
+target_link_libraries(sdl3mcp_test_frame_size PRIVATE
+    SDL3MCP::SDL3MCP
+    SDL3::SDL3
+    nlohmann_json::nlohmann_json
+    Threads::Threads
+)
+add_test(NAME frame_size_tests COMMAND sdl3mcp_test_frame_size)
+set_tests_properties(frame_size_tests PROPERTIES ENVIRONMENT
+    "SDL_VIDEODRIVER=dummy;ASAN_OPTIONS=detect_leaks=0:halt_on_error=1")
+
 add_executable(sdl3mcp_test_terminate terminate_tests.cpp)
 target_compile_features(sdl3mcp_test_terminate PRIVATE cxx_std_20)
 target_include_directories(sdl3mcp_test_terminate PRIVATE

@@ -338,7 +338,7 @@ void writeFrameIfRequested(SDL_Renderer *renderer, SDL_Window *window)
     }
     SDL_DestroySurface(rgba);
 
-    SDL3MCP_WriteFrame(pixels.data(), pixels.size());
+    SDL3MCP_WriteFrame(pixels.data(), pixels.size(), width, height);
 }
 
 } // namespace

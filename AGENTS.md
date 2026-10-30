@@ -28,9 +28,10 @@ and `examples/minimal` is a complete host.
   the repository root (or `cd build && ./examples/minimal --mcp`). There is no
   `examples/minimal/minimal`.
 - `tests/check_readme.py` compiles the README's two complete C examples, parses
-  every JSON block, and checks both `sdl_capture` schemas and the raw-framing
-  prose, the run command, the supervisor states, and the loop order. CTest
-  registers it as `readme_check` when Python 3 is found.
+  every JSON block, and checks both `sdl_capture` schemas, the raw-framing
+  prose, the region's captured-frame dimensions, the four-argument
+  `SDL3MCP_WriteFrame` signature, the run command, the supervisor states, and
+  the loop order. CTest registers it as `readme_check` when Python 3 is found.
 - `extras/sdl-vision/` is optional OpenCode agent configuration — a subagent
   plus a skill that drives `sdl_capture` through a vision model. It is
   not built or installed by CMake, has no `ctest` entry, and
@@ -70,20 +71,21 @@ and `examples/minimal` is a complete host.
   returns the standard `{"type":"image","mimeType":"image/png","data":"<base64>"}`
   content block, which stays the client-facing contract. Do not reintroduce a
   custom client, a non-standard content type, or PNG encoding in the library.
-- **Frame contract.** `SDL3MCP_WriteFrame` accepts only tightly packed RGBA8888,
-  `width * height * 4` bytes at the bound window's
-  `SDL_GetWindowSizeInPixels`, top-left origin, no row padding and no pitch
-  parameter. The app converts and packs when a readback surface is padded. The
-  server thread crops the optional region and writes the raw framing; PNG
-  encoding and base64 happen only in the supervisor. Drops (no window, zero
-  drawable pixels, size mismatch, `max_frame_bytes`, null data, non-positive
-  dimension) leave the request pending and surface in the timeout text and
-  `sdl_info`.
-- **Capture region.** `region` is `{x, y, width, height}` in full-frame pixels,
-  top-left origin, all four required, and must fit inside `pixelWidth` by
-  `pixelHeight`; the library crops it before the supervisor's `max_width`
-  downscaling. `max_width` is 16..16384 and exists only in the supervisor's
-  schema. `timeout_ms` is 1..60000.
+- **Frame contract.** `SDL3MCP_WriteFrame(data, size, width, height)` accepts
+  only tightly packed RGBA8888 with `size == width * height * 4`, top-left
+  origin, no row padding and no pitch parameter. The app supplies the
+  dimensions, so any render target is valid and the library never reads the
+  window size to validate a frame. The app converts and packs when a readback
+  surface is padded. The server thread crops the optional region and writes the
+  raw framing; PNG encoding and base64 happen only in the supervisor. Drops
+  (size mismatch for the supplied dimensions, `max_frame_bytes`, null data,
+  non-positive dimension) leave the request pending and surface in the timeout
+  text and `sdl_info`.
+- **Capture region.** `region` is `{x, y, width, height}` in pixels of the
+  captured frame, top-left origin, all four required, and must fit inside
+  `capture.lastWidth` by `capture.lastHeight`; the library crops it before the
+  supervisor's `max_width` downscaling. `max_width` is 16..16384 and exists only
+  in the supervisor's schema. `timeout_ms` is 1..60000.
 - **Input is event-based.** Actions become `SDL_PushEvent` traffic applied in
   `SDL3MCP_AppIterate` on the app thread. `SDL_GetKeyboardState` cannot be
   updated because SDL3 exposes no per-key setter; that is a documented

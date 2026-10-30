@@ -73,7 +73,7 @@ static void writeFrame(App *app)
     const size_t rowBytes = (size_t)rgba->w * 4u;
     const size_t size = rowBytes * (size_t)rgba->h;
     if ((size_t)rgba->pitch == rowBytes) {
-        SDL3MCP_WriteFrame(rgba->pixels, size);
+        SDL3MCP_WriteFrame(rgba->pixels, size, rgba->w, rgba->h);
     } else {
         uint8_t *packed = SDL_malloc(size);
         if (packed) {
@@ -82,7 +82,7 @@ static void writeFrame(App *app)
                            (const uint8_t *)rgba->pixels + (size_t)rgba->pitch * (size_t)y,
                            rowBytes);
             }
-            SDL3MCP_WriteFrame(packed, size);
+            SDL3MCP_WriteFrame(packed, size, rgba->w, rgba->h);
             SDL_free(packed);
         }
     }

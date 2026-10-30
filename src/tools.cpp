@@ -140,18 +140,19 @@ constexpr std::string_view kInputAnnotations = R"({
 })";
 
 /*
-  The region is in full-frame pixels, matching sdl_info's pixelWidth and
-  pixelHeight, so the crop is exact. Downscaling and image encoding are the
-  supervisor's policy; a direct library client receives raw RGBA.
+  The region is in pixels of the captured frame, matching sdl_info's
+  capture.lastWidth and capture.lastHeight, so the crop is exact. Downscaling
+  and image encoding are the supervisor's policy; a direct library client
+  receives raw RGBA.
 */
 constexpr std::string_view kCaptureDescription =
     "Ask the application for a fresh frame through SDL3MCP_FrameRequested() and "
     "return its raw pixels. The JSON-RPC result line is "
     "{\"format\":\"rgba8888\",\"width\":W,\"height\":H,\"byteLength\":B}, "
     "immediately followed by exactly B tightly packed RGBA bytes with no newline "
-    "and no base64. The optional region crops pixels from the full frame, using "
-    "pixelWidth x pixelHeight from sdl_info, with a top-left origin; it must fit "
-    "inside the frame.";
+    "and no base64. The optional region crops pixels from the captured frame, using "
+    "capture.lastWidth x capture.lastHeight from sdl_info, with a top-left origin; "
+    "it must fit inside the frame.";
 
 constexpr std::string_view kCaptureSchema = R"({
   "type": "object",

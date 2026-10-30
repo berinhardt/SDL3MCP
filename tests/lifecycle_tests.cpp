@@ -153,7 +153,7 @@ void testNone()
 
     CHECK(SDL3MCP_AppIterate() == SDL_APP_CONTINUE);
     CHECK(!SDL3MCP_FrameRequested());
-    SDL3MCP_WriteFrame(nullptr, 0);
+    SDL3MCP_WriteFrame(nullptr, 0, 0, 0);
     CHECK(SDL3MCP_SetWindow(nullptr) == SDL_APP_CONTINUE);
 
     SDL_ClearError();
@@ -214,7 +214,7 @@ void testUninitialized()
 
     CHECK(SDL3MCP_AppIterate() == SDL_APP_CONTINUE);
     CHECK(!SDL3MCP_FrameRequested());
-    SDL3MCP_WriteFrame(nullptr, 0);
+    SDL3MCP_WriteFrame(nullptr, 0, 0, 0);
 
     SDL3MCP_AppShutdown();
 }

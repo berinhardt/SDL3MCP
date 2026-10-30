@@ -58,7 +58,14 @@ SDL_DECLSPEC SDL_AppResult SDLCALL SDL3MCP_SetWindow(SDL_Window *window);
 SDL_DECLSPEC SDL_AppResult SDLCALL SDL3MCP_AppIterate(void);
 SDL_DECLSPEC void SDLCALL SDL3MCP_AppShutdown(void);
 SDL_DECLSPEC bool SDLCALL SDL3MCP_FrameRequested(void);
-SDL_DECLSPEC void SDLCALL SDL3MCP_WriteFrame(const uint8_t *data, size_t size);
+/*
+  Answers a pending capture with tightly packed RGBA8888: `size` must be exactly
+  width * height * 4, top-left origin, no row padding. The app supplies width and
+  height, so the pixels may come from any render target rather than only the
+  bound window. Ignored when no capture is pending.
+*/
+SDL_DECLSPEC void SDLCALL
+SDL3MCP_WriteFrame(const uint8_t *data, size_t size, int width, int height);
 
 #ifdef __cplusplus
 }

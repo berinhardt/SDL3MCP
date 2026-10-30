@@ -305,10 +305,10 @@ nlohmann::json supervisorCaptureToolDefinition()
         {"name", "sdl_capture"},
         {"description",
          "Ask the application for a fresh frame and return it as a PNG image block. "
-         "The optional region crops pixels from the full frame, using pixelWidth x "
-         "pixelHeight from sdl_info, with a top-left origin; it must fit inside the "
-         "frame and is applied before max_width downscaling. Use max_width to keep "
-         "the payload small."},
+         "The optional region crops pixels from the captured frame, using "
+         "capture.lastWidth x capture.lastHeight from sdl_info, with a top-left "
+         "origin; it must fit inside the frame and is applied before max_width "
+         "downscaling. Use max_width to keep the payload small."},
         {"inputSchema",
          nlohmann::json{
              {"type", "object"},

@@ -27,8 +27,9 @@ namespace sdl3mcp
 
 /*
   Geometry follows SDL's two size spaces: width/height are window points, the
-  space mouse coordinates use, while pixelWidth/pixelHeight are drawable pixels,
-  the space frame capture uses. pixelDensity is their ratio.
+  space mouse coordinates use, while pixelWidth/pixelHeight are drawable pixels.
+  pixelDensity is their ratio. Capture reports the dimensions the app wrote in
+  capture.lastWidth/lastHeight, which may differ from the window's pixels.
 */
 struct WindowInfo
 {

@@ -10,7 +10,7 @@ Use this when a question is about what the running application looks like. The `
 ## Workflow
 
 1. Check the tool catalogue. If it is empty, a `spawn` is already in progress — wait for the `notifications/tools/list_changed` notification instead of calling anything. If it exposes only `spawn`, the supervisor is idle — call `spawn`, which is synchronous and bounded by `--startup-timeout-ms` (10 s by default) and reports the child's recent stderr on failure. Then call `sdl_info` and confirm a bound window.
-2. Launch the `sdl-vision` subagent once with the exact questions and any context that changes the answer: the widget you care about, a region in full-frame pixels from `sdl_info`'s `pixelWidth`/`pixelHeight`, an expected colour, text to quote verbatim. It captures the frame itself.
+2. Launch the `sdl-vision` subagent once with the exact questions and any context that changes the answer: the widget you care about, a region in captured-frame pixels from `sdl_info`'s `capture.lastWidth`/`capture.lastHeight`, an expected colour, text to quote verbatim. It captures the frame itself.
 3. Report its answer as the source of truth for layout and visible text, but treat any colour it gives as advisory — verify numerically when the exact value matters. Never claim you looked at the frame yourself.
 
 ## Notes

@@ -318,7 +318,7 @@ static void writeFrame(App *app)
     const size_t rowBytes = (size_t)rgba->w * 4u;
     const size_t size = rowBytes * (size_t)rgba->h;
     if ((size_t)rgba->pitch == rowBytes) {
-        SDL3MCP_WriteFrame(rgba->pixels, size);
+        SDL3MCP_WriteFrame(rgba->pixels, size, rgba->w, rgba->h);
     } else {
         uint8_t *packed = SDL_malloc(size);
         if (packed) {
@@ -327,7 +327,7 @@ static void writeFrame(App *app)
                            (const uint8_t *)rgba->pixels + (size_t)rgba->pitch * (size_t)y,
                            rowBytes);
             }
-            SDL3MCP_WriteFrame(packed, size);
+            SDL3MCP_WriteFrame(packed, size, rgba->w, rgba->h);
             SDL_free(packed);
         }
     }
@@ -707,7 +707,7 @@ client-facing `image/png` contract.
 ```json
 {
   "name": "sdl_capture",
-  "description": "Ask the application for a fresh frame and return it as a PNG image block. The optional region crops pixels from the full frame, using pixelWidth x pixelHeight from sdl_info, with a top-left origin; it must fit inside the frame and is applied before max_width downscaling. Use max_width to keep the payload small.",
+  "description": "Ask the application for a fresh frame and return it as a PNG image block. The optional region crops pixels from the captured frame, using capture.lastWidth x capture.lastHeight from sdl_info, with a top-left origin; it must fit inside the frame and is applied before max_width downscaling. Use max_width to keep the payload small.",
   "inputSchema": {
     "type": "object",
     "properties": {
@@ -819,7 +819,7 @@ SDL_AppResult SDL3MCP_SetWindow(SDL_Window *window);
 SDL_AppResult SDL3MCP_AppIterate(void);
 void          SDL3MCP_AppShutdown(void);
 bool          SDL3MCP_FrameRequested(void);
-void          SDL3MCP_WriteFrame(const uint8_t *data, size_t size);
+void          SDL3MCP_WriteFrame(const uint8_t *data, size_t size, int width, int height);
 ```
 
 All functions use C linkage. They never throw; the C++ implementation catches
@@ -858,16 +858,17 @@ and again if you replace the window. Pass `NULL` to clear the binding.
 The window is used for three things:
 
 - **geometry** — `SDL_GetWindowSize` (points) for mouse coordinates and
-  `SDL_GetWindowSizeInPixels` for frame validation, published to the server
-  thread once per `SDL3MCP_AppIterate`;
+  `SDL_GetWindowSizeInPixels` for the reported pixel size, published to the
+  server thread once per `SDL3MCP_AppIterate`;
 - **event routing** — synthetic events carry this window's `windowID`;
 - **text input and cursor** — `SDL_TextInputActive`, `SDL_WarpMouseInWindow`,
   and `SDL_GetWindowRelativeMouseMode`.
 
 App thread only. Returns `SDL_APP_FAILURE` if `SDL3MCP_AppInit` was not called
 or the window has no drawable area yet; a window that is later minimized is fine
-and only makes captures fail until it is restored. Rebinding resets held keys,
-held buttons, and the virtual cursor, so nothing crosses windows.
+and only affects what the app can read back, not frame validation. Rebinding
+resets held keys, held buttons, and the virtual cursor, so nothing crosses
+windows.
 
 ### `SDL3MCP_AppIterate`
 
@@ -927,11 +928,13 @@ to call every frame: it is an atomic load, no locks.
 ### `SDL3MCP_WriteFrame`
 
 ```c
-void SDL3MCP_WriteFrame(const uint8_t *data, size_t size);
+void SDL3MCP_WriteFrame(const uint8_t *data, size_t size, int width, int height);
 ```
 
 Hands a rendered frame to a waiting capture. There is no pitch or stride
-parameter: the buffer must already be packed.
+parameter: the buffer must already be packed. `width` and `height` are the
+frame's own dimensions, so the pixels may come from any render target and need
+not match the bound window's drawable size.
 
 - **Format:** tightly packed RGBA8888, top-left origin, row-major, stride
   exactly `width * 4`, bytes in the order R, G, B, A. On SDL 3.2+,
@@ -943,8 +946,10 @@ parameter: the buffer must already be packed.
 - **Pitch:** a readback surface may pad its rows. When `surface->pitch` is not
   `width * 4`, copy row by row into a packed buffer first; the quick-start
   `writeFrame` helper shows the conversion and copy.
-- **Size:** `width * height * 4`, where `width` and `height` are the bound
-  window's `SDL_GetWindowSizeInPixels` at the moment of the call.
+- **Size:** `width * height * 4`, where `width` and `height` are the dimensions
+  of the pixels the app passes in. The library never measures the window, so a
+  readback of a smaller render target, a region, or an offscreen buffer is
+  accepted as long as the byte count matches.
 - **Guard:** `size <= max_frame_bytes`; larger frames are dropped.
 - The pixels are copied before the function returns, so the app can reuse or
   free its buffer immediately. The server thread crops the optional region and
@@ -952,7 +957,7 @@ parameter: the buffer must already be packed.
   job and never touch the render thread.
 - Call it only when `SDL3MCP_FrameRequested()` is true. Calls with no pending
   capture are ignored.
-- App thread only, because it queries the window.
+- App thread only, because it reads the pending capture state.
 
 The function returns nothing on purpose: a capture is a request that can fail,
 and the error belongs to the client's `sdl_capture` call, not to the render
@@ -970,9 +975,9 @@ asks:
    request pending, and waits up to `timeout_ms`.
 3. On the next frame, the app's `SDL3MCP_FrameRequested()` returns true.
 4. The app renders, reads its own pixels, and calls `SDL3MCP_WriteFrame`.
-5. `SDL3MCP_WriteFrame` validates the buffer against the bound window's
-   `SDL_GetWindowSizeInPixels`, copies it, clears the pending request, and wakes
-   the server thread.
+5. `SDL3MCP_WriteFrame` validates the byte count against the width and height
+   the app supplies, copies it, clears the pending request, and wakes the server
+   thread.
 6. The server thread crops the optional region and answers with one result line,
    `{"format":"rgba8888","width":W,"height":H,"byteLength":B}`, immediately
    followed by exactly `B` raw RGBA bytes and nothing else.
@@ -992,12 +997,12 @@ Rules that fall out of this design:
   thread, so a slow capture delays the next tool call until it completes or
   times out. Agents that need to act "between" two frames should call
   `sdl_input`, then `sdl_capture`.
-- A frame is dropped when no window is bound, when the window has zero drawable
-  pixels, when `size` is not exactly `width * height * 4`, when the data pointer
-  is null, when a dimension is not positive, or when the frame exceeds
-  `max_frame_bytes`. A drop leaves the request pending so the app can retry; the
-  last reason is appended to the timeout message as "Last drop: ..." and is
-  visible in `sdl_info` as `capture.lastError` with `capture.dropped` counting
+- A frame is dropped when `size` is not exactly `width * height * 4` for the
+  supplied dimensions, when the data pointer is null, when a dimension is not
+  positive, or when the frame exceeds `max_frame_bytes`. A drop leaves the
+  request pending so the app can retry; the last reason is appended to the
+  timeout message as "Last drop: ..." and is visible in `sdl_info` as
+  `capture.lastError` with `capture.dropped` counting
   the attempts.
 - `sdl_capture` fails immediately with a clear error if no window is bound, if
   the region does not fit inside the frame, or if the app never answers in time.
@@ -1352,7 +1357,7 @@ The library's own schema has no `max_width`: presentation is supervisor policy.
 ```json
 {
   "name": "sdl_capture",
-  "description": "Ask the application for a fresh frame through SDL3MCP_FrameRequested() and return its raw pixels. The JSON-RPC result line is {\"format\":\"rgba8888\",\"width\":W,\"height\":H,\"byteLength\":B}, immediately followed by exactly B tightly packed RGBA bytes with no newline and no base64. The optional region crops pixels from the full frame, using pixelWidth x pixelHeight from sdl_info, with a top-left origin; it must fit inside the frame.",
+  "description": "Ask the application for a fresh frame through SDL3MCP_FrameRequested() and return its raw pixels. The JSON-RPC result line is {\"format\":\"rgba8888\",\"width\":W,\"height\":H,\"byteLength\":B}, immediately followed by exactly B tightly packed RGBA bytes with no newline and no base64. The optional region crops pixels from the captured frame, using capture.lastWidth x capture.lastHeight from sdl_info, with a top-left origin; it must fit inside the frame.",
   "inputSchema": {
     "type": "object",
     "properties": {
@@ -1380,10 +1385,10 @@ The library's own schema has no `max_width`: presentation is supervisor policy.
 }
 ```
 
-- `region` is a crop in **full-frame pixels** — the `pixelWidth` × `pixelHeight`
-  reported by `sdl_info` — with a top-left origin. All four fields are required,
-  `x`/`y` must be at least 0, `width`/`height` at least 1, and the rectangle must
-  fit inside the frame. It is applied by the library.
+- `region` is a crop in **captured-frame pixels** — the `capture.lastWidth` ×
+  `capture.lastHeight` reported by `sdl_info` — with a top-left origin. All four
+  fields are required, `x`/`y` must be at least 0, `width`/`height` at least 1,
+  and the rectangle must fit inside the frame. It is applied by the library.
 - `timeout_ms` is 1–60000 and defaults to `frame_timeout_ms`.
 - Any other property, including `max_width`, is rejected before a frame is
   requested.
@@ -1401,7 +1406,7 @@ content array:
 - `byteLength` is exactly `width * height * 4`, and exactly that many bytes
   follow the result line before the next JSON-RPC message.
 - `width` and `height` describe the frame that was sent: the region when one was
-  given, otherwise the window's `pixelWidth` × `pixelHeight`.
+  given, otherwise the dimensions the app passed to `SDL3MCP_WriteFrame`.
 - A client that wants a self-contained image should go through the supervisor,
   which turns this framing into the standard `image/png` block. See
   [Capture through the supervisor](#capture-through-the-supervisor).
@@ -1412,7 +1417,7 @@ last drop reason when there was one:
 ```json
 {
   "content": [
-    { "type": "text", "text": "no frame arrived within 2000 ms. The app must call SDL3MCP_WriteFrame() when SDL3MCP_FrameRequested() returns true, with tightly packed RGBA8888 at SDL_GetWindowSizeInPixels(). Last drop: size 1036800 != 960*540*4." }
+    { "type": "text", "text": "no frame arrived within 2000 ms. The app must call SDL3MCP_WriteFrame() when SDL3MCP_FrameRequested() returns true, with tightly packed RGBA8888, its width, and its height. Last drop: size 1036800 != 960*540*4." }
   ],
   "isError": true
 }
@@ -1542,12 +1547,12 @@ launcher.
 
 **`sdl_capture` says no frame arrived.** Confirm the render loop calls
 `SDL3MCP_FrameRequested()` every frame and, when it is true, calls
-`SDL3MCP_WriteFrame` with exactly `width * height * 4` bytes at the window's
-pixel size, before `SDL_RenderPresent`. Read the appended "Last drop" reason and
-`sdl_info`'s `capture.lastError`. Common causes: reading pixels after
-`SDL_RenderPresent` (do it before), allocating for `SDL_GetWindowSize` instead of
-`SDL_GetWindowSizeInPixels`, passing a surface with row padding, or a minimized
-window with zero drawable pixels.
+`SDL3MCP_WriteFrame` with exactly `width * height * 4` bytes and the width and
+height of what it read back, before `SDL_RenderPresent`. Read the appended
+"Last drop" reason and `sdl_info`'s `capture.lastError`. Common causes: reading
+pixels after `SDL_RenderPresent` (do it before), passing a surface with row
+padding, a width/height that does not match the buffer, or a render target that
+produced no pixels this frame.
 
 **Frames are upside down or colors are swapped.** The buffer must be
 top-left-first RGBA8888 with no row padding. `SDL_RenderReadPixels` returns a

@@ -861,8 +861,9 @@ The window is used for three things:
   `SDL_GetWindowSizeInPixels` for the reported pixel size, published to the
   server thread once per `SDL3MCP_AppIterate`;
 - **event routing** — synthetic events carry this window's `windowID`;
-- **text input and cursor** — `SDL_TextInputActive`, `SDL_WarpMouseInWindow`,
-  and `SDL_GetWindowRelativeMouseMode`.
+- **text input and cursor** — `SDL_TextInputActive`, `SDL_StartTextInput`,
+  `SDL_StopTextInput`, `SDL_WarpMouseInWindow`, and
+  `SDL_GetWindowRelativeMouseMode`.
 
 App thread only. Returns `SDL_APP_FAILURE` if `SDL3MCP_AppInit` was not called
 or the window has no drawable area yet; a window that is later minimized is fine
@@ -1049,9 +1050,9 @@ key-up, which is what a held keyboard key produces.
   `actions[2]: x and y must be provided together`.
 - Key names and chords are resolved at apply time on the app thread, because a
   single character depends on the current keyboard layout. An unknown key, a
-  malformed chord, an unknown chord modifier, or a missing text-input focus
-  therefore fails the `sdl_input` call when it returns at frame F+1, as an
-  `isError` result.
+  malformed chord, an unknown chord modifier, or SDL refusing to start text
+  input on the bound window therefore fails the `sdl_input` call when it returns
+  at frame F+1, as an `isError` result.
 - A `down` on a key that only exists with a modifier (such as `!`) is refused at
   apply time; use `press`, which supplies the modifier itself.
 
@@ -1083,8 +1084,11 @@ key-up, which is what a held keyboard key produces.
 events. It is meant for text fields and consoles; games that read key codes
 should use `key` actions. The schema's `maxLength` is 1024 and the
 implementation counts UTF-8 bytes, so a 1024-byte string is the hard limit. Text
-requires a bound window and an active text input (`SDL_TextInputActive`);
-otherwise the action fails at apply time.
+requires only a bound window: when text input is not active on that window the
+library starts it for the batch and restores the previous state once the events
+are queued, so a window that lost focus no longer fails. Only a window SDL
+refuses to start text input on still produces the `text input is not active on
+the bound window` error.
 
 The event's `text` pointer refers to the queued batch, which the library keeps
 alive until frame F+1. The app must consume it during that window and must not

@@ -98,10 +98,13 @@ and `examples/minimal` is a complete host.
   `SDL_GetScancodeFromKey` on the app thread. Unknown key or chord errors are
   reported at F+1; structural errors fail before queueing.
 - **Text is one event.** A `text` action pushes a single
-  `SDL_EVENT_TEXT_INPUT` with the whole UTF-8 string, requires
-  `SDL_TextInputActive`, and the event's pointer is valid only until F+1; the
-  library does not retain it and the app must not either. Do not reintroduce
-  chunking.
+  `SDL_EVENT_TEXT_INPUT` with the whole UTF-8 string, and the event's pointer is
+  valid only until F+1; the library does not retain it and the app must not
+  either. Do not reintroduce chunking. Text input itself is started
+  just in time: synthetic text needs no keyboard focus and the queued
+  `SDL_EVENT_TEXT_INPUT` reaches the app regardless, so the library starts text
+  input for a text batch and restores it afterwards instead of failing when it
+  was inactive.
 - **Scroll is in notches.** `1.0` is one notch; integer wheel fields stay 0.
 - **Warping needs no focus.** `SDL_WarpMouseInWindow` is best effort and a
   synthetic zero-delta motion accompanies the warp; Remote Desktop or headless

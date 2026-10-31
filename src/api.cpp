@@ -35,6 +35,7 @@
 #include "session.hpp"
 #include "stdio_isolation.hpp"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -49,6 +50,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -63,6 +65,7 @@ using sdl3mcp::CaptureStats;
 using sdl3mcp::Configuration;
 using sdl3mcp::Frame;
 using sdl3mcp::InfoSnapshot;
+using sdl3mcp::InputAction;
 using sdl3mcp::InputBatch;
 using sdl3mcp::InputOutcome;
 using sdl3mcp::InputQueue;
@@ -76,6 +79,7 @@ using sdl3mcp::Server;
 using sdl3mcp::Session;
 using sdl3mcp::StdioIsolation;
 using sdl3mcp::TakenBatch;
+using sdl3mcp::TextInput;
 using sdl3mcp::ToolCall;
 using sdl3mcp::ToolHandler;
 using sdl3mcp::ToolResult;
@@ -299,6 +303,48 @@ bool pushPlanEvents(const LibraryState &state, AppliedBatchPlan &plan)
 }
 
 /*
+  App thread only. True when any action in the batch carries text, so the batch
+  needs text input active to be applied.
+*/
+bool batchHasText(const InputBatch &batch)
+{
+    return std::any_of(batch.actions.begin(), batch.actions.end(), [](const InputAction &action) {
+        return std::holds_alternative<TextInput>(action);
+    });
+}
+
+/*
+  App thread only. Starts text input for the lifetime of one batch, because
+  synthetic text needs no keyboard focus, and stops it again only when this
+  scope started it, so the previous state is restored on every exit path.
+*/
+class TextInputScope
+{
+public:
+    TextInputScope(SDL_Window *window, bool needed)
+        : window_(window)
+    {
+        if (needed && window_ != nullptr && !SDL_TextInputActive(window_)) {
+            started_ = SDL_StartTextInput(window_);
+        }
+    }
+
+    ~TextInputScope()
+    {
+        if (started_) {
+            SDL_StopTextInput(window_);
+        }
+    }
+
+    TextInputScope(const TextInputScope &) = delete;
+    TextInputScope &operator=(const TextInputScope &) = delete;
+
+private:
+    SDL_Window *window_ = nullptr;
+    bool started_ = false;
+};
+
+/*
   App thread only. Takes at most one batch per frame, builds its plan, and either
   publishes it to SDL's queue or fails it back to the waiting sdl_input call.
 */
@@ -313,6 +359,7 @@ void applyNextBatch(LibraryState &state, uint64_t frame)
     state.pendingBatch = std::move(taken);
     const TakenBatch &pending = *state.pendingBatch;
 
+    TextInputScope textInput(state.window, batchHasText(pending.batch));
     const bool textInputActive = state.window != nullptr && SDL_TextInputActive(state.window);
     AppliedBatchPlan plan{state.keyReplayer, state.mouseReplayer};
     std::string error;

@@ -307,6 +307,8 @@ int main()
     ::close(savedStdin);
     ::close(savedStdout);
 
+    /* The app started text input; the library must not have stopped it. */
+    CHECK(SDL_TextInputActive(window));
     SDL_StopTextInput(window);
     SDL_DestroyWindow(window);
     SDL_Quit();

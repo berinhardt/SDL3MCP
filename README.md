@@ -591,7 +591,7 @@ command line says".
 | `transport` | `SDL3MCP_TRANSPORT_NONE` | `NONE` starts no server; `STDIO` starts the stdio MCP server. |
 | `frame_timeout_ms` | `2000` | Default `sdl_capture` timeout and the time `sdl_input` waits for its F+1 acknowledgement. |
 | `max_frame_bytes` | `32 MiB` | Upper bound on a raw RGBA frame accepted by `SDL3MCP_WriteFrame`. 4K (`3840×2160×4`) fits; 5K and above need a larger value. |
-| `warp_cursor` | `true` | Move the OS cursor with `SDL_WarpMouseInWindow` on absolute mouse moves. |
+| `warp_cursor` | `true` | Move the OS cursor with `SDL_WarpMouseInWindow` on absolute mouse moves and positioned `mouse_button` actions. |
 | `log_level` | `-1` | Accepted and validated as -1..4 (`0` off, `1` error, `2` warn, `3` info, `4` debug). The library has no leveled logger yet, so today only command-line usage and errors are written to stderr. |
 
 The structure contains no pointers, is copied by `SDL3MCP_AppInit`, and is never
@@ -1031,7 +1031,7 @@ no frame boundary can appear in the middle of a gesture.
 | `key` | `key` (name or chord), `action` = `down`/`up`/`press` (default `press`), optional `modifiers`. |
 | `text` | `text` (UTF-8, 1–1024 bytes). |
 | `mouse_move` | `x`,`y` (window points) **or** `dx`,`dy` (relative), never both and never half a pair. |
-| `mouse_button` | `button` = `left`/`middle`/`right`/`x1`/`x2`, `action` = `down`/`up`/`click`, optional `x`,`y`, `clicks` 1–3. |
+| `mouse_button` | `button` = `left`/`middle`/`right`/`x1`/`x2`, `action` = `down`/`up`/`click`, optional `x`,`y` (moves the cursor there first), `clicks` 1–3. |
 | `scroll` | `x` (default 0), `y` in wheel notches. |
 | `release_all` | Releases every key and button the library holds. |
 
@@ -1112,6 +1112,14 @@ retain the pointer.
   deltas from the virtual cursor. `dx`/`dy` are passed through as `xrel`/`yrel`.
 - `click` is a full down/up pair with the requested `clicks` count. Pressing a
   button that is already held, or releasing one that is not, fails the action.
+- A `mouse_button` with `x`/`y` performs the same absolute move first, in the
+  same action: one synthetic motion event at the clamped target, the warp under
+  `warp_cursor`, and then the button events. That makes a click on a UI item a
+  single action instead of `mouse_move` followed by `mouse_button`, which
+  matters because event-driven consumers such as ImGui's SDL3 backend take the
+  pointer position from `SDL_EVENT_MOUSE_MOTION` and ignore a button event's own
+  coordinates. Without `x`/`y` the action emits only its button events and never
+  warps.
 - Buttons and wheel use `SDL_EVENT_MOUSE_BUTTON_DOWN/UP` and
   `SDL_EVENT_MOUSE_WHEEL` on the bound window.
 
@@ -1303,7 +1311,7 @@ makes it a useful first call after startup.
             },
             {
               "type": "object",
-              "description": "Press, release, or click a mouse button at the cursor or at optional window points (x, y).",
+              "description": "Press, release, or click a mouse button at the cursor, or at optional window points (x, y) that move the cursor there first.",
               "properties": {
                 "type": { "const": "mouse_button" },
                 "button": { "enum": ["left", "middle", "right", "x1", "x2"] },

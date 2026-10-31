@@ -27,7 +27,8 @@ std::string actionPrefix(std::size_t index)
 
 /*
   Appends the events of one action. The caller hands in a fresh `warp`, so a
-  move that warps sets it and every other action leaves it empty.
+  move or a positioned button that warps sets it and every other action leaves
+  it empty.
 */
 bool appendActionEvents(const InputAction &action, BatchContext &context,
                         std::vector<SDL_Event> &events, std::optional<SDL_FPoint> &warp,
@@ -44,7 +45,7 @@ bool appendActionEvents(const InputAction &action, BatchContext &context,
         return context.mouseState.apply(*move, context.timestamp, events, warp, error);
     }
     if (const auto *button = std::get_if<MouseButtonInput>(&action)) {
-        return context.mouseState.apply(*button, context.timestamp, events, error);
+        return context.mouseState.apply(*button, context.timestamp, events, warp, error);
     }
     if (const auto *scroll = std::get_if<ScrollInput>(&action)) {
         return context.mouseState.apply(*scroll, context.timestamp, events, error);

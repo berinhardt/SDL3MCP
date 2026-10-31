@@ -93,7 +93,7 @@ constexpr std::string_view kInputSchema = R"({
           },
           {
             "type": "object",
-            "description": "Press, release, or click a mouse button at the cursor or at optional window points (x, y).",
+            "description": "Press, release, or click a mouse button at the cursor, or at optional window points (x, y) that move the cursor there first.",
             "properties": {
               "type": { "const": "mouse_button" },
               "button": { "enum": ["left", "middle", "right", "x1", "x2"] },

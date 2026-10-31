@@ -60,22 +60,16 @@ bool MouseReplayer::apply(const MouseMoveInput &input, Uint64 timestamp,
 
     const float targetX = clampX(input.x);
     const float targetY = clampY(input.y);
-    if (metrics_.warpCursor && !metrics_.relativeMode) {
-        appendMotion(events, timestamp, targetX, targetY, 0.0F, 0.0F);
-        warp = SDL_FPoint{targetX, targetY};
-    } else {
-        appendMotion(events, timestamp, targetX, targetY, targetX - cursorX_,
-                     targetY - cursorY_);
-    }
-    cursorX_ = targetX;
-    cursorY_ = targetY;
+    moveTo(targetX, targetY, timestamp, events, warp);
     return true;
 }
 
 bool MouseReplayer::apply(const MouseButtonInput &input, Uint64 timestamp,
-                          std::vector<SDL_Event> &events, std::string &error)
+                          std::vector<SDL_Event> &events, std::optional<SDL_FPoint> &warp,
+                          std::string &error)
 {
     error.clear();
+    warp.reset();
     if (windowID_ == 0) {
         error = kNoWindowError;
         return false;
@@ -98,12 +92,10 @@ bool MouseReplayer::apply(const MouseButtonInput &input, Uint64 timestamp,
         break;
     }
 
-    /* A click's coordinates apply before its events so both carry the new cursor. */
-    if (input.x.has_value()) {
-        cursorX_ = clampX(*input.x);
-    }
-    if (input.y.has_value()) {
-        cursorY_ = clampY(*input.y);
+    /* Coordinates move the cursor like an absolute move, before the button events. */
+    if (input.x.has_value() || input.y.has_value()) {
+        moveTo(clampX(input.x.value_or(cursorX_)), clampY(input.y.value_or(cursorY_)), timestamp,
+               events, warp);
     }
 
     switch (input.action) {
@@ -217,6 +209,20 @@ void MouseReplayer::appendMotion(std::vector<SDL_Event> &events, Uint64 timestam
     event.motion.xrel = xrel;
     event.motion.yrel = yrel;
     events.push_back(event);
+}
+
+void MouseReplayer::moveTo(float targetX, float targetY, Uint64 timestamp,
+                           std::vector<SDL_Event> &events, std::optional<SDL_FPoint> &warp)
+{
+    if (metrics_.warpCursor && !metrics_.relativeMode) {
+        appendMotion(events, timestamp, targetX, targetY, 0.0F, 0.0F);
+        warp = SDL_FPoint{targetX, targetY};
+    } else {
+        appendMotion(events, timestamp, targetX, targetY, targetX - cursorX_,
+                     targetY - cursorY_);
+    }
+    cursorX_ = targetX;
+    cursorY_ = targetY;
 }
 
 SDL_MouseButtonFlags MouseReplayer::buttonMask() const noexcept

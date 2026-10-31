@@ -10,7 +10,8 @@
   [0, max(0, height - 1)], so a zero-size window clamps to the origin instead of
   failing. A warp replayer emits zero xrel/yrel because the platform's warp event
   already carries the delta; a non-warping or relative-mode move passes the
-  derived delta through.
+  derived delta through. A button action carrying x/y reuses that move path, so
+  the cursor lands on the target before the button events in the same action.
 
   apply() validates before it touches state or the event vector, so a failed
   action changes neither. A batch applies its actions to a copy and commits that
@@ -60,11 +61,14 @@ public:
 
     /*
       Appends the down, up, or down-then-up events for one button action. An
-      optional x/y moves the virtual cursor first, without a motion event. A down
-      of a held button and an up of a non-held button are refused.
+      optional x/y moves the cursor there first, exactly like an absolute move:
+      the action starts with its motion event and reports the warp it needs in
+      `warp`. A button action without coordinates emits only its button events
+      and never warps. A down of a held button and an up of a non-held button are
+      refused.
     */
     bool apply(const MouseButtonInput &input, Uint64 timestamp, std::vector<SDL_Event> &events,
-               std::string &error);
+               std::optional<SDL_FPoint> &warp, std::string &error);
 
     /* Appends one wheel event at the current virtual cursor. */
     bool apply(const ScrollInput &input, Uint64 timestamp, std::vector<SDL_Event> &events,
@@ -95,6 +99,14 @@ private:
                            Uint64 timestamp, int clicks) const;
     void appendMotion(std::vector<SDL_Event> &events, Uint64 timestamp, float x, float y,
                       float xrel, float yrel) const;
+
+    /*
+      Appends the synthetic motion for an absolute target and reports the warp it
+      needs: with a warp the deltas stay at zero because the platform's warp
+      event carries them, otherwise they are derived from the old cursor.
+    */
+    void moveTo(float targetX, float targetY, Uint64 timestamp,
+                std::vector<SDL_Event> &events, std::optional<SDL_FPoint> &warp);
 
     /* The held buttons as SDL's mouse button mask, which motion events carry. */
     SDL_MouseButtonFlags buttonMask() const noexcept;

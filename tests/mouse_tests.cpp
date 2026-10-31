@@ -103,16 +103,18 @@ SDL_Event expectMove(MouseReplayer &replayer, const MouseMoveInput &input,
     return events.front();
 }
 
-/* Applies one button action that must fail, leaving events and state untouched. */
+/* Applies one button action that must fail, leaving events, warp, and state untouched. */
 void expectButtonRejected(MouseReplayer &replayer, const MouseButtonInput &input,
-                          std::vector<SDL_Event> &events, std::string &error,
-                          const std::string &message)
+                          std::vector<SDL_Event> &events, std::optional<SDL_FPoint> &warp,
+                          std::string &error, const std::string &message)
 {
     const std::size_t before = events.size();
     const std::size_t heldBefore = replayer.heldButtons().size();
-    CHECK(!replayer.apply(input, kTimestamp, events, error));
+    warp.reset();
+    CHECK(!replayer.apply(input, kTimestamp, events, warp, error));
     CHECK(events.size() == before);
     CHECK(replayer.heldButtons().size() == heldBefore);
+    CHECK(!warp.has_value());
     CHECK(error == message);
 }
 
@@ -223,16 +225,16 @@ void testMotionCarriesHeldButtons()
     std::string error;
 
     CHECK(replayer.apply(buttonInput(MouseButton::Left, MouseButtonAction::Down), kTimestamp,
-                         events, error));
+                         events, warp, error));
     CHECK(replayer.apply(buttonInput(MouseButton::Right, MouseButtonAction::Down), kTimestamp,
-                         events, error));
+                         events, warp, error));
     CHECK(error.empty());
 
     const SDL_Event both = expectMove(replayer, absoluteMove(10.0F, 10.0F), events, warp, error);
     expectMotion(both, 10.0F, 10.0F, 0.0F, 0.0F, kLeftMask | kRightMask);
 
     CHECK(replayer.apply(buttonInput(MouseButton::Left, MouseButtonAction::Up), kTimestamp,
-                         events, error));
+                         events, warp, error));
     const SDL_Event rightOnly =
         expectMove(replayer, absoluteMove(10.0F, 10.0F), events, warp, error);
     expectMotion(rightOnly, 10.0F, 10.0F, 0.0F, 0.0F, kRightMask);
@@ -243,78 +245,150 @@ void testClickMovesCursorAndEmitsPair()
     MouseReplayer replayer = makeReplayer();
     replayer.setCursor(10.0F, 10.0F);
     std::vector<SDL_Event> events;
+    std::optional<SDL_FPoint> warp;
     std::string error;
 
-    /* The optional x/y moves the cursor before the pair; no motion event. */
+    /* Coordinates make the action a move followed by the pair, in one action. */
     CHECK(replayer.apply(buttonInputAt(MouseButton::Left, MouseButtonAction::Click, 30.0F, 20.0F,
                                       2),
-                         kTimestamp, events, error));
+                         kTimestamp, events, warp, error));
     CHECK(error.empty());
-    CHECK(events.size() == 2);
-    expectButton(events[0], SDL_BUTTON_LEFT, true, 2, 30.0F, 20.0F);
-    expectButton(events[1], SDL_BUTTON_LEFT, false, 2, 30.0F, 20.0F);
+    CHECK(events.size() == 3);
+    expectMotion(events[0], 30.0F, 20.0F, 0.0F, 0.0F, 0);
+    expectButton(events[1], SDL_BUTTON_LEFT, true, 2, 30.0F, 20.0F);
+    expectButton(events[2], SDL_BUTTON_LEFT, false, 2, 30.0F, 20.0F);
+    CHECK(warp.has_value());
+    CHECK(warp->x == 30.0F);
+    CHECK(warp->y == 20.0F);
     CHECK(replayer.cursorX() == 30.0F);
     CHECK(replayer.cursorY() == 20.0F);
     CHECK(replayer.heldButtons().empty());
 
-    /* Without coordinates the click lands on the current cursor. */
+    /* Without coordinates the click lands on the current cursor with no motion. */
     events.clear();
+    warp.reset();
     CHECK(replayer.apply(buttonInput(MouseButton::Left, MouseButtonAction::Click), kTimestamp,
-                         events, error));
+                         events, warp, error));
     CHECK(events.size() == 2);
+    CHECK(!warp.has_value());
     expectButton(events[0], SDL_BUTTON_LEFT, true, 1, 30.0F, 20.0F);
     expectButton(events[1], SDL_BUTTON_LEFT, false, 1, 30.0F, 20.0F);
+}
+
+void testPositionedDownMovesFirst()
+{
+    MouseReplayer replayer = makeReplayer();
+    replayer.setCursor(10.0F, 10.0F);
+    std::vector<SDL_Event> events;
+    std::optional<SDL_FPoint> warp;
+    std::string error;
+
+    CHECK(replayer.apply(buttonInput(MouseButton::Right, MouseButtonAction::Down), kTimestamp,
+                         events, warp, error));
+    CHECK(!warp.has_value());
+    events.clear();
+
+    /* The motion lands on the clamped target and carries the held right button. */
+    CHECK(replayer.apply(
+        buttonInputAt(MouseButton::Left, MouseButtonAction::Down, 200.0F, -5.0F, 1), kTimestamp,
+        events, warp, error));
+    CHECK(events.size() == 2);
+    expectMotion(events[0], 99.0F, 0.0F, 0.0F, 0.0F, kRightMask);
+    expectButton(events[1], SDL_BUTTON_LEFT, true, 1, 99.0F, 0.0F);
+    CHECK(warp.has_value());
+    CHECK(warp->x == 99.0F);
+    CHECK(warp->y == 0.0F);
+}
+
+void testPositionedButtonInRelativeMode()
+{
+    MouseReplayer replayer = makeRelativeModeReplayer();
+    replayer.setCursor(10.0F, 10.0F);
+    std::vector<SDL_Event> events;
+    std::optional<SDL_FPoint> warp;
+    std::string error;
+
+    /* Relative mode never warps: the absolute target becomes a delta. */
+    CHECK(replayer.apply(buttonInputAt(MouseButton::Left, MouseButtonAction::Click, 25.0F, 30.0F,
+                                      1),
+                         kTimestamp, events, warp, error));
+    CHECK(events.size() == 3);
+    CHECK(!warp.has_value());
+    expectMotion(events[0], 25.0F, 30.0F, 15.0F, 20.0F, 0);
+    expectButton(events[1], SDL_BUTTON_LEFT, true, 1, 25.0F, 30.0F);
+    expectButton(events[2], SDL_BUTTON_LEFT, false, 1, 25.0F, 30.0F);
+}
+
+void testPositionedButtonWithoutWarp()
+{
+    MouseReplayer replayer = makeNonWarpingReplayer();
+    replayer.setCursor(10.0F, 10.0F);
+    std::vector<SDL_Event> events;
+    std::optional<SDL_FPoint> warp;
+    std::string error;
+
+    /* warp_cursor = false still synthesises the motion, with derived deltas. */
+    CHECK(replayer.apply(buttonInputAt(MouseButton::Left, MouseButtonAction::Click, 20.0F, 15.0F,
+                                      1),
+                         kTimestamp, events, warp, error));
+    CHECK(events.size() == 3);
+    CHECK(!warp.has_value());
+    expectMotion(events[0], 20.0F, 15.0F, 10.0F, 5.0F, 0);
+    expectButton(events[1], SDL_BUTTON_LEFT, true, 1, 20.0F, 15.0F);
+    expectButton(events[2], SDL_BUTTON_LEFT, false, 1, 20.0F, 15.0F);
 }
 
 void testButtonDownUpAndHeldState()
 {
     MouseReplayer replayer = makeReplayer();
     std::vector<SDL_Event> events;
+    std::optional<SDL_FPoint> warp;
     std::string error;
 
     CHECK(replayer.apply(buttonInput(MouseButton::Right, MouseButtonAction::Down), kTimestamp,
-                         events, error));
+                         events, warp, error));
     CHECK(events.size() == 1);
     expectButton(events[0], SDL_BUTTON_RIGHT, true, 1, 0.0F, 0.0F);
     CHECK(replayer.heldButtons().size() == 1);
 
     /* A down of a held button is refused. */
     expectButtonRejected(replayer, buttonInput(MouseButton::Right, MouseButtonAction::Down),
-                         events, error, "mouse button is already held");
+                         events, warp, error, "mouse button is already held");
 
     CHECK(replayer.apply(buttonInput(MouseButton::Right, MouseButtonAction::Up), kTimestamp,
-                         events, error));
+                         events, warp, error));
     CHECK(events.size() == 2);
     expectButton(events[1], SDL_BUTTON_RIGHT, false, 1, 0.0F, 0.0F);
     CHECK(replayer.heldButtons().empty());
 
     /* An up of a non-held button is refused, as is a click on a held one. */
     expectButtonRejected(replayer, buttonInput(MouseButton::Right, MouseButtonAction::Up), events,
-                         error, "mouse button is not held");
+                         warp, error, "mouse button is not held");
     CHECK(replayer.apply(buttonInput(MouseButton::Right, MouseButtonAction::Down), kTimestamp,
-                         events, error));
+                         events, warp, error));
     expectButtonRejected(replayer, buttonInput(MouseButton::Right, MouseButtonAction::Click),
-                         events, error, "mouse button is already held");
+                         events, warp, error, "mouse button is already held");
 }
 
 void testButtonMapping()
 {
     MouseReplayer replayer = makeReplayer();
     std::vector<SDL_Event> events;
+    std::optional<SDL_FPoint> warp;
     std::string error;
 
     CHECK(replayer.apply(buttonInput(MouseButton::Middle, MouseButtonAction::Down), kTimestamp,
-                         events, error));
+                         events, warp, error));
     CHECK(replayer.apply(buttonInput(MouseButton::Middle, MouseButtonAction::Up), kTimestamp,
-                         events, error));
+                         events, warp, error));
     CHECK(replayer.apply(buttonInput(MouseButton::X1, MouseButtonAction::Down), kTimestamp,
-                         events, error));
+                         events, warp, error));
     CHECK(replayer.apply(buttonInput(MouseButton::X1, MouseButtonAction::Up), kTimestamp,
-                         events, error));
+                         events, warp, error));
     CHECK(replayer.apply(buttonInput(MouseButton::X2, MouseButtonAction::Down), kTimestamp,
-                         events, error));
+                         events, warp, error));
     CHECK(replayer.apply(buttonInput(MouseButton::X2, MouseButtonAction::Up), kTimestamp,
-                         events, error));
+                         events, warp, error));
     CHECK(events.size() == 6);
 
     expectButton(events[0], SDL_BUTTON_MIDDLE, true, 1, 0.0F, 0.0F);
@@ -354,6 +428,7 @@ void testReleaseAllButtons()
 {
     MouseReplayer replayer = makeReplayer();
     std::vector<SDL_Event> events;
+    std::optional<SDL_FPoint> warp;
     std::string error;
 
     /* Nothing held: nothing to emit. */
@@ -361,9 +436,9 @@ void testReleaseAllButtons()
     CHECK(events.empty());
 
     CHECK(replayer.apply(buttonInput(MouseButton::Left, MouseButtonAction::Down), kTimestamp,
-                         events, error));
+                         events, warp, error));
     CHECK(replayer.apply(buttonInput(MouseButton::Right, MouseButtonAction::Down), kTimestamp,
-                         events, error));
+                         events, warp, error));
     events.clear();
 
     replayer.releaseAllButtons(kTimestamp, events);
@@ -381,10 +456,11 @@ void testReset()
 {
     MouseReplayer replayer = makeReplayer();
     std::vector<SDL_Event> events;
+    std::optional<SDL_FPoint> warp;
     std::string error;
 
     CHECK(replayer.apply(buttonInput(MouseButton::Left, MouseButtonAction::Down), kTimestamp,
-                         events, error));
+                         events, warp, error));
     replayer.setCursor(50.0F, 40.0F);
     events.clear();
 
@@ -411,8 +487,9 @@ void testNoWindowBound()
     CHECK(!warp.has_value());
 
     CHECK(!replayer.apply(buttonInput(MouseButton::Left, MouseButtonAction::Click), kTimestamp,
-                          events, error));
+                          events, warp, error));
     CHECK(events.empty());
+    CHECK(!warp.has_value());
     CHECK(error == "no window bound");
 
     CHECK(!replayer.apply(ScrollInput{0.0F, 120.0F}, kTimestamp, events, error));
@@ -430,15 +507,15 @@ void testCopyRollsBack()
     MouseReplayer original = makeReplayer();
     original.setCursor(10.0F, 10.0F);
     std::vector<SDL_Event> originalEvents;
+    std::optional<SDL_FPoint> warp;
     std::string error;
 
     CHECK(original.apply(buttonInput(MouseButton::Left, MouseButtonAction::Down), kTimestamp,
-                         originalEvents, error));
+                         originalEvents, warp, error));
     CHECK(originalEvents.size() == 1);
 
     MouseReplayer copy = original;
     std::vector<SDL_Event> copyEvents = originalEvents;
-    std::optional<SDL_FPoint> warp;
 
     CHECK(copy.apply(absoluteMove(20.0F, 20.0F), kTimestamp, copyEvents, warp, error));
     CHECK(copyEvents.size() == 2);
@@ -446,8 +523,9 @@ void testCopyRollsBack()
 
     /* Middle was never pressed, so the batch would fail here and be discarded. */
     CHECK(!copy.apply(buttonInput(MouseButton::Middle, MouseButtonAction::Up), kTimestamp,
-                      copyEvents, error));
+                      copyEvents, warp, error));
     CHECK(copyEvents.size() == 2);
+    CHECK(!warp.has_value());
     CHECK(error == "mouse button is not held");
 
     CHECK(original.cursorX() == 10.0F);
@@ -468,6 +546,9 @@ int main()
     testClamping();
     testMotionCarriesHeldButtons();
     testClickMovesCursorAndEmitsPair();
+    testPositionedDownMovesFirst();
+    testPositionedButtonInRelativeMode();
+    testPositionedButtonWithoutWarp();
     testButtonDownUpAndHeldState();
     testButtonMapping();
     testScroll();

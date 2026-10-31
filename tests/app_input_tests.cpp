@@ -4,7 +4,7 @@
   window and no event ever pushed.
 
   These tests pin the parts AppIterate relies on: the action order survives, a
-  warp is recorded only for the move that asks for one, text events keep
+  warp is recorded only for an action that moves the cursor, text events keep
   pointing at the batch's own string, and a failure in any action leaves both
   the plan and the live replayers exactly as they were.
 */
@@ -337,12 +337,25 @@ void testButtonAndScroll()
     const AppliedBatchPlan plan = harness.apply(batch);
 
     const std::vector<SDL_Event> &clicks = plan.eventsByAction[0];
-    CHECK(clicks.size() == 2);
-    CHECK(clicks[0].type == SDL_EVENT_MOUSE_BUTTON_DOWN);
-    CHECK(clicks[0].button.button == SDL_BUTTON_LEFT);
-    CHECK(clicks[0].button.x == 10.0F);
-    CHECK(clicks[0].button.y == 20.0F);
-    CHECK(clicks[1].type == SDL_EVENT_MOUSE_BUTTON_UP);
+    CHECK(clicks.size() == 3);
+
+    /* A positioned click moves first: motion at the target, then the pair. */
+    CHECK(clicks[0].type == SDL_EVENT_MOUSE_MOTION);
+    CHECK(clicks[0].motion.x == 10.0F);
+    CHECK(clicks[0].motion.y == 20.0F);
+    CHECK(clicks[0].motion.state == 0);
+    CHECK(clicks[1].type == SDL_EVENT_MOUSE_BUTTON_DOWN);
+    CHECK(clicks[1].button.button == SDL_BUTTON_LEFT);
+    CHECK(clicks[1].button.x == 10.0F);
+    CHECK(clicks[1].button.y == 20.0F);
+    CHECK(clicks[2].type == SDL_EVENT_MOUSE_BUTTON_UP);
+
+    /* The warp stays with the click's own action. */
+    CHECK(plan.warpsByAction.size() == 2);
+    CHECK(plan.warpsByAction[0].has_value());
+    CHECK(plan.warpsByAction[0]->x == 10.0F);
+    CHECK(plan.warpsByAction[0]->y == 20.0F);
+    CHECK(!plan.warpsByAction[1].has_value());
 
     const std::vector<SDL_Event> &wheels = plan.eventsByAction[1];
     CHECK(wheels.size() == 1);

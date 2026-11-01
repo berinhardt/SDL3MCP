@@ -381,8 +381,7 @@ void testCaptureSchema()
     /* No top-level required member: every parameter is optional. */
     CHECK(!schema.contains("required"));
 
-    /* max_width is supervisor policy: the library schema does not advertise it. */
-    CHECK(!schema["properties"].contains("max_width"));
+    /* The library advertises only region and timeout_ms: no presentation options. */
     CHECK(schema["properties"].size() == 2);
 
     const nlohmann::json &timeout = schema["properties"]["timeout_ms"];

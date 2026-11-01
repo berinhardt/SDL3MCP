@@ -8,7 +8,8 @@ the loop order is a bug. The checks are deliberately mechanical:
 - every fenced ``json`` block parses;
 - the ``sdl_input`` schema matches the implemented limits;
 - the ``sdl_capture`` schemas match both sides: region + timeout_ms for the
-  library's raw framing and max_width for the supervisor's image block;
+  library's raw framing and the same two arguments, PNG at native size, for the
+  supervisor's image block;
 - the region prose names the captured frame's dimensions, not the window's;
 - the public ``SDL3MCP_WriteFrame`` signature takes explicit width and height;
 - the ``sdl_terminate`` schema is the empty object with all four hints;
@@ -206,14 +207,14 @@ def check_capture_schemas(documents: list[object], failures: list[str]) -> None:
                 and document.get("name") == "sdl_capture"
                 and isinstance(document.get("inputSchema"), dict)):
             continue
-        properties = document["inputSchema"].get("properties", {})
-        if "max_width" in properties:
-            supervisor = document
-        elif "timeout_ms" in properties:
+        description = document.get("description", "")
+        if "rgba8888" in description or "byteLength" in description:
             library = document
+        elif "PNG" in description:
+            supervisor = document
 
     if library is None:
-        failures.append("no library sdl_capture schema with region and timeout_ms")
+        failures.append("no library sdl_capture schema documenting rgba8888/byteLength")
     else:
         schema = library["inputSchema"]
         properties = schema.get("properties", {})
@@ -235,19 +236,21 @@ def check_capture_schemas(documents: list[object], failures: list[str]) -> None:
                 "format/byteLength framing")
 
     if supervisor is None:
-        failures.append("no supervisor sdl_capture schema with max_width")
+        failures.append("no supervisor sdl_capture schema promising a PNG")
     else:
         schema = supervisor["inputSchema"]
         properties = schema.get("properties", {})
-        max_width = properties.get("max_width", {})
-        if (max_width.get("minimum"), max_width.get("maximum")) != (16, 16384):
-            failures.append("supervisor sdl_capture max_width must be 16..16384")
+        if set(properties) != {"region", "timeout_ms"}:
+            failures.append(
+                "supervisor sdl_capture must advertise only region and timeout_ms")
         timeout = properties.get("timeout_ms", {})
         if (timeout.get("minimum"), timeout.get("maximum")) != (1, 60000):
             failures.append("supervisor sdl_capture timeout_ms must be 1..60000")
         check_region_schema(schema, "supervisor sdl_capture", failures)
-        if "PNG" not in supervisor.get("description", ""):
-            failures.append("supervisor sdl_capture description must promise a PNG")
+        description = supervisor.get("description", "")
+        if "native pixel size" not in description:
+            failures.append(
+                "supervisor sdl_capture description must promise a native-size PNG")
 
 
 def check_region_schema(schema: dict, label: str, failures: list[str]) -> None:
@@ -270,9 +273,13 @@ def check_capture_framing_prose(readme: str, failures: list[str]) -> None:
     for required in ('"format":"rgba8888"', '"byteLength"', "raw RGBA"):
         if required not in readme:
             failures.append(f"README does not document the capture framing phrase {required!r}")
-    if "max_width" not in readme:
-        failures.append("README does not document the supervisor's max_width")
     lowered = readme.lower()
+    if ("native pixel size" not in lowered
+            and "native-resolution" not in lowered):
+        failures.append(
+            "README must state that captures are returned at the app's native pixel size")
+    if "never resized" not in lowered and "never downscaled" not in lowered:
+        failures.append("README must state that captures are never resized or downscaled")
     if "library" not in lowered or "supervisor" not in lowered:
         failures.append("README must state which side owns the capture presentation")
     # The region is in pixels of the frame the app wrote, not of the window, so

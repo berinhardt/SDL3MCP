@@ -1,8 +1,7 @@
 /*
   The library's pure frame pipeline is validation and crop only: every rule is a
-  value check here, with no window, server, or threads. Downscaling and
-  image/base64 encoding are supervisor policy and are covered by the supervisor
-  unit tests.
+  value check here, with no window, server, or threads. PNG and base64 encoding
+  are supervisor policy and are covered by supervisor_png_tests.
 */
 
 #include "frame.hpp"

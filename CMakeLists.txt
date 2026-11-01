@@ -127,12 +127,11 @@ if(SDL3MCP_BUILD_SUPERVISOR)
     # The supervisor is POSIX-only: the top-level WIN32 guard above already
     # rejects Windows, and the implementation uses fork/exec and private pipes.
     # The supervisor owns presentation: the library-to-supervisor link carries
-    # raw pixels, so downscaling, PNG, and base64 are compiled here only. stb is
-    # a private include of the supervisor objects, never of the library.
+    # raw pixels, so PNG and base64 are compiled here only. stb is a private
+    # include of the supervisor objects, never of the library.
     add_library(sdl3mcp_supervisor_objects OBJECT
         supervisor/cli.cpp
         supervisor/child_process.cpp
-        supervisor/scaling.cpp
         supervisor/png.cpp
         supervisor/stb_image_write_impl.cpp
         supervisor/supervisor.cpp

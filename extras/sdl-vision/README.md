@@ -45,7 +45,7 @@ ships configured for `opencode-go/minimax-m3`.
 The server must be `build/sdl3mcp-supervisor --target <app> --mcp`, as in the
 repository's `opencode.json`. Pointing the client at the app's own `--mcp`
 server is not supported: there `sdl_capture` returns the library's raw RGBA
-framing instead of an `image/png` block, and rejects `max_width`.
+framing instead of a native-resolution `image/png` block.
 
 ## Limits
 

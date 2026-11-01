@@ -45,7 +45,7 @@ events into the queue and hands the pixels you give it back to the agent.
 | --- | --- |
 | `sdl_info` | Window title, size in points and pixels, pixel density, video driver, SDL version, held input, frame counters, capture statistics. |
 | `sdl_input` | Send a batch of key, text, mouse-move, mouse-button, scroll, or release-all actions. |
-| `sdl_capture` | Ask the app for a fresh frame, optionally cropped, and receive its raw RGBA8888 pixels plus the exact payload size; under the supervisor it is downscaled and returned as an `image/png` block. |
+| `sdl_capture` | Ask the app for a fresh frame, optionally cropped, and receive its raw RGBA8888 pixels plus the exact payload size; under the supervisor the same pixels are returned at the app's native pixel size as an `image/png` block. |
 | `sdl_terminate` | Ask the app to exit cleanly by pushing one `SDL_EVENT_QUIT` into its own event loop. |
 
 Typical agent loop:
@@ -702,16 +702,17 @@ transition sends that notification exactly once, so a client should call
 The library's `sdl_capture` returns raw pixels so the library never links an
 image encoder. The supervisor owns presentation: while `Running` it replaces the
 child's `sdl_capture` entry in `tools/list` with its own definition and keeps the
-client-facing `image/png` contract.
+client-facing `image/png` contract. The PNG carries the pixels at the app's
+native pixel size: captures are never resized, so a coordinate read in the image
+is the same coordinate in the app's pixel space.
 
 ```json
 {
   "name": "sdl_capture",
-  "description": "Ask the application for a fresh frame and return it as a PNG image block. The optional region crops pixels from the captured frame, using capture.lastWidth x capture.lastHeight from sdl_info, with a top-left origin; it must fit inside the frame and is applied before max_width downscaling. Use max_width to keep the payload small.",
+  "description": "Ask the application for a fresh frame and return it as a PNG image block at the app's native pixel size. The optional region crops pixels from the captured frame, using capture.lastWidth x capture.lastHeight from sdl_info, with a top-left origin; it must fit inside the frame and is the only way to keep the payload small, because captures are never resized.",
   "inputSchema": {
     "type": "object",
     "properties": {
-      "max_width": { "type": "integer", "minimum": 16, "maximum": 16384 },
       "timeout_ms": { "type": "integer", "minimum": 1, "maximum": 60000 },
       "region": {
         "type": "object",
@@ -737,25 +738,26 @@ client-facing `image/png` contract.
 ```
 
 - `region` and `timeout_ms` are forwarded to the child unchanged. The region is
-  still applied by the library, before any scaling.
-- `max_width` is the supervisor's: it box-filters the cropped frame down to that
-  width, preserving the aspect ratio, and never upscales. A value absent means
-  no scaling.
+  applied by the library, and the supervisor encodes whatever dimensions it
+  receives.
+- The supervisor never resizes: the PNG has exactly the dimensions the app wrote,
+  or the region's when one was given. `region` is therefore the only lever for
+  payload size.
 - The supervisor reads the child's result line, checks `format == "rgba8888"`,
   that both dimensions are positive, and that
   `byteLength == width * height * 4`. It rejects a frame larger than 64 MiB
   before allocating the payload. A mismatched header or a short payload is a
   tool error.
-- It then downscales when asked, encodes PNG, base64-encodes it, and answers with
-  the usual `[text, image/png]` content and `isError: false`. The text summary
-  names the output size, the source size, the region, and the PNG size, for
-  example `320x180 PNG from 960x540 at 0,0, 41234 bytes`.
+- It then encodes the frame as PNG, base64-encodes it, and answers with the usual
+  `[text, image/png]` content and `isError: false`. The text summary names the
+  size, the region when one was given, and the PNG size, for example
+  `960x540 PNG at 0,0, 41234 bytes`.
 - A JSON-RPC error object or a text error result from the child passes through
   unchanged, so a capture timeout still reports the library's own message.
 
 ```text
-→ {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"sdl_capture","arguments":{"max_width":1280}}}
-← {"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"1280x720 PNG from 1920x1080, 91234 bytes"},{"type":"image","mimeType":"image/png","data":"iVBORw0KGgo..."}],"isError":false}}
+→ {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"sdl_capture","arguments":{}}}
+← {"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"1920x1080 PNG, 91234 bytes"},{"type":"image","mimeType":"image/png","data":"iVBORw0KGgo..."}],"isError":false}}
 ```
 
 ### Terminating the app
@@ -954,8 +956,8 @@ not match the bound window's drawable size.
 - **Guard:** `size <= max_frame_bytes`; larger frames are dropped.
 - The pixels are copied before the function returns, so the app can reuse or
   free its buffer immediately. The server thread crops the optional region and
-  sends raw pixels; downscaling, PNG encoding, and base64 are the supervisor's
-  job and never touch the render thread.
+  sends raw pixels; PNG encoding and base64 are the supervisor's job and never
+  touch the render thread.
 - Call it only when `SDL3MCP_FrameRequested()` is true. Calls with no pending
   capture are ignored.
 - App thread only, because it reads the pending capture state.
@@ -985,10 +987,11 @@ asks:
 7. The app continues its loop; nothing blocked.
 
 A direct library client receives those raw bytes. When the app runs behind
-`sdl3mcp-supervisor`, the supervisor reads the payload, downscales it when
-`max_width` was asked for, encodes PNG, base64-encodes it, and returns the usual
-`image/png` content block. That split keeps stb and every image decision out of
-the library while the client-facing image contract stays stable.
+`sdl3mcp-supervisor`, the supervisor reads the payload, encodes it as PNG at
+exactly the dimensions the app sent, base64-encodes it, and returns the usual
+`image/png` content block. Captures are never resized, so image pixels map 1:1
+to app pixels. That split keeps stb and every image decision out of the library
+while the client-facing image contract stays stable.
 
 Rules that fall out of this design:
 
@@ -1008,16 +1011,16 @@ Rules that fall out of this design:
 - `sdl_capture` fails immediately with a clear error if no window is bound, if
   the region does not fit inside the frame, or if the app never answers in time.
   A timeout is a normal content result with `isError: true`.
-- The library does only the crop on the server thread: no downscale and no image
+- The library does only the crop on the server thread: no resize and no image
   encoding happen in the app process. An `sdl_capture` result is one framed
   header plus its pixel payload, with no base64 and no newline inside the frame.
-- `max_width` belongs to the supervisor's `sdl_capture`, which box-filters the
-  cropped frame before encoding. It is not in the library's schema. This is the
-  main lever for payload size; 1280 or 1600 wide is usually enough for an agent
-  to read UI text.
+- The supervisor encodes the cropped frame unchanged. It has no resizing option:
+  image pixels map 1:1 to app pixels, so coordinates measured in the returned
+  PNG are app coordinates and colours are never averaged. `region` is the only
+  lever for payload size.
 - Through the supervisor, base64 adds about 33% to the PNG and the whole image
-  travels as one JSON content block. A 1280×720 PNG is typically 50–150 KB, or
-  ~70–200 KB on the wire. A direct library client instead pays
+  travels as one JSON content block. A 960×540 PNG is typically 40–120 KB, or
+  ~55–160 KB on the wire. A direct library client instead pays
   `width * height * 4` bytes for the raw frame.
 
 ## Input model
@@ -1241,10 +1244,11 @@ No arguments. Returns a pretty-printed JSON text block:
 - `capture.pending` is true while a capture waits for a frame; `count` is
   successful captures; `dropped` counts rejected `SDL3MCP_WriteFrame` attempts.
   `lastWidth`/`lastHeight` describe the frame the library returned, after any
-  region crop and before the supervisor's downscaling, `lastBytes` is the raw
-  RGBA payload size (`width * height * 4`), `lastMs` covers the wait for the
-  frame plus the crop, and `lastError` is `null` when the last capture succeeded
-  (or none ran), otherwise the last drop or capture error string.
+  region crop, and are the dimensions of the PNG the supervisor encodes,
+  `lastBytes` is the raw RGBA payload size (`width * height * 4`), `lastMs`
+  covers the wait for the frame plus the crop, and `lastError` is `null` when
+  the last capture succeeded (or none ran), otherwise the last drop or capture
+  error string.
 - `limits` repeats the effective `frame_timeout_ms` and `max_frame_bytes`.
 - `frame` is the library's frame counter and `appliedFrame` is the last frame at
   which an input batch was applied (0 when none was).
@@ -1364,7 +1368,8 @@ errors fail the call before queueing; key and chord errors fail it at F+1. See
 
 ### `sdl_capture`
 
-The library's own schema has no `max_width`: presentation is supervisor policy.
+The library's own schema returns raw pixels and advertises only `region` and
+`timeout_ms`: presentation is supervisor policy.
 
 ```json
 {
@@ -1402,8 +1407,7 @@ The library's own schema has no `max_width`: presentation is supervisor policy.
   fields are required, `x`/`y` must be at least 0, `width`/`height` at least 1,
   and the rectangle must fit inside the frame. It is applied by the library.
 - `timeout_ms` is 1–60000 and defaults to `frame_timeout_ms`.
-- Any other property, including `max_width`, is rejected before a frame is
-  requested.
+- Any other property is rejected before a frame is requested.
 
 A successful call is **one JSON-RPC result line followed by raw bytes**, not a
 content array:
@@ -1487,8 +1491,9 @@ request pushes nothing.
 
 The supervisor keeps the client-facing contract an image: the same session
 through `sdl3mcp-supervisor` ends the capture at
-`← {"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"1280x720 PNG from 1920x1080, 91234 bytes"},{"type":"image","mimeType":"image/png","data":"iVBORw0KGgo..."}],"isError":false}}`
-for `{"max_width":1280}`.
+`← {"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"1920x1080 PNG, 91234 bytes"},{"type":"image","mimeType":"image/png","data":"iVBORw0KGgo..."}],"isError":false}}`.
+The PNG is the app's native 1920x1080 frame, never resized, so a smaller
+`region` is the only way to shrink it.
 
 ## Threading and lifetime
 
@@ -1583,11 +1588,11 @@ of cursor warping.
 **A key is stuck.** The library releases held keys during
 `SDL3MCP_AppShutdown`. To recover mid-session, send `{"type":"release_all"}`.
 
-**Payloads are too large.** Through the supervisor, pass `max_width` (1280 is a
-good default for UI work) and crop with `region`; base64 adds about a third to
-the PNG size. A direct library client receives raw RGBA at
-`width * height * 4` bytes per capture, so keep `region` small and lower
-`max_frame_bytes` if you want a hard ceiling.
+**Payloads are too large.** Captures are never resized, so crop with `region`:
+a smaller region is a smaller PNG. Base64 adds about a third to the PNG size. A
+direct library client receives raw RGBA at `width * height * 4` bytes per
+capture, so keep `region` small and lower `max_frame_bytes` if you want a hard
+ceiling.
 
 **The app hangs in a GUI launch.** Apps started from Finder or Explorer have no
 usable stdin/stdout, so there is no MCP session. Launch from a terminal or let
@@ -1647,7 +1652,6 @@ third_party/stb/                   vendored stb_image_write.h (supervisor only)
 third_party/nlohmann/              vendored json.hpp fallback
 examples/minimal/main.c           the quick-start app
 supervisor/                        supervisor executable: CLI, child process, proxy
-supervisor/scaling.*               box-filter downscale for max_width
 supervisor/png.*                   PNG encode and base64
 supervisor/stb_image_write_impl.cpp
                                    the one stb implementation translation unit
@@ -1661,9 +1665,9 @@ Test suite (all registered with CTest): `header_c`, `header_cpp`,
 `input_tool_tests`, `capture_tests`, `capture_tool_tests`, `terminate_tests`,
 `json_rpc_tests`, `session_tests`, `frame_tests`, `info_tests`, `server_tests`,
 and six `lifecycle_*` scenarios. With `SDL3MCP_BUILD_SUPERVISOR=ON` it also adds
-`supervisor_scaling_tests` and `supervisor_png_tests` for the moved presentation
-code, `supervisor_tests`, which drives the real supervisor binary against a fake MCP
-child, and `supervisor_real_app`, which repeats the round trip through
+`supervisor_png_tests` for the moved presentation code, `supervisor_tests`,
+which drives the real supervisor binary against a fake MCP child, and
+`supervisor_real_app`, which repeats the round trip through
 `examples/minimal` under `SDL_VIDEODRIVER=dummy`. When Python 3 is available,
 `readme_check` runs `tests/check_readme.py`: it compiles both complete C
 examples, parses every JSON block, and checks both `sdl_capture` schemas, the

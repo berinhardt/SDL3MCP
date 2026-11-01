@@ -141,9 +141,9 @@ constexpr std::string_view kInputAnnotations = R"({
 
 /*
   The region is in pixels of the captured frame, matching sdl_info's
-  capture.lastWidth and capture.lastHeight, so the crop is exact. Downscaling
-  and image encoding are the supervisor's policy; a direct library client
-  receives raw RGBA.
+  capture.lastWidth and capture.lastHeight, so the crop is exact. Image
+  encoding is the supervisor's policy; a direct library client receives raw
+  RGBA.
 */
 constexpr std::string_view kCaptureDescription =
     "Ask the application for a fresh frame through SDL3MCP_FrameRequested() and "

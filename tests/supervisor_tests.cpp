@@ -480,7 +480,7 @@ void testToolListViews()
         sdl3mcp::supervisorToolList(SupervisorState::Running, childTools);
     CHECK(running["tools"] == childTools);
 
-    /* The child's sdl_capture has no max_width: the supervisor's replaces it. */
+    /* The child's sdl_capture has no presentation: the supervisor's replaces it. */
     const nlohmann::json childWithCapture = nlohmann::json::array({
         nlohmann::json{{"name", "sdl_info"}},
         nlohmann::json{{"name", "sdl_capture"},
@@ -497,11 +497,11 @@ void testToolListViews()
 
     const nlohmann::json &schema = replaced["tools"][1]["inputSchema"];
     const nlohmann::json &properties = schema["properties"];
-    CHECK(properties["max_width"]["minimum"] == 16);
-    CHECK(properties["max_width"]["maximum"] == 16384);
+    CHECK(properties.size() == 2);
+    CHECK(properties.contains("region"));
+    CHECK(properties.contains("timeout_ms"));
     CHECK(properties["timeout_ms"]["minimum"] == 1);
     CHECK(properties["timeout_ms"]["maximum"] == 60000);
-    CHECK(properties.contains("region"));
     CHECK(!childWithCapture[1]["inputSchema"].contains("properties"));
 }
 
@@ -567,13 +567,17 @@ void testSpawnAndProxy(const std::string &supervisor,
     CHECK(payload["window"]["width"] == 640);
     CHECK(payload["window"]["height"] == 480);
 
-    /* Running advertises the supervisor's sdl_capture, with max_width. */
+    /* Running advertises the supervisor's sdl_capture: region + timeout_ms, PNG. */
     const nlohmann::json list = client.toolsList();
     const nlohmann::json *captureTool = findTool(list, "sdl_capture");
     CHECK(captureTool != nullptr);
-    CHECK((*captureTool)["inputSchema"]["properties"].contains("max_width"));
-    CHECK((*captureTool)["description"].get<std::string>().find("max_width") !=
-          std::string::npos);
+    const nlohmann::json &captureProperties = (*captureTool)["inputSchema"]["properties"];
+    CHECK(captureProperties.size() == 2);
+    CHECK(captureProperties.contains("region"));
+    CHECK(captureProperties.contains("timeout_ms"));
+    const std::string captureDescription = (*captureTool)["description"].get<std::string>();
+    CHECK(captureDescription.find("PNG") != std::string::npos);
+    CHECK(captureDescription.find("native pixel size") != std::string::npos);
     const nlohmann::json *infoTool = findTool(list, "sdl_info");
     CHECK(infoTool != nullptr);
     CHECK((*infoTool)["description"] == "fake child tool");
@@ -609,11 +613,12 @@ void testSpawnAndProxy(const std::string &supervisor,
 }
 
 /*
-  sdl_capture through the proxy: the child sends a raw 64x32 frame, max_width 32
-  downscales it to 32x16, and the client still receives image/png plus a summary
-  naming the source size.
+  sdl_capture through the proxy: the child sends a raw 64x32 frame and the
+  client receives those same 64x32 pixels as image/png, with a summary naming
+  the native size. Native size is the regression: the proxy must never resize.
 */
-void testCaptureDownscales(const std::string &supervisor, const std::string &fakeChild)
+void testCaptureStaysNativeSize(const std::string &supervisor,
+                                const std::string &fakeChild)
 {
     SupervisorClient client;
     client.start(supervisor, {"--target", fakeChild, "--capture-width", "64",
@@ -621,8 +626,7 @@ void testCaptureDownscales(const std::string &supervisor, const std::string &fak
     CHECK(!client.initialize().contains("error"));
     CHECK(!client.spawn().contains("error"));
 
-    const nlohmann::json capture =
-        client.callTool("sdl_capture", nlohmann::json{{"max_width", 32}});
+    const nlohmann::json capture = client.callTool("sdl_capture");
     CHECK(capture["result"]["isError"] == false);
     const nlohmann::json &content = capture["result"]["content"];
     CHECK(content.is_array());
@@ -632,9 +636,9 @@ void testCaptureDownscales(const std::string &supervisor, const std::string &fak
     CHECK(content[1]["mimeType"] == "image/png");
 
     const std::string text = content[0]["text"].get<std::string>();
-    CHECK(text.rfind("32x16 PNG from 64x32", 0) == 0);
+    CHECK(text.rfind("64x32 PNG", 0) == 0);
     CHECK(text.find(" bytes") != std::string::npos);
-    CHECK(pngHasSize(decodeBase64(content[1]["data"].get<std::string>()), 32, 16));
+    CHECK(pngHasSize(decodeBase64(content[1]["data"].get<std::string>()), 64, 32));
 
     client.process.closeStdin();
     CHECK(client.process.waitForExit(kLineTimeoutMs));
@@ -658,7 +662,7 @@ void testCaptureRegion(const std::string &supervisor, const std::string &fakeChi
     const nlohmann::json &content = capture["result"]["content"];
     CHECK(content.size() == 2);
     const std::string text = content[0]["text"].get<std::string>();
-    CHECK(text.rfind("16x8 PNG from 16x8 at 0,0", 0) == 0);
+    CHECK(text.rfind("16x8 PNG at 0,0", 0) == 0);
     CHECK(pngHasSize(decodeBase64(content[1]["data"].get<std::string>()), 16, 8));
 
     client.process.closeStdin();
@@ -739,7 +743,7 @@ void testCaptureLargeFrame(const std::string &supervisor, const std::string &fak
     const nlohmann::json &content = capture["result"]["content"];
     CHECK(content.size() == 2);
     const std::string text = content[0]["text"].get<std::string>();
-    CHECK(text.rfind("160x96 PNG from 160x96", 0) == 0);
+    CHECK(text.rfind("160x96 PNG", 0) == 0);
     CHECK(pngHasSize(decodeBase64(content[1]["data"].get<std::string>()), 160, 96));
 
     client.process.closeStdin();
@@ -989,10 +993,9 @@ void testRealExample(const std::string &supervisor, const std::string &example)
     CHECK(input["result"]["isError"] == false);
     CHECK(spawnText(input).find("applied") != std::string::npos);
 
-    const nlohmann::json capture =
-        client.callTool("sdl_capture", nlohmann::json{{"max_width", 320}});
+    const nlohmann::json capture = client.callTool("sdl_capture");
     CHECK(capture["result"]["isError"] == false);
-    CHECK(spawnText(capture).rfind("320x180 PNG from 960x540", 0) == 0);
+    CHECK(spawnText(capture).rfind("960x540 PNG", 0) == 0);
 
     bool sawImage = false;
     for (const nlohmann::json &block : capture["result"]["content"]) {
@@ -1033,7 +1036,7 @@ int main(int argc, char **argv)
     testSpawnAndProxy(supervisor, fakeChild, pidFile);
     ::unlink(pidFile.c_str());
 
-    testCaptureDownscales(supervisor, fakeChild);
+    testCaptureStaysNativeSize(supervisor, fakeChild);
     testCaptureRegion(supervisor, fakeChild);
     testCaptureTextError(supervisor, fakeChild);
     testCaptureRpcError(supervisor, fakeChild);

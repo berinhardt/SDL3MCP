@@ -38,13 +38,12 @@ and `examples/minimal` is a complete host.
   `tests/check_readme.py` ignores it.
 - `SDL3MCP_BUILD_SUPERVISOR=ON` builds `build/sdl3mcp-supervisor`, the optional
   single-endpoint supervisor over a restartable app. Its sources live in
-  `supervisor/` (CLI, child process, proxy, scaling, PNG/base64) and its tests
-  are `supervisor_scaling_tests` and `supervisor_png_tests` (the moved
-  presentation code), `supervisor_tests` (fake MCP child over real pipes) and
-  `supervisor_real_app` (the real `examples/minimal` under
-  `SDL_VIDEODRIVER=dummy`); the last is registered only when examples are
-  built. `opencode.json` in the repository root points the local MCP client at
-  the supervisor.
+  `supervisor/` (CLI, child process, proxy, PNG/base64) and its tests are
+  `supervisor_png_tests` (the moved presentation code), `supervisor_tests` (fake
+  MCP child over real pipes) and `supervisor_real_app` (the real
+  `examples/minimal` under `SDL_VIDEODRIVER=dummy`); the last is registered only
+  when examples are built. `opencode.json` in the repository root points the
+  local MCP client at the supervisor.
 - Target SDL 3.2+. There, `SDL_RenderReadPixels(renderer, rect)` returns an
   `SDL_Surface *`; the old five-argument form is retired. Keep examples on 3.2
   APIs (no `SDL_RenderDebugText` or other 3.4-only calls).
@@ -66,10 +65,12 @@ and `examples/minimal` is a complete host.
   writes one result line
   `{"format":"rgba8888","width":W,"height":H,"byteLength":B}` and then exactly
   `B` tightly packed RGBA bytes, with no newline and no base64. `region` stays in
-  the library; downscaling, PNG, and base64 are supervisor policy. The
-  supervisor reads that framing, validates the header and payload size, and
-  returns the standard `{"type":"image","mimeType":"image/png","data":"<base64>"}`
-  content block, which stays the client-facing contract. Do not reintroduce a
+  the library; PNG and base64 are supervisor policy, and the supervisor encodes
+  the frame at exactly the dimensions it received, so captures are never
+  resized. The supervisor reads that framing, validates the header and payload
+  size, and returns the standard
+  `{"type":"image","mimeType":"image/png","data":"<base64>"}` content block,
+  which stays the client-facing contract. Do not reintroduce a
   custom client, a non-standard content type, or PNG encoding in the library.
 - **Frame contract.** `SDL3MCP_WriteFrame(data, size, width, height)` accepts
   only tightly packed RGBA8888 with `size == width * height * 4`, top-left
@@ -83,9 +84,10 @@ and `examples/minimal` is a complete host.
   text and `sdl_info`.
 - **Capture region.** `region` is `{x, y, width, height}` in pixels of the
   captured frame, top-left origin, all four required, and must fit inside
-  `capture.lastWidth` by `capture.lastHeight`; the library crops it before the
-  supervisor's `max_width` downscaling. `max_width` is 16..16384 and exists only
-  in the supervisor's schema. `timeout_ms` is 1..60000.
+  `capture.lastWidth` by `capture.lastHeight`; the library crops it and the
+  supervisor encodes the result at those same dimensions. Captures are never
+  downscaled, so PNG pixels map 1:1 to app pixels and `region` is the only
+  payload-size lever. `timeout_ms` is 1..60000.
 - **Input is event-based.** Actions become `SDL_PushEvent` traffic applied in
   `SDL3MCP_AppIterate` on the app thread. `SDL_GetKeyboardState` cannot be
   updated because SDL3 exposes no per-key setter; that is a documented
@@ -121,9 +123,9 @@ and `examples/minimal` is a complete host.
   speaks MCP on its own stdio and runs one target child at a time. `Idle`
   advertises only `spawn`, `Starting` advertises nothing, and `Running` mirrors
   the committed child tools except `sdl_capture`, which the supervisor replaces
-  with its own definition (region, `max_width`, `timeout_ms`) because it owns
-  presentation. `spawn` is synchronous: fork/exec, initialize, `tools/list`, then
-  poll `sdl_info` until a window is bound or `--startup-timeout-ms` expires. A
+  with its own definition (region, `timeout_ms`) because it owns presentation.
+  `spawn` is synchronous: fork/exec, initialize, `tools/list`, then poll
+  `sdl_info` until a window is bound or `--startup-timeout-ms` expires. A
   second `spawn` while not idle is an error. Every transition that changes the
   tool view sends one `notifications/tools/list_changed`; do not make it fire
   twice or cache the tool list on the client side.

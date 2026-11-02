@@ -299,10 +299,10 @@ void runClient(int requestsFd, MessageReader &reader)
         call(requestsFd, reader, 6, "sdl_capture", nlohmann::json{{"region", badRegion}});
     CHECK(missingHeight["result"]["isError"] == true);
 
-    /* max_width is supervisor policy now: a direct library client may not send it. */
-    const nlohmann::json maxWidth =
-        call(requestsFd, reader, 7, "sdl_capture", nlohmann::json{{"max_width", 320}});
-    CHECK(maxWidth["result"]["isError"] == true);
+    /* A direct library client cannot send arguments the library schema lacks. */
+    const nlohmann::json resized =
+        call(requestsFd, reader, 7, "sdl_capture", nlohmann::json{{"width", 320}});
+    CHECK(resized["result"]["isError"] == true);
 
     const nlohmann::json afterInvalid =
         parseInfo(call(requestsFd, reader, 8, "sdl_info", nlohmann::json::object()));

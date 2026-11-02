@@ -8,7 +8,7 @@
   from SDL3MCP_WriteFrame's raw pointer and the app-supplied dimensions;
   cropFrame() trusts it and only guards its own arguments.
 
-  Presentation (downscaling, PNG, base64) is the supervisor's policy and lives in
+  Presentation (PNG and base64) is the supervisor's policy and lives in
   supervisor/, so the library never references stb.
 
   The region schema in the tool catalog names (x, y, width, height), so

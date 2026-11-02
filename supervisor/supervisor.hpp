@@ -24,9 +24,11 @@
 
   sdl_capture is the one proxied call the supervisor does not pass through
   verbatim: the library answers with a raw RGBA header and payload, and the
-  supervisor downscales to max_width, encodes PNG, and base64s it so the
-  client-facing image block stays standard. tools/list therefore advertises the
-  supervisor's own sdl_capture definition while running.
+  supervisor encodes that frame as PNG at exactly the dimensions it arrived
+  with, then base64s it so the client-facing image block stays standard.
+  tools/list therefore advertises the supervisor's own sdl_capture definition
+  while running. Captures are never resized, so image pixels map 1:1 to app
+  pixels.
 
   The supervisor never calls SDL. It only writes JSON to the child's pipes and
   reads its lines and raw frames.
@@ -72,16 +74,17 @@ struct SupervisorToolResult
 /*
   The tools/list body for a state: `spawn` alone while idle, nothing while the
   child starts, and the committed child tools while running. While running,
-  sdl_capture is replaced with the supervisor's own definition because
-  downscaling is supervisor policy; every other tool keeps the child's entry
-  verbatim. Exposed so the Starting view is testable without racing a live spawn.
+  sdl_capture is replaced with the supervisor's own definition because PNG and
+  base64 presentation are supervisor policy; every other tool keeps the child's
+  entry verbatim. Exposed so the Starting view is testable without racing a live
+  spawn.
 */
 nlohmann::json supervisorToolList(SupervisorState state, const nlohmann::json &childTools);
 
 /* The spawn tool as advertised while idle. */
 nlohmann::json spawnToolDefinition();
 
-/* The sdl_capture the supervisor advertises while running, with max_width. */
+/* The sdl_capture the supervisor advertises while running: region and timeout_ms. */
 nlohmann::json supervisorCaptureToolDefinition();
 
 class Supervisor
@@ -135,8 +138,9 @@ private:
                                     const nlohmann::json &arguments);
     /*
       sdl_capture is forwarded specially: the child answers the raw header plus
-      pixel bytes, and the supervisor downscales, PNG-encodes, and base64-encodes
-      before replying with the usual image block.
+      pixel bytes, and the supervisor PNG-encodes the frame at the dimensions it
+      arrived with and base64-encodes it before replying with the usual image
+      block.
     */
     nlohmann::json forwardCapture(const nlohmann::json &id,
                                   const nlohmann::json &arguments);

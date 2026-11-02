@@ -1,7 +1,6 @@
 #include "supervisor.hpp"
 
 #include "png.hpp"
-#include "scaling.hpp"
 
 #include <SDL3MCP/SDL3MCP_version.h>
 
@@ -27,10 +26,6 @@ constexpr std::string_view kServerName = "sdl3mcp-supervisor";
 constexpr int kWindowPollMs = 50;
 /* SIGTERM to SIGKILL grace when the application ignores the quit request. */
 constexpr int kTerminateGraceMs = 2000;
-
-/* The sdl_capture max_width policy the supervisor advertises and enforces. */
-constexpr int kCaptureMinWidth = 16;
-constexpr int kCaptureMaxWidth = 16384;
 
 /*
   The largest raw frame the supervisor accepts from the child. It bounds the
@@ -173,29 +168,6 @@ bool readInteger(const nlohmann::json &object, const char *name, int64_t &value)
     return true;
 }
 
-/* max_width is the supervisor's own argument: absent means no downscale. */
-bool parseMaxWidth(const nlohmann::json &arguments, int &maxWidth, std::string &error)
-{
-    maxWidth = 0;
-    if (arguments.find("max_width") == arguments.end()) {
-        return true;
-    }
-
-    int64_t value = 0;
-    if (!readInteger(arguments, "max_width", value)) {
-        error = "max_width must be an integer";
-        return false;
-    }
-    if (value < kCaptureMinWidth || value > kCaptureMaxWidth) {
-        error = "max_width " + std::to_string(value) + " must be between " +
-                std::to_string(kCaptureMinWidth) + " and " +
-                std::to_string(kCaptureMaxWidth);
-        return false;
-    }
-    maxWidth = static_cast<int>(value);
-    return true;
-}
-
 /*
   Validates the child's raw-frame header before any payload byte is read, so a
   mismatched or oversized byteLength is rejected instead of allocated. The
@@ -250,16 +222,16 @@ bool parseCaptureHeader(const nlohmann::json &result,
     return true;
 }
 
-/* The image summary names the output, the source, its region, and the PNG size. */
+/*
+  The image summary names the frame the app sent, its region when one was given,
+  and the PNG size.
+*/
 std::string captureSummary(const nlohmann::json &arguments,
-                           const Frame &output,
-                           int sourceWidth,
-                           int sourceHeight,
+                           const Frame &frame,
                            size_t pngBytes)
 {
-    std::string text = std::to_string(output.width) + "x" +
-                       std::to_string(output.height) + " PNG from " +
-                       std::to_string(sourceWidth) + "x" + std::to_string(sourceHeight);
+    std::string text =
+        std::to_string(frame.width) + "x" + std::to_string(frame.height) + " PNG";
 
     const auto region = arguments.find("region");
     int64_t x = 0;
@@ -304,20 +276,15 @@ nlohmann::json supervisorCaptureToolDefinition()
     return nlohmann::json{
         {"name", "sdl_capture"},
         {"description",
-         "Ask the application for a fresh frame and return it as a PNG image block. "
-         "The optional region crops pixels from the captured frame, using "
-         "capture.lastWidth x capture.lastHeight from sdl_info, with a top-left "
-         "origin; it must fit inside the frame and is applied before max_width "
-         "downscaling. Use max_width to keep the payload small."},
+         "Ask the application for a fresh frame and return it as a PNG image block "
+         "at the app's native pixel size. The optional region crops pixels from the "
+         "captured frame, using capture.lastWidth x capture.lastHeight from sdl_info, "
+         "with a top-left origin; it must fit inside the frame and is the only way "
+         "to keep the payload small, because captures are never resized."},
         {"inputSchema",
          nlohmann::json{
              {"type", "object"},
              {"properties", nlohmann::json{
-                  {"max_width", nlohmann::json{
-                                    {"type", "integer"},
-                                    {"minimum", kCaptureMinWidth},
-                                    {"maximum", kCaptureMaxWidth},
-                                }},
                   {"timeout_ms", nlohmann::json{
                                      {"type", "integer"},
                                      {"minimum", 1},
@@ -364,7 +331,7 @@ nlohmann::json supervisorToolList(SupervisorState state, const nlohmann::json &c
     case SupervisorState::Starting:
         return nlohmann::json{{"tools", nlohmann::json::array()}};
     case SupervisorState::Running: {
-        /* The child's sdl_capture has no max_width, so the supervisor's replaces it. */
+        /* The child's sdl_capture has no presentation, so the supervisor's replaces it. */
         nlohmann::json tools = nlohmann::json::array();
         if (childTools.is_array()) {
             for (const nlohmann::json &tool : childTools) {
@@ -666,7 +633,7 @@ void Supervisor::handleToolsCall(const nlohmann::json &id, const nlohmann::json 
 
     /*
       sdl_capture is the one tool the supervisor does not forward verbatim: the
-      child sends raw pixels, and the supervisor owns max_width, PNG, and base64.
+      child sends raw pixels, and the supervisor owns PNG encoding and base64.
     */
     if (toolName == "sdl_capture") {
         writeJson(forwardCapture(id, arguments));
@@ -1036,22 +1003,12 @@ nlohmann::json Supervisor::forwardCapture(const nlohmann::json &id,
         return toolResultJson(id, toolError("the application is not running"));
     }
 
-    int maxWidth = 0;
-    std::string argumentError;
-    if (!parseMaxWidth(arguments, maxWidth, argumentError)) {
-        return toolResultJson(id, toolError(std::move(argumentError)));
-    }
-
-    /* region and timeout_ms go to the child; max_width is supervisor-only. */
-    nlohmann::json forwarded = arguments;
-    forwarded.erase("max_width");
-
     const long long requestId = nextChildRequestId_++;
     const nlohmann::json request{
         {"jsonrpc", "2.0"},
         {"id", requestId},
         {"method", "tools/call"},
-        {"params", nlohmann::json{{"name", "sdl_capture"}, {"arguments", forwarded}}},
+        {"params", nlohmann::json{{"name", "sdl_capture"}, {"arguments", arguments}}},
     };
     if (!childTransport_->writeLine(request.dump())) {
         return toolResultJson(id, toolError("cannot reach the application"));
@@ -1121,9 +1078,6 @@ nlohmann::json Supervisor::forwardCapture(const nlohmann::json &id,
         frame.width = sourceWidth;
         frame.height = sourceHeight;
         frame.pixels = std::move(pixels);
-        if (maxWidth > 0) {
-            frame = downscaleFrame(frame, maxWidth);
-        }
 
         const std::vector<uint8_t> png = encodePng(frame);
         if (png.empty()) {
@@ -1135,8 +1089,7 @@ nlohmann::json Supervisor::forwardCapture(const nlohmann::json &id,
         SupervisorToolResult image;
         image.content = nlohmann::json::array({
             nlohmann::json{{"type", "text"},
-                           {"text", captureSummary(arguments, frame, sourceWidth,
-                                                   sourceHeight, png.size())}},
+                           {"text", captureSummary(arguments, frame, png.size())}},
             nlohmann::json{{"type", "image"},
                            {"mimeType", "image/png"},
                            {"data", base64Encode(png)}},

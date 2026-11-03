@@ -32,10 +32,6 @@ and `examples/minimal` is a complete host.
   prose, the region's captured-frame dimensions, the four-argument
   `SDL3MCP_WriteFrame` signature, the run command, the supervisor states, and
   the loop order. CTest registers it as `readme_check` when Python 3 is found.
-- `extras/sdl-vision/` is optional OpenCode agent configuration — a subagent
-  plus a skill that drives `sdl_capture` through a vision model. It is
-  not built or installed by CMake, has no `ctest` entry, and
-  `tests/check_readme.py` ignores it.
 - `SDL3MCP_BUILD_SUPERVISOR=ON` builds `build/sdl3mcp-supervisor`, the optional
   single-endpoint supervisor over a restartable app. Its sources live in
   `supervisor/` (CLI, child process, proxy, PNG/base64) and its tests are

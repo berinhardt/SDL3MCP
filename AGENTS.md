@@ -81,7 +81,10 @@ are in `src/`, and `examples/minimal` is a complete host.
   resized. The supervisor reads that framing, validates the header and payload
   size, and returns the standard
   `{"type":"image","mimeType":"image/png","data":"<base64>"}` content block,
-  which stays the client-facing contract. Do not reintroduce a
+  which stays the client-facing contract. A supervisor in front of another
+  supervisor relays that already-presented `content` result untouched; only a
+  raw `format`/`width`/`height`/`byteLength` frame is encoded, and exactly once,
+  at the hop nearest the application. Do not reintroduce a
   custom client, a non-standard content type, or PNG encoding in the library.
 - **Frame contract.** `SDL3MCP_WriteFrame(data, size, width, height)` accepts
   only tightly packed RGBA8888 with `size == width * height * 4`, top-left
@@ -146,7 +149,11 @@ are in `src/`, and `examples/minimal` is a complete host.
   `--startup-timeout-ms` expires. A second `spawn` while not idle is an error,
   and the spawner starts one application at a time. Every transition that changes
   the tool view sends one `notifications/tools/list_changed`; do not make it fire
-  twice or cache the tool list on the client side.
+  twice or cache the tool list on the client side. A supervisor never treats a
+  peer's announcement as the list itself: on
+  `notifications/tools/list_changed` from an attached peer — a spawner behind a
+  relay, or an application behind a spawner — it asks that peer for `tools/list`
+  again and republishes the result, so a chained view is observed by listing.
 - **The terminate watchdog is supervisor policy, not library policy.**
   `sdl_terminate` is forwarded like any other running tool, but its timer starts
   before the forward and the supervisor waits for the child to exit. Clean exit

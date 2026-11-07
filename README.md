@@ -910,6 +910,12 @@ PNG definition exactly as it does for a child. Each change sends one
 `notifications/tools/list_changed`: the attach, and later the detach. After the
 notification `tools/list` is the application's set; before it, `wait_session`.
 
+A peer that announces a change of its own is followed rather than quoted: on
+`notifications/tools/list_changed` the relay asks that peer for `tools/list`
+again and republishes the result with its own `list_changed`. That is what makes
+a relay in front of a spawner show the spawned application's tools as soon as
+the spawn call answers, and the `app_spawn_*` set again once it exits.
+
 Exactly one application session is accepted at a time. A second connection is
 closed as soon as it is accepted instead of queueing behind the first, and the
 listener never hands it to the proxy. When the attached application's socket
@@ -921,6 +927,10 @@ stdio endpoint open for the next application.
 library's raw `rgba8888` frame is encoded as a PNG at the app's native pixel size
 and returned as `image/png`, with `region` meaning the same crop rectangle in
 app pixels. Every other call, including `sdl_terminate`, is forwarded verbatim.
+When the peer is itself a supervisor — a spawner — its answer is already the
+final `content` result with the image block, so the relay passes that through
+unchanged instead of encoding it a second time; the frame keeps the dimensions
+and format the hop nearest the application reported.
 
 ### Stopping the relay
 
@@ -1065,8 +1075,9 @@ wait for the running application to exit first.
 application dialing back, and its `initialize` and `tools/list` handshake — not
 just the connection. `app_spawn_<alias>` has three outcomes:
 
-1. **Success.** The application connected and completed the handshake. The result
-   is `spawned <alias> (pid N)`, and the tool list is now the application's.
+1. **Success.** The application connected and completed the handshake, and its
+   session is still live when the answer is written. The result is
+   `spawned <alias> (pid N)`, and the tool list is now the application's.
 2. **The application died first.** It exited, or could not be executed, before it
    connected. The `isError` result names the exit status or `exec` failure and
    the pid, and the tool view returns to the `app_spawn_*` set.

@@ -21,7 +21,9 @@
   --mcp=HOST:PORT makes it dial that endpoint instead of using stdin/stdout, so
   it can stand in for an application spawned by the spawner. --dial-delay-ms
   postpones that dial (a spawner timeout test) and --exit-before-connect exits
-  without dialing (a spawner child-exits-first test).
+  without dialing (a spawner child-exits-first test). --initialize-delay-ms
+  postpones the answer to initialize, so a test can prove a spawn waits for the
+  handshake instead of returning when the connection is accepted.
 
   --pid-file exists only so a test can prove the child is gone after the
   supervisor stops; it writes the child's own pid.
@@ -74,6 +76,7 @@ struct Options
     std::string pidFile;
     std::string mcpAddress;
     int dialDelayMs = 0;
+    int initializeDelayMs = 0;
     bool exitBeforeConnect = false;
 };
 
@@ -108,6 +111,11 @@ bool parseOptions(int argc, char **argv, Options &options)
         } else if (argument == "--dial-delay-ms" && hasValue) {
             if (!parseInteger(argv[++index], options.dialDelayMs) ||
                 options.dialDelayMs < 0) {
+                return false;
+            }
+        } else if (argument == "--initialize-delay-ms" && hasValue) {
+            if (!parseInteger(argv[++index], options.initializeDelayMs) ||
+                options.initializeDelayMs < 0) {
                 return false;
             }
         } else if (argument == "--exit-before-connect") {
@@ -441,6 +449,10 @@ void handleMessage(const nlohmann::json &message,
         if (version == params.end() || !version->is_string()) {
             writeError(*id, -32602, "initialize requires a string protocolVersion");
             return;
+        }
+        /* A late answer, so a spawner that waits for the handshake cannot pass early. */
+        if (options.initializeDelayMs > 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(options.initializeDelayMs));
         }
         writeResult(*id, nlohmann::json{
                              {"protocolVersion", std::string(kProtocolVersion)},

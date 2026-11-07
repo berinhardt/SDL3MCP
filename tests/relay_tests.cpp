@@ -2,8 +2,10 @@
   The relay end to end: the real executable is started with --listen on an
   ephemeral port and driven over real pipes, while a fake application dials in
   over TCP. That covers the CLI, the listener, the accept/single-session rule,
-  the private initialize handshake, wait_session, the forwarded call path and
-  the raw capture framing, in the same code the shipped binary runs.
+  the private initialize handshake, wait_session, the forwarded call path, the
+  raw capture framing, a capture that a supervisor behind the relay already
+  presented, and a tool list the application announces mid-session, in the same
+  code the shipped binary runs.
 
   No SDL and no video driver are involved: neither side of the fake peer touches
   a window, so a failure is a protocol or socket bug rather than a driver one.
@@ -300,7 +302,21 @@ struct RelayClient
         }
         return count;
     }
+
+    /* Reads notifications until at least `expected` list_changed ones arrived. */
+    void waitForListChanged(size_t expected)
+    {
+        while (listChangedCount() < expected) {
+            const nlohmann::json message = readMessage();
+            CHECK(message.contains("method"));
+            notifications.push_back(message);
+        }
+    }
 };
+
+/* The base64 a downstream supervisor hands a relay: an image already presented. */
+constexpr std::string_view kPresentedPng =
+    "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAFklEQVR4nGP8z8Dwn4GBgYmBgYGBAQAkFwIB0d0mGQAAAABJRU5ErkJggg==";
 
 /* The application side: dials the relay and answers the supervisor's handshake. */
 struct FakePeer
@@ -415,6 +431,52 @@ struct FakePeer
                              })},
                  {"isError", false},
              }},
+        });
+    }
+
+    /*
+      Answers a capture the way a supervisor behind this relay does: the frame
+      is already a standard content result with an image block, so the relay has
+      nothing to encode and must pass it on unchanged.
+    */
+    void servePresentedCapture()
+    {
+        const nlohmann::json call = readMessage();
+        CHECK(call["method"] == "tools/call");
+        CHECK(call["params"]["name"] == "sdl_capture");
+
+        write(nlohmann::json{
+            {"jsonrpc", "2.0"},
+            {"id", call["id"]},
+            {"result", nlohmann::json{
+                 {"content", nlohmann::json::array({
+                                 nlohmann::json{{"type", "text"},
+                                                {"text", "4x4 PNG, 99 bytes"}},
+                                 nlohmann::json{{"type", "image"},
+                                                {"mimeType", "image/png"},
+                                                {"data", kPresentedPng}},
+                             })},
+                 {"isError", false},
+             }},
+        });
+    }
+
+    /*
+      Announces a new tool list the way an application does and answers the
+      relay's follow-up tools/list, which is how the relay is expected to learn
+      the change rather than trusting the notification alone.
+    */
+    void announceTools(const nlohmann::json &tools)
+    {
+        write(nlohmann::json{{"jsonrpc", "2.0"},
+                             {"method", "notifications/tools/list_changed"}});
+
+        const nlohmann::json list = readMessage();
+        CHECK(list["method"] == "tools/list");
+        write(nlohmann::json{
+            {"jsonrpc", "2.0"},
+            {"id", list["id"]},
+            {"result", nlohmann::json{{"tools", tools}}},
         });
     }
 };
@@ -552,9 +614,10 @@ void testRelayRoundTrip(const std::string &supervisor)
     CHECK(peer.connect(port));
     peer.handshake(peerToolList());
 
-    /* The attach is announced once and wakes the waiting call. */
+    /* The attach wakes the waiting call and is announced once. */
     const nlohmann::json waited = client.readResponse(waitId);
     CHECK(waited["result"]["isError"] == false);
+    client.waitForListChanged(1);
     CHECK(client.listChangedCount() == 1);
 
     const std::vector<std::string> attachedNames = toolNames(client.toolsList());
@@ -591,6 +654,41 @@ void testRelayRoundTrip(const std::string &supervisor)
     CHECK(content[1]["mimeType"] == "image/png");
     CHECK(content[1]["data"].get<std::string>().size() > 20);
 
+    /*
+      A capture that a supervisor behind the relay already presented crosses the
+      hop byte for byte: its text, mime type and payload are not reworded or
+      re-encoded, which is what keeps the format the application reported.
+    */
+    const int relayedId = client.send("tools/call", nlohmann::json{
+                                                        {"name", "sdl_capture"},
+                                                        {"arguments", nlohmann::json::object()},
+                                                    });
+    peer.servePresentedCapture();
+    const nlohmann::json relayed = client.readResponse(relayedId);
+    CHECK(relayed["result"]["isError"] == false);
+    const nlohmann::json &relayedContent = relayed["result"]["content"];
+    CHECK(relayedContent.size() == 2);
+    CHECK(relayedContent[0]["text"] == "4x4 PNG, 99 bytes");
+    CHECK(relayedContent[1]["type"] == "image");
+    CHECK(relayedContent[1]["mimeType"] == "image/png");
+    CHECK(relayedContent[1]["data"] == kPresentedPng);
+
+    /*
+      A tool list the application announces mid-session is taken again and
+      observed by listing at this endpoint, not merely trusted as a notification.
+    */
+    const nlohmann::json grownTools = nlohmann::json::array({
+        peerToolList()[0],
+        peerToolList()[1],
+        nlohmann::json{{"name", "app_extra"},
+                       {"description", "added after attach"},
+                       {"inputSchema", nlohmann::json{{"type", "object"}}}},
+    });
+    peer.announceTools(grownTools);
+    client.readNotification("notifications/tools/list_changed");
+    CHECK((toolNames(client.toolsList()) ==
+           std::vector<std::string>{"app_info", "sdl_capture", "app_extra"}));
+
     /* Exactly one peer: a second connection is closed, not queued. */
     CHECK(secondConnectionIsClosed(port));
 
@@ -608,8 +706,9 @@ void testRelayRoundTrip(const std::string &supervisor)
     ::close(peer.fd);
     peer.fd = -1;
 
-    client.readNotification("notifications/tools/list_changed");
-    CHECK(client.listChangedCount() == 2);
+    /* Attach, the mid-session list change, and the withdrawal are one each. */
+    client.waitForListChanged(3);
+    CHECK(client.listChangedCount() == 3);
     CHECK(toolNames(client.toolsList()) == std::vector<std::string>{"wait_session"});
 
     client.process.closeStdin();

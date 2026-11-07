@@ -17,6 +17,13 @@
   Transport and json_rpc, a state enum decides the tools/list view, and the
   session handshake is synchronous so there is never more than one application.
 
+  A relay may sit in front of another supervisor (the spawner), so a tool-list
+  change can arrive while no call is in flight or in the middle of one. The
+  supervisor never trusts a cached list across such an announcement: it reads
+  the peer's list again once the current response is written, and only then
+  republishes tools/list_changed upstream. That is what makes a spawn observed
+  through a relay show the application's tools instead of the spawner's.
+
   A monitor thread owns the withdrawal half of a Running -> Idle transition: when
   the child exits on its own it clears the committed tools, sends
   notifications/tools/list_changed, and puts `spawn` back. In relay mode an
@@ -161,6 +168,22 @@ private:
     void pollRelayPeer();
     /* Spawner: terminate an app whose socket vanished, and release a stale one. */
     void pollSpawnerSession();
+    /*
+      Reads the attached peer's queued lines with a short bound: an application
+      announces a tool-list change at a moment no call is in flight, and the
+      relay has to hear it to keep its own view current.
+    */
+    void drainPeerNotifications();
+    /* Marks the view stale when a peer message is notifications/tools/list_changed. */
+    void observePeerMessage(const nlohmann::json &message);
+    /*
+      Takes the attached peer's tool list again after it announced a change and
+      republishes it upstream. Responses are already written by the time this
+      runs, so a client sees the answer before the announcement.
+    */
+    void refreshPeerTools();
+    /* The post-response and idle half of following a peer's list changes. */
+    void servicePeerSession();
     SupervisorToolResult waitSession(const nlohmann::json &arguments);
     /* The peer the proxy is talking to right now, or nullptr when there is none. */
     Peer *dataPath();
@@ -226,6 +249,11 @@ private:
     bool stopping_ = false;
     /* Set by stop(); a wait_session parked on the condition notices it. */
     bool stopRequested_ = false;
+    /*
+      Set when a peer announced tools/list_changed. The run thread consumes it;
+      the acceptor can set it while handshaking a new session, so it is atomic.
+    */
+    std::atomic<bool> peerToolsDirty_{false};
 
     /* The data path the proxy loop uses, swapped under stateMutex_. A child peer
        is owned by child_; a relay peer by relayPeer_. */

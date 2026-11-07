@@ -32,6 +32,8 @@ constexpr std::string_view kServerName = "sdl3mcp";
 constexpr int kWindowPollMs = 50;
 /* The relay wakes the stdio read this often to notice a session that went away. */
 constexpr int kPeerPollMs = 50;
+/* Bounded read of an idle peer's queued announcements; a line arrives at once. */
+constexpr int kPeerDrainMs = 10;
 /* SIGTERM to SIGKILL grace when the application ignores the quit request. */
 constexpr int kTerminateGraceMs = 2000;
 constexpr std::int64_t kMaxWaitSessionMs = 60000;
@@ -537,6 +539,8 @@ int Supervisor::run()
             /* A relayed session, or a spawned app, may close while no call is in flight. */
             pollRelayPeer();
             pollSpawnerSession();
+            /* It may also announce a tool-list change while idle. */
+            servicePeerSession();
             continue;
         }
         try {
@@ -915,6 +919,112 @@ void Supervisor::pollSpawnerSession()
     }
 }
 
+void Supervisor::drainPeerNotifications()
+{
+    for (;;) {
+        Peer *peer = dataPath();
+        if (peer == nullptr) {
+            return;
+        }
+
+        std::string line;
+        std::string error;
+        /*
+          A short bound, not zero: the transport's zero-timeout path reports a
+          timeout before it polls, so a queued announcement would never be read.
+        */
+        const ReadStatus status = peer->readLine(line, error, kPeerDrainMs);
+        if (status != ReadStatus::Line) {
+            /*
+              Timeout means "nothing queued"; Eof and Error end the session and
+              the polls own detaching it, so either way there is nothing to do.
+            */
+            return;
+        }
+
+        const nlohmann::json message = nlohmann::json::parse(line, nullptr, false);
+        if (!message.is_discarded() && message.is_object()) {
+            observePeerMessage(message);
+        }
+    }
+}
+
+void Supervisor::observePeerMessage(const nlohmann::json &message)
+{
+    const auto method = message.find("method");
+    if (method == message.end() || !method->is_string()) {
+        /* A response nobody is waiting for: it belongs to an abandoned call. */
+        return;
+    }
+
+    if (method->get<std::string>() == "notifications/tools/list_changed") {
+        peerToolsDirty_ = true;
+    }
+}
+
+void Supervisor::refreshPeerTools()
+{
+    /* Exchange so an announcement made during the fetch is not swallowed. */
+    if (!peerToolsDirty_.exchange(false)) {
+        return;
+    }
+
+    Peer *peer = nullptr;
+    {
+        const std::lock_guard<std::mutex> lock(stateMutex_);
+        if (state_ != SupervisorState::PeerAttached) {
+            /* Nothing is attached; the handshake publishes whatever comes next. */
+            return;
+        }
+        peer = peer_;
+    }
+    if (peer == nullptr) {
+        return;
+    }
+
+    const Deadline deadline = std::chrono::steady_clock::now() +
+                              std::chrono::milliseconds(options_.startupTimeoutMs);
+    nlohmann::json listResult;
+    std::string error;
+    if (!requestPeer(peer, "tools/list", nlohmann::json::object(), listResult, deadline,
+                     error)) {
+        /*
+          The announcement is still honoured as far as this hop can: a peer that
+          cannot list is either going away or broken, and a client that asks next
+          finds out through the ordinary path.
+        */
+        std::fprintf(stderr, "sdl3mcp: cannot refresh the attached tools: %s\n",
+                     error.c_str());
+        std::fflush(stderr);
+        return;
+    }
+
+    const auto entries = listResult.find("tools");
+    if (entries == listResult.end() || !entries->is_array()) {
+        return;
+    }
+
+    {
+        const std::lock_guard<std::mutex> lock(stateMutex_);
+        if (state_ != SupervisorState::PeerAttached || peer_ != peer) {
+            return;
+        }
+        peerTools_ = *entries;
+    }
+
+    sendToolsListChanged();
+}
+
+void Supervisor::servicePeerSession()
+{
+    if (!options_.relay() && !options_.spawner()) {
+        return;
+    }
+
+    drainPeerNotifications();
+    refreshPeerTools();
+}
+
 Peer *Supervisor::dataPath()
 {
     const std::lock_guard<std::mutex> lock(stateMutex_);
@@ -1021,7 +1131,12 @@ bool Supervisor::handleLine(const std::string &line)
     }
 
     handleRequest(message.request);
-    return !failed_.load();
+    if (failed_.load()) {
+        return false;
+    }
+    /* A tool list the peer announced during this call is fetched after its answer. */
+    servicePeerSession();
+    return true;
 }
 
 void Supervisor::handleRequest(const RpcRequest &request)
@@ -1542,6 +1657,22 @@ SupervisorToolResult Supervisor::spawnerSpawn(const std::string &alias,
 
     monitorCondition_.notify_all();
     sendToolsListChanged();
+
+    /*
+      The result promises a session that is usable now, so an application that
+      closed right after the handshake is a failed spawn, not a pid. The monitor
+      owns the exit path, so this asks it rather than reading the process.
+    */
+    bool live = false;
+    {
+        const std::lock_guard<std::mutex> lock(stateMutex_);
+        live = state_ == SupervisorState::PeerAttached && child_.get() == process;
+    }
+    if (!live) {
+        return failSpawnerSpawn(alias, "the application closed its session right after the "
+                                       "handshake (" + pidText + ")");
+    }
+
     return toolOk("spawned " + alias + " (" + pidText + ")");
 }
 
@@ -1549,12 +1680,15 @@ SupervisorToolResult Supervisor::failSpawnerSpawn(const std::string &alias,
                                                   const std::string &reason)
 {
     ChildPeer *child = nullptr;
+    bool changed = false;
     {
         const std::lock_guard<std::mutex> lock(stateMutex_);
         pendingPeer_ = nullptr;
         relayPeer_.reset();
         peer_ = nullptr;
         child = child_.get();
+        /* A session that already returned to idle must not be announced twice. */
+        changed = state_ != SupervisorState::Idle || !peerTools_.empty();
         state_ = SupervisorState::Idle;
         peerTools_ = nlohmann::json::array();
     }
@@ -1569,7 +1703,9 @@ SupervisorToolResult Supervisor::failSpawnerSpawn(const std::string &alias,
         child_.reset();
     }
     monitorCondition_.notify_all();
-    sendToolsListChanged();
+    if (changed) {
+        sendToolsListChanged();
+    }
 
     return toolError("app_spawn_" + alias + " failed: " + reason);
 }
@@ -1647,11 +1783,15 @@ bool Supervisor::requestPeer(Peer *peer,
         return false;
     }
 
+    /* The spawner's deadline is its per-call timeout_ms, not --startup-timeout-ms. */
+    const std::string deadlineName =
+        options_.spawner() ? "spawn timeout" : "startup timeout";
+
     for (;;) {
         const int remaining = remainingMs(deadline);
         if (remaining <= 0) {
-            error = "the application did not answer " + std::string(method) +
-                    " before the startup timeout";
+            error = "the application did not answer " + std::string(method) + " before the " +
+                    deadlineName;
             return false;
         }
 
@@ -1659,8 +1799,8 @@ bool Supervisor::requestPeer(Peer *peer,
         std::string readError;
         const ReadStatus status = peer->readLine(line, readError, remaining);
         if (status == ReadStatus::Timeout) {
-            error = "the application did not answer " + std::string(method) +
-                    " before the startup timeout";
+            error = "the application did not answer " + std::string(method) + " before the " +
+                    deadlineName;
             return false;
         }
         if (status != ReadStatus::Line) {
@@ -1669,7 +1809,11 @@ bool Supervisor::requestPeer(Peer *peer,
         }
 
         const nlohmann::json message = nlohmann::json::parse(line, nullptr, false);
-        if (message.is_discarded() || !message.is_object() || message.contains("method")) {
+        if (message.is_discarded() || !message.is_object()) {
+            continue;
+        }
+        if (message.contains("method")) {
+            observePeerMessage(message);
             continue;
         }
         const auto id = message.find("id");
@@ -1734,7 +1878,12 @@ nlohmann::json Supervisor::forwardChildCall(const nlohmann::json &id,
         }
 
         const nlohmann::json message = nlohmann::json::parse(line, nullptr, false);
-        if (message.is_discarded() || !message.is_object() || message.contains("method")) {
+        if (message.is_discarded() || !message.is_object()) {
+            continue;
+        }
+        if (message.contains("method")) {
+            /* An announcement made mid-call is followed once this answer is written. */
+            observePeerMessage(message);
             continue;
         }
         const auto responseId = message.find("id");
@@ -1805,7 +1954,11 @@ nlohmann::json Supervisor::forwardCapture(const nlohmann::json &id,
         }
 
         const nlohmann::json message = nlohmann::json::parse(line, nullptr, false);
-        if (message.is_discarded() || !message.is_object() || message.contains("method")) {
+        if (message.is_discarded() || !message.is_object()) {
+            continue;
+        }
+        if (message.contains("method")) {
+            observePeerMessage(message);
             continue;
         }
         const auto responseId = message.find("id");
@@ -1828,15 +1981,22 @@ nlohmann::json Supervisor::forwardCapture(const nlohmann::json &id,
                 id, toolError("the application returned an invalid sdl_capture result"));
         }
 
-        /* A text error result is the child's failure: pass it through unchanged. */
-        const auto isError = result->find("isError");
-        if (isError != result->end() && isError->is_boolean() && isError->get<bool>()) {
-            SupervisorToolResult failed;
-            const auto content = result->find("content");
-            failed.content =
-                content != result->end() ? *content : nlohmann::json::array();
-            failed.isError = true;
-            return toolResultJson(id, failed);
+        /*
+          A downstream may itself be a supervisor: a spawner behind this relay
+          has already encoded the raw frame into the standard content result,
+          image block and all. Re-encoding that answer would lose the format the
+          hop nearest the application reported, so a content result is relayed
+          verbatim and only a raw frame is presented here.
+        */
+        const auto content = result->find("content");
+        if (content != result->end()) {
+            SupervisorToolResult forwarded;
+            forwarded.content =
+                content->is_array() ? *content : nlohmann::json::array();
+            const auto isError = result->find("isError");
+            forwarded.isError = isError != result->end() && isError->is_boolean() &&
+                                isError->get<bool>();
+            return toolResultJson(id, forwarded);
         }
 
         int sourceWidth = 0;

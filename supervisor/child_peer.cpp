@@ -15,14 +15,25 @@ bool ChildPeer::start(const ChildCommand &command, std::string &error)
         return false;
     }
 
-    /* Both pipe ends exist as soon as the fork returns; the transport owns neither. */
-    transport_ = std::make_unique<Transport>(process_.stdoutFd(), process_.stdinFd());
+    /*
+      A spawned child with inherited stdio has no private pipe pair: its MCP
+      channel is the socket it dials. Lifecycle methods still work; only the
+      data path stays absent.
+    */
+    if (process_.stdoutFd() >= 0 && process_.stdinFd() >= 0) {
+        transport_ = std::make_unique<Transport>(process_.stdoutFd(), process_.stdinFd());
+    }
     return true;
 }
 
 bool ChildPeer::waitForExec(int timeoutMs, std::string &error)
 {
     return process_.waitForExec(timeoutMs, error);
+}
+
+pid_t ChildPeer::pid() const
+{
+    return process_.pid();
 }
 
 bool ChildPeer::hasExited() const

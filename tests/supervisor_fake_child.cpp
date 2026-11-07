@@ -18,14 +18,22 @@
   library. --ignore-terminate keeps running instead (SIGTERM is ignored until
   SIGKILL), so the supervisor's terminate watchdog can be exercised.
 
+  --mcp=HOST:PORT makes it dial that endpoint instead of using stdin/stdout, so
+  it can stand in for an application spawned by the spawner. --dial-delay-ms
+  postpones that dial (a spawner timeout test) and --exit-before-connect exits
+  without dialing (a spawner child-exits-first test).
+
   --pid-file exists only so a test can prove the child is gone after the
   supervisor stops; it writes the child's own pid.
 */
 
 #include <nlohmann/json.hpp>
 
+#include <netdb.h>
 #include <poll.h>
 #include <signal.h>
+#include <sys/socket.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 #include <charconv>
@@ -34,8 +42,10 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace
@@ -43,6 +53,10 @@ namespace
 
 constexpr int kPollMs = 25;
 constexpr std::string_view kProtocolVersion = "2025-11-25";
+
+/* stdio by default, or the dialed MCP socket when --mcp=HOST:PORT was given. */
+int g_inputFd = STDIN_FILENO;
+std::FILE *g_output = stdout;
 
 struct Options
 {
@@ -58,6 +72,9 @@ struct Options
     bool captureRpcError = false;
     bool captureMismatch = false;
     std::string pidFile;
+    std::string mcpAddress;
+    int dialDelayMs = 0;
+    bool exitBeforeConnect = false;
 };
 
 bool parseInteger(std::string_view text, int &value)
@@ -86,6 +103,15 @@ bool parseOptions(int argc, char **argv, Options &options)
             }
         } else if (argument == "--pid-file" && hasValue) {
             options.pidFile = argv[++index];
+        } else if (argument.rfind("--mcp=", 0) == 0) {
+            options.mcpAddress = std::string(argument.substr(6));
+        } else if (argument == "--dial-delay-ms" && hasValue) {
+            if (!parseInteger(argv[++index], options.dialDelayMs) ||
+                options.dialDelayMs < 0) {
+                return false;
+            }
+        } else if (argument == "--exit-before-connect") {
+            options.exitBeforeConnect = true;
         } else if (argument == "--capture-width" && hasValue) {
             if (!parseInteger(argv[++index], options.captureWidth) ||
                 options.captureWidth <= 0) {
@@ -115,6 +141,66 @@ bool parseOptions(int argc, char **argv, Options &options)
     return true;
 }
 
+/* Splits HOST:PORT or [V6]:PORT; the fake child only ever sees spawner endpoints. */
+bool splitAddress(const std::string &text, std::string &host, std::string &port)
+{
+    if (!text.empty() && text.front() == '[') {
+        const std::size_t closing = text.find(']');
+        if (closing == std::string::npos || closing + 2 >= text.size() ||
+            text[closing + 1] != ':') {
+            return false;
+        }
+        host = text.substr(1, closing - 1);
+        port = text.substr(closing + 2);
+        return true;
+    }
+
+    const std::size_t separator = text.rfind(':');
+    if (separator == std::string::npos || separator == 0 ||
+        separator + 1 >= text.size()) {
+        return false;
+    }
+    host = text.substr(0, separator);
+    port = text.substr(separator + 1);
+    return true;
+}
+
+int dialAddress(const std::string &text)
+{
+    std::string host;
+    std::string port;
+    if (!splitAddress(text, host, port)) {
+        return -1;
+    }
+
+    addrinfo hints{};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+
+    addrinfo *addresses = nullptr;
+    if (::getaddrinfo(host.c_str(), port.c_str(), &hints, &addresses) != 0) {
+        return -1;
+    }
+
+    int fd = -1;
+    for (const addrinfo *address = addresses; address != nullptr;
+         address = address->ai_next) {
+        const int candidate =
+            ::socket(address->ai_family, address->ai_socktype, address->ai_protocol);
+        if (candidate < 0) {
+            continue;
+        }
+        if (::connect(candidate, address->ai_addr, address->ai_addrlen) == 0) {
+            fd = candidate;
+            break;
+        }
+        ::close(candidate);
+    }
+
+    ::freeaddrinfo(addresses);
+    return fd;
+}
+
 void writePidFile(const std::string &path)
 {
     if (path.empty()) {
@@ -133,8 +219,8 @@ void writeMessage(const nlohmann::json &message)
 {
     std::string line = message.dump();
     line.push_back('\n');
-    std::fwrite(line.data(), 1, line.size(), stdout);
-    std::fflush(stdout);
+    std::fwrite(line.data(), 1, line.size(), g_output);
+    std::fflush(g_output);
 }
 
 void writeError(const nlohmann::json &id, int code, std::string_view message)
@@ -186,7 +272,7 @@ void writeCaptureFrame(const nlohmann::json &id, int width, int height, bool mis
     };
     std::string line = header.dump();
     line.push_back('\n');
-    std::fwrite(line.data(), 1, line.size(), stdout);
+    std::fwrite(line.data(), 1, line.size(), g_output);
 
     if (!mismatched) {
         std::vector<uint8_t> pixels(byteLength);
@@ -202,9 +288,9 @@ void writeCaptureFrame(const nlohmann::json &id, int width, int height, bool mis
                 out[3] = 255;
             }
         }
-        std::fwrite(pixels.data(), 1, pixels.size(), stdout);
+        std::fwrite(pixels.data(), 1, pixels.size(), g_output);
     }
-    std::fflush(stdout);
+    std::fflush(g_output);
 }
 
 nlohmann::json toolsResult()
@@ -398,6 +484,27 @@ int main(int argc, char **argv)
 
     writePidFile(options.pidFile);
 
+    if (options.exitBeforeConnect) {
+        exitWithLine("exiting before connect", options.exitCode);
+    }
+
+    if (!options.mcpAddress.empty()) {
+        if (options.dialDelayMs > 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(options.dialDelayMs));
+        }
+        const int fd = dialAddress(options.mcpAddress);
+        if (fd < 0) {
+            std::fprintf(stderr, "fake-child: cannot dial %s\n",
+                         options.mcpAddress.c_str());
+            return 1;
+        }
+        g_inputFd = fd;
+        g_output = ::fdopen(fd, "w");
+        if (g_output == nullptr) {
+            return 1;
+        }
+    }
+
     const auto started = std::chrono::steady_clock::now();
     std::string pending;
 
@@ -410,7 +517,7 @@ int main(int argc, char **argv)
         }
 
         pollfd descriptor{};
-        descriptor.fd = STDIN_FILENO;
+        descriptor.fd = g_inputFd;
         descriptor.events = POLLIN;
 
         const int ready = ::poll(&descriptor, 1, kPollMs);
@@ -422,7 +529,7 @@ int main(int argc, char **argv)
         }
 
         char chunk[4096];
-        const ssize_t count = ::read(STDIN_FILENO, chunk, sizeof chunk);
+        const ssize_t count = ::read(g_inputFd, chunk, sizeof chunk);
         if (count < 0) {
             return 1;
         }

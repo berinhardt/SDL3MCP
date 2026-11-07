@@ -47,6 +47,7 @@ public:
 
     bool waitForExec(int timeoutMs, std::string &error);
 
+    pid_t pid() const;
     bool hasExited() const;
     bool waitForExit(int timeoutMs);
     void waitForExit();

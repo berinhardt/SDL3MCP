@@ -92,8 +92,14 @@ bool ChildProcess::start(const ChildCommand &command, std::string &error)
     int stderrPipe[2] = {-1, -1};
     int errorPipe[2] = {-1, -1};
 
-    if (!createPipe(stdinPipe, error) || !createPipe(stdoutPipe, error) ||
-        !createPipe(stderrPipe, error) || !createPipe(errorPipe, error)) {
+    const bool inheritStdio = command.inheritStdio;
+    if (inheritStdio) {
+        /* Only the close-on-exec error channel is needed; stdio stays inherited. */
+        if (!createPipe(errorPipe, error)) {
+            return false;
+        }
+    } else if (!createPipe(stdinPipe, error) || !createPipe(stdoutPipe, error) ||
+               !createPipe(stderrPipe, error) || !createPipe(errorPipe, error)) {
         /* createPipe closes its own failure; close the ones already made. */
         if (stdinPipe[0] >= 0) {
             closePipe(stdinPipe);
@@ -130,25 +136,33 @@ bool ChildProcess::start(const ChildCommand &command, std::string &error)
     const pid_t pid = ::fork();
     if (pid < 0) {
         error = describe("cannot fork the child", errno);
-        closePipe(stdinPipe);
-        closePipe(stdoutPipe);
-        closePipe(stderrPipe);
+        if (stdinPipe[0] >= 0) {
+            closePipe(stdinPipe);
+        }
+        if (stdoutPipe[0] >= 0) {
+            closePipe(stdoutPipe);
+        }
+        if (stderrPipe[0] >= 0) {
+            closePipe(stderrPipe);
+        }
         closePipe(errorPipe);
         return false;
     }
 
     if (pid == 0) {
         /* Child: only async-signal-safe calls from here to execvp. */
-        ::dup2(stdinPipe[0], STDIN_FILENO);
-        ::dup2(stdoutPipe[1], STDOUT_FILENO);
-        ::dup2(stderrPipe[1], STDERR_FILENO);
+        if (!inheritStdio) {
+            ::dup2(stdinPipe[0], STDIN_FILENO);
+            ::dup2(stdoutPipe[1], STDOUT_FILENO);
+            ::dup2(stderrPipe[1], STDERR_FILENO);
 
-        ::close(stdinPipe[0]);
-        ::close(stdinPipe[1]);
-        ::close(stdoutPipe[0]);
-        ::close(stdoutPipe[1]);
-        ::close(stderrPipe[0]);
-        ::close(stderrPipe[1]);
+            ::close(stdinPipe[0]);
+            ::close(stdinPipe[1]);
+            ::close(stdoutPipe[0]);
+            ::close(stdoutPipe[1]);
+            ::close(stderrPipe[0]);
+            ::close(stderrPipe[1]);
+        }
         ::close(errorPipe[0]);
 
         /* A blocked SIGPIPE is per process image; the child wants the default. */
@@ -165,19 +179,26 @@ bool ChildProcess::start(const ChildCommand &command, std::string &error)
     }
 
     pid_ = pid;
-    stdinFd_ = stdinPipe[1];
-    stdoutFd_ = stdoutPipe[0];
-    stderrFd_ = stderrPipe[0];
-    errorFd_ = errorPipe[0];
+    if (inheritStdio) {
+        errorFd_ = errorPipe[0];
+        ::close(errorPipe[1]);
+    } else {
+        stdinFd_ = stdinPipe[1];
+        stdoutFd_ = stdoutPipe[0];
+        stderrFd_ = stderrPipe[0];
+        errorFd_ = errorPipe[0];
 
-    ::close(stdinPipe[0]);
-    ::close(stdoutPipe[1]);
-    ::close(stderrPipe[1]);
-    ::close(errorPipe[1]);
+        ::close(stdinPipe[0]);
+        ::close(stdoutPipe[1]);
+        ::close(stderrPipe[1]);
+        ::close(errorPipe[1]);
+    }
 
     try {
         monitor_ = std::thread(&ChildProcess::monitorLoop, this);
-        stderrReader_ = std::thread(&ChildProcess::stderrLoop, this);
+        if (stderrFd_ >= 0) {
+            stderrReader_ = std::thread(&ChildProcess::stderrLoop, this);
+        }
     } catch (const std::system_error &exception) {
         error = std::string("cannot start the child monitor: ") + exception.what();
         ::kill(pid_, SIGKILL);
@@ -325,6 +346,10 @@ void ChildProcess::monitorLoop()
 
 void ChildProcess::stderrLoop()
 {
+    if (stderrFd_ < 0) {
+        return;
+    }
+
     std::string pending;
 
     for (;;) {

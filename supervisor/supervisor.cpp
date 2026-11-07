@@ -10,6 +10,7 @@
 #include <csignal>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <exception>
 #include <limits>
 #include <string>
@@ -34,6 +35,9 @@ constexpr int kPeerPollMs = 50;
 /* SIGTERM to SIGKILL grace when the application ignores the quit request. */
 constexpr int kTerminateGraceMs = 2000;
 constexpr std::int64_t kMaxWaitSessionMs = 60000;
+/* app_spawn_* defaults to this and accepts 1..kMaxSpawnTimeoutMs. */
+constexpr std::int64_t kDefaultSpawnTimeoutMs = 5000;
+constexpr std::int64_t kMaxSpawnTimeoutMs = 60000;
 
 /*
   The largest raw frame the supervisor accepts from the child. It bounds the
@@ -105,6 +109,19 @@ std::string describeRpcError(const nlohmann::json &error)
         }
     }
     return error.dump();
+}
+
+/* ChildProcess folds a signal into 128 + number; say both so the status is clear. */
+std::string exitStatusText(int exitCode)
+{
+    if (exitCode > 128) {
+        return "exit status " + std::to_string(exitCode) + " (terminated by signal " +
+               std::to_string(exitCode - 128) + ")";
+    }
+    if (exitCode < 0) {
+        return "an unknown exit status";
+    }
+    return "exit status " + std::to_string(exitCode);
 }
 
 /*
@@ -325,6 +342,47 @@ nlohmann::json waitSessionToolDefinition()
     };
 }
 
+nlohmann::json spawnerToolDefinition(const SpawnTarget &target)
+{
+    return nlohmann::json{
+        {"name", "app_spawn_" + target.alias},
+        {"description",
+         "Start the application registered as \"" + target.alias +
+             "\" and wait until it connects back and completes the MCP handshake. "
+             "Returns the child's process id; while it runs its own tools replace "
+             "this one, and call app_spawn_<alias> again only after it has exited."},
+        {"inputSchema",
+         nlohmann::json{
+             {"type", "object"},
+             {"properties", nlohmann::json{
+                  {"timeout_ms", nlohmann::json{
+                                     {"type", "integer"},
+                                     {"minimum", 1},
+                                     {"maximum", kMaxSpawnTimeoutMs},
+                                     {"default", kDefaultSpawnTimeoutMs},
+                                 }},
+              }},
+             {"additionalProperties", false},
+         }},
+        {"annotations",
+         nlohmann::json{
+             {"readOnlyHint", false},
+             {"destructiveHint", false},
+             {"idempotentHint", false},
+             {"openWorldHint", false},
+         }},
+    };
+}
+
+nlohmann::json spawnerToolList(const SpawnTargets &targets)
+{
+    nlohmann::json tools = nlohmann::json::array();
+    for (const SpawnTarget &target : targets) {
+        tools.push_back(spawnerToolDefinition(target));
+    }
+    return nlohmann::json{{"tools", std::move(tools)}};
+}
+
 nlohmann::json supervisorCaptureToolDefinition()
 {
     return nlohmann::json{
@@ -416,8 +474,8 @@ nlohmann::json supervisorToolList(SupervisorState state, const nlohmann::json &c
     return nlohmann::json{{"tools", nlohmann::json::array()}};
 }
 
-Supervisor::Supervisor(int readFd, int writeFd, SupervisorOptions options)
-    : transport_(readFd, writeFd), options_(std::move(options))
+Supervisor::Supervisor(std::unique_ptr<Peer> client, SupervisorOptions options)
+    : upstream_(std::move(client)), options_(std::move(options))
 {
     if (options_.relay()) {
         state_ = SupervisorState::WaitingSession;
@@ -432,6 +490,11 @@ Supervisor::~Supervisor()
 int Supervisor::run()
 {
     blockSigpipe();
+
+    if (!upstream_) {
+        failed_.store(true);
+        return 1;
+    }
 
     if (options_.relay()) {
         std::string error;
@@ -457,11 +520,12 @@ int Supervisor::run()
         }
     }
 
-    const int tickMs = options_.relay() ? kPeerPollMs : -1;
+    const bool polled = options_.relay() || options_.spawner();
+    const int tickMs = polled ? kPeerPollMs : -1;
     for (;;) {
         std::string line;
         std::string error;
-        const ReadStatus status = transport_.readLine(line, error, tickMs);
+        const ReadStatus status = upstream_->readLine(line, error, tickMs);
         if (status == ReadStatus::Eof || status == ReadStatus::Stopped) {
             break;
         }
@@ -470,8 +534,9 @@ int Supervisor::run()
             break;
         }
         if (status == ReadStatus::Timeout) {
-            /* A relayed session may close while no call is in flight. */
+            /* A relayed session, or a spawned app, may close while no call is in flight. */
             pollRelayPeer();
+            pollSpawnerSession();
             continue;
         }
         try {
@@ -508,7 +573,9 @@ bool Supervisor::listen(std::string &error)
 
 void Supervisor::stop()
 {
-    transport_.stop();
+    if (upstream_) {
+        upstream_->stop();
+    }
     {
         const std::lock_guard<std::mutex> lock(stateMutex_);
         stopRequested_ = true;
@@ -557,8 +624,10 @@ void Supervisor::monitorLoop()
         {
             std::unique_lock<std::mutex> lock(stateMutex_);
             monitorCondition_.wait(lock, [this] {
-                return stopping_ ||
-                       (state_ == SupervisorState::Running && child_ != nullptr);
+                const bool attached = state_ == SupervisorState::Running ||
+                                      (options_.spawner() &&
+                                       state_ == SupervisorState::PeerAttached);
+                return stopping_ || (attached && child_ != nullptr);
             });
             if (stopping_) {
                 return;
@@ -574,12 +643,24 @@ void Supervisor::monitorLoop()
             if (stopping_) {
                 return;
             }
-            if (child_.get() != child || state_ != SupervisorState::Running) {
+            const bool attached = state_ == SupervisorState::Running ||
+                                  (options_.spawner() &&
+                                   state_ == SupervisorState::PeerAttached);
+            if (child_.get() != child || !attached) {
                 /* A startup failure on the request thread already handled it. */
                 continue;
             }
             state_ = SupervisorState::Idle;
             peerTools_ = nlohmann::json::array();
+            if (options_.spawner()) {
+                /*
+                  Only this thread waits on the child, and it has just been
+                  reaped, so clearing the slot here is safe. The socket is left
+                  for the run thread, which owns peer destruction.
+                */
+                peer_ = nullptr;
+                child_.reset();
+            }
         }
         /* Wake a terminate call waiting for the exit to be published. */
         monitorCondition_.notify_all();
@@ -739,6 +820,34 @@ bool Supervisor::initializePeer(Peer *peer,
 
 void Supervisor::detachPeer(Peer *peer)
 {
+    if (options_.spawner()) {
+        ChildPeer *child = nullptr;
+        {
+            const std::lock_guard<std::mutex> lock(stateMutex_);
+            if (state_ != SupervisorState::PeerAttached || peer_ != peer) {
+                return;
+            }
+            /* Publish Idle before the termination so the monitor does not repeat it. */
+            peer_ = nullptr;
+            peerTools_ = nlohmann::json::array();
+            state_ = SupervisorState::Idle;
+            relayPeer_.reset();
+            child = child_.get();
+        }
+
+        if (child != nullptr) {
+            child->terminate(kTerminateGraceMs);
+        }
+
+        {
+            const std::lock_guard<std::mutex> lock(stateMutex_);
+            child_.reset();
+        }
+        monitorCondition_.notify_all();
+        sendToolsListChanged();
+        return;
+    }
+
     std::unique_ptr<Peer> released;
     {
         const std::lock_guard<std::mutex> lock(stateMutex_);
@@ -771,6 +880,38 @@ void Supervisor::pollRelayPeer()
     }
     if (peer != nullptr && peer->closed()) {
         detachPeer(peer);
+    }
+}
+
+void Supervisor::pollSpawnerSession()
+{
+    if (!options_.spawner()) {
+        return;
+    }
+
+    {
+        const std::lock_guard<std::mutex> lock(stateMutex_);
+        if (state_ == SupervisorState::PeerAttached && peer_ != nullptr &&
+            peer_->closed()) {
+            /*
+              Terminate under the lock: the monitor publishes Idle and clears
+              child_ once the child is reaped, and it must not free the slot
+              while this thread still holds the pointer.
+            */
+            if (child_ != nullptr) {
+                child_->terminate(kTerminateGraceMs);
+            }
+            return;
+        }
+    }
+
+    /* The monitor leaves the closed socket for this thread, which owns destruction. */
+    std::unique_ptr<Peer> released;
+    {
+        const std::lock_guard<std::mutex> lock(stateMutex_);
+        if (state_ != SupervisorState::PeerAttached) {
+            released = std::move(relayPeer_);
+        }
     }
 }
 
@@ -837,7 +978,9 @@ void Supervisor::shutdown()
         }
     }
     monitorCondition_.notify_all();
-    transport_.stop();
+    if (upstream_) {
+        upstream_->stop();
+    }
 
     if (process != nullptr) {
         process->terminate(kTerminateGraceMs);
@@ -948,6 +1091,11 @@ void Supervisor::handleToolsList(const nlohmann::json &id)
         tools = peerTools_;
     }
 
+    if (options_.spawner() && current == SupervisorState::Idle) {
+        writeJson(makeResult(id, spawnerToolList(options_.targets)));
+        return;
+    }
+
     writeJson(makeResult(id, supervisorToolList(current, tools)));
 }
 
@@ -976,6 +1124,31 @@ void Supervisor::handleToolsCall(const nlohmann::json &id, const nlohmann::json 
             return;
         }
         arguments = *supplied;
+    }
+
+    /*
+      Spawner mode: before a spawn only app_spawn_<alias> is legal. Once an app
+      is attached every call is forwarded, including sdl_terminate; the child
+      owns its own process and the monitor publishes the return to app_spawn_*.
+    */
+    if (options_.spawner()) {
+        constexpr std::string_view kSpawnPrefix = "app_spawn_";
+        if (toolName.rfind(kSpawnPrefix, 0) == 0) {
+            writeToolResult(id,
+                            spawnerSpawn(toolName.substr(kSpawnPrefix.size()), arguments));
+            return;
+        }
+        if (state() != SupervisorState::PeerAttached || dataPath() == nullptr) {
+            writeToolResult(
+                id, toolError("no application is attached; call one of the app_spawn_* tools"));
+            return;
+        }
+        if (toolName == "sdl_capture") {
+            writeJson(forwardCapture(id, arguments));
+            return;
+        }
+        writeJson(forwardChildCall(id, toolName, arguments));
+        return;
     }
 
     /*
@@ -1197,6 +1370,210 @@ SupervisorToolResult Supervisor::failSpawn(const std::string &reason)
     return toolError(std::move(text));
 }
 
+SupervisorToolResult Supervisor::spawnerSpawn(const std::string &alias,
+                                              const nlohmann::json &arguments)
+{
+    const SpawnTarget *target = nullptr;
+    for (const SpawnTarget &entry : options_.targets) {
+        if (entry.alias == alias) {
+            target = &entry;
+            break;
+        }
+    }
+    if (target == nullptr) {
+        return toolError("unknown spawn target \"" + alias + "\"");
+    }
+
+    std::int64_t timeoutMs = kDefaultSpawnTimeoutMs;
+    if (arguments.contains("timeout_ms")) {
+        if (!readInteger(arguments, "timeout_ms", timeoutMs) || timeoutMs < 1 ||
+            timeoutMs > kMaxSpawnTimeoutMs) {
+            return toolError("app_spawn_" + alias +
+                             " timeout_ms must be an integer in 1.." +
+                             std::to_string(kMaxSpawnTimeoutMs));
+        }
+    }
+
+    {
+        const std::lock_guard<std::mutex> lock(stateMutex_);
+        if (state_ != SupervisorState::Idle || child_ != nullptr) {
+            return toolError("an application is already attached; one spawn at a time");
+        }
+        relayPeer_.reset();
+        state_ = SupervisorState::Starting;
+        peerTools_ = nlohmann::json::array();
+    }
+    sendToolsListChanged();
+
+    const Deadline deadline = std::chrono::steady_clock::now() +
+                              std::chrono::milliseconds(timeoutMs);
+
+    const std::string bindHost =
+        options_.listenHost.empty() ? "127.0.0.1" : options_.listenHost;
+    const std::uint16_t bindPort =
+        options_.listenHost.empty() ? 0 : options_.listenPort;
+
+    int listener = -1;
+    std::uint16_t boundPort = 0;
+    std::string failure;
+    if (!listenSocket(bindHost.c_str(), bindPort, listener, boundPort, failure)) {
+        if (!options_.listenHost.empty()) {
+            /* An explicit bind never falls back to an ephemeral port. */
+            failure = "cannot bind --listen=" +
+                      endpointText(options_.listenHost, options_.listenPort) + ": " +
+                      failure;
+        }
+        return failSpawnerSpawn(alias, failure);
+    }
+
+    ChildCommand command;
+    command.executable = target->argv.front();
+    command.arguments.assign(target->argv.begin() + 1, target->argv.end());
+    command.arguments.push_back("--mcp=" + endpointText(bindHost, boundPort));
+    command.inheritStdio = true;
+
+    auto child = std::make_unique<ChildPeer>();
+    if (!child->start(command, failure)) {
+        ::close(listener);
+        return failSpawnerSpawn(alias,
+                                "cannot start " + command.executable + ": " + failure);
+    }
+
+    ChildPeer *process = nullptr;
+    {
+        const std::lock_guard<std::mutex> lock(stateMutex_);
+        child_ = std::move(child);
+        process = child_.get();
+    }
+
+    const std::string pidText = "pid " + std::to_string(process->pid());
+
+    const int execTimeout = std::max(remainingMs(deadline), 1);
+    if (!process->waitForExec(execTimeout, failure)) {
+        ::close(listener);
+        return failSpawnerSpawn(alias, "cannot execute " + command.executable + ": " +
+                                           failure + " (" + pidText + ")");
+    }
+
+    /*
+      Wait for the child to dial back. Poll in short slices so a child that
+      exits, or the deadline, is noticed promptly even with a long timeout.
+    */
+    int client = -1;
+    for (;;) {
+        if (process->hasExited()) {
+            failure = "the application exited before connecting (" +
+                      exitStatusText(process->exitCode()) + ", " + pidText + ")";
+            break;
+        }
+
+        const int remaining = remainingMs(deadline);
+        if (remaining <= 0) {
+            failure = "timed out after " + std::to_string(timeoutMs) +
+                      " ms waiting for " + pidText + " to connect";
+            break;
+        }
+
+        pollfd descriptor{};
+        descriptor.fd = listener;
+        descriptor.events = POLLIN;
+        const int ready = ::poll(&descriptor, 1, std::min(remaining, kPeerPollMs));
+        if (ready < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            failure = std::string("cannot wait for the application to connect: ") +
+                      std::strerror(errno);
+            break;
+        }
+        if (ready == 0) {
+            continue;
+        }
+
+        client = ::accept(listener, nullptr, nullptr);
+        if (client < 0) {
+            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+                continue;
+            }
+            failure = std::string("cannot accept the application connection: ") +
+                      std::strerror(errno);
+            break;
+        }
+        break;
+    }
+
+    /* Exactly one connection: the listener must not exist between spawns. */
+    ::close(listener);
+
+    if (client < 0) {
+        return failSpawnerSpawn(alias, failure);
+    }
+
+    auto peer = std::make_unique<SocketPeer>(client);
+    {
+        const std::lock_guard<std::mutex> lock(stateMutex_);
+        pendingPeer_ = peer.get();
+    }
+
+    nlohmann::json tools;
+    if (!initializePeer(peer.get(), deadline, tools, failure)) {
+        {
+            const std::lock_guard<std::mutex> lock(stateMutex_);
+            pendingPeer_ = nullptr;
+        }
+        return failSpawnerSpawn(alias, failure + " (" + pidText + ")");
+    }
+
+    bool attached = false;
+    {
+        const std::lock_guard<std::mutex> lock(stateMutex_);
+        pendingPeer_ = nullptr;
+        if (!stopping_ && state_ == SupervisorState::Starting) {
+            relayPeer_ = std::move(peer);
+            peer_ = relayPeer_.get();
+            peerTools_ = std::move(tools);
+            state_ = SupervisorState::PeerAttached;
+            attached = true;
+        }
+    }
+    if (!attached) {
+        return failSpawnerSpawn(alias, "the supervisor is stopping");
+    }
+
+    monitorCondition_.notify_all();
+    sendToolsListChanged();
+    return toolOk("spawned " + alias + " (" + pidText + ")");
+}
+
+SupervisorToolResult Supervisor::failSpawnerSpawn(const std::string &alias,
+                                                  const std::string &reason)
+{
+    ChildPeer *child = nullptr;
+    {
+        const std::lock_guard<std::mutex> lock(stateMutex_);
+        pendingPeer_ = nullptr;
+        relayPeer_.reset();
+        peer_ = nullptr;
+        child = child_.get();
+        state_ = SupervisorState::Idle;
+        peerTools_ = nlohmann::json::array();
+    }
+
+    /* The child is terminated before the error is returned, timeout included. */
+    if (child != nullptr) {
+        child->terminate(kTerminateGraceMs);
+    }
+
+    {
+        const std::lock_guard<std::mutex> lock(stateMutex_);
+        child_.reset();
+    }
+    monitorCondition_.notify_all();
+    sendToolsListChanged();
+
+    return toolError("app_spawn_" + alias + " failed: " + reason);
+}
+
 SupervisorToolResult Supervisor::terminate(const nlohmann::json &arguments)
 {
     ChildPeer *process = nullptr;
@@ -1332,7 +1709,7 @@ nlohmann::json Supervisor::forwardChildCall(const nlohmann::json &id,
         {"params", nlohmann::json{{"name", name}, {"arguments", arguments}}},
     };
     if (!peer->writeLine(request.dump())) {
-        if (options_.relay()) {
+        if (options_.relay() || options_.spawner()) {
             detachPeer(peer);
         }
         return toolResultJson(id, toolError("cannot reach the application"));
@@ -1347,8 +1724,9 @@ nlohmann::json Supervisor::forwardChildCall(const nlohmann::json &id,
         std::string error;
         const ReadStatus status = peer->readLine(line, error);
         if (status != ReadStatus::Line) {
-            if (options_.relay() && status != ReadStatus::Stopped) {
-                /* A relayed session that went away returns the relay to wait_session. */
+            if ((options_.relay() || options_.spawner()) &&
+                status != ReadStatus::Stopped) {
+                /* A session that went away returns the supervisor to its idle tools. */
                 detachPeer(peer);
             }
             return toolResultJson(
@@ -1407,7 +1785,7 @@ nlohmann::json Supervisor::forwardCapture(const nlohmann::json &id,
         {"params", nlohmann::json{{"name", "sdl_capture"}, {"arguments", arguments}}},
     };
     if (!peer->writeLine(request.dump())) {
-        if (options_.relay()) {
+        if (options_.relay() || options_.spawner()) {
             detachPeer(peer);
         }
         return toolResultJson(id, toolError("cannot reach the application"));
@@ -1418,7 +1796,8 @@ nlohmann::json Supervisor::forwardCapture(const nlohmann::json &id,
         std::string error;
         const ReadStatus status = peer->readLine(line, error);
         if (status != ReadStatus::Line) {
-            if (options_.relay() && status != ReadStatus::Stopped) {
+            if ((options_.relay() || options_.spawner()) &&
+                status != ReadStatus::Stopped) {
                 detachPeer(peer);
             }
             return toolResultJson(
@@ -1472,7 +1851,7 @@ nlohmann::json Supervisor::forwardCapture(const nlohmann::json &id,
         /* No deadline, like every other forwarded call: the app's timeout bounds it. */
         std::vector<uint8_t> pixels;
         if (!peer->readBytes(byteLength, pixels, error)) {
-            if (options_.relay()) {
+            if (options_.relay() || options_.spawner()) {
                 detachPeer(peer);
             }
             return toolResultJson(
@@ -1510,7 +1889,7 @@ bool Supervisor::writeJson(const nlohmann::json &message)
     /* Replace rather than throw: child-provided strings decide the encoding. */
     const std::string line =
         message.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
-    if (transport_.writeLine(line)) {
+    if (upstream_ && upstream_->writeLine(line)) {
         return true;
     }
     failed_.store(true);

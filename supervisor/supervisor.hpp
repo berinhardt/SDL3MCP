@@ -1,14 +1,17 @@
 /*
   The MCP supervisor: one stable MCP endpoint in front of a restartable SDL app.
 
-  It runs in one of two modes. With --target it speaks MCP on its own stdin/stdout
-  and keeps a child process behind it: while idle it advertises only `spawn`,
-  once the child is up it advertises the child's tools and forwards calls to it.
-  With --listen=HOST:PORT it instead binds a TCP listener and waits for an
+  It runs in one of three modes. With --target it speaks MCP on its own
+  stdin/stdout and keeps a child process behind it: while idle it advertises only
+  `spawn`, once the child is up it advertises the child's tools and forwards calls
+  to it. With --listen=HOST:PORT it instead binds a TCP listener and waits for an
   application to dial in: before a session attaches it advertises only
   `wait_session`, and once one is attached it advertises that app's tools and
-  forwards calls over the socket. Either way one MCP connection survives an app
-  restart without the client seeing a closed pipe.
+  forwards calls over the socket. With --connect=HOST:PORT --targets=FILE it dials
+  a relay and spawns the configured applications on demand: before a spawn it
+  advertises one `app_spawn_<alias>` per entry, and while one is attached it
+  advertises that application's tools. Either way one MCP connection survives an
+  app restart without the client seeing a closed pipe.
 
   Every protocol decision is ordinary code: the line loop uses the library's
   Transport and json_rpc, a state enum decides the tools/list view, and the
@@ -51,7 +54,7 @@
 #include "json_rpc.hpp"
 #include "peer.hpp"
 #include "socket_peer.hpp"
-#include "transport.hpp"
+#include "targets.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -75,7 +78,7 @@ enum class SupervisorState
     Running,
     /* Relay mode with no session attached: `wait_session` is the only tool. */
     WaitingSession,
-    /* Relay mode with a session attached: its tools are advertised. */
+    /* Relay or spawner mode with a session attached: its tools are advertised. */
     PeerAttached
 };
 
@@ -102,13 +105,26 @@ nlohmann::json spawnToolDefinition();
 /* The relay's only tool before a session attaches. */
 nlohmann::json waitSessionToolDefinition();
 
+/*
+  One spawner tool: app_spawn_<alias> with an optional timeout_ms (defaults to
+  5000).
+*/
+nlohmann::json spawnerToolDefinition(const SpawnTarget &target);
+
+/* The tool view before any spawned application is attached: one tool per alias. */
+nlohmann::json spawnerToolList(const SpawnTargets &targets);
+
 /* The sdl_capture the supervisor advertises while an app is attached: region and timeout_ms. */
 nlohmann::json supervisorCaptureToolDefinition();
 
 class Supervisor
 {
 public:
-    Supervisor(int readFd, int writeFd, SupervisorOptions options);
+    /*
+      `client` is the upstream MCP endpoint: stdio in the default and relay
+      modes, a dialed socket in spawner mode. The supervisor owns it.
+    */
+    Supervisor(std::unique_ptr<Peer> client, SupervisorOptions options);
     ~Supervisor();
 
     Supervisor(const Supervisor &) = delete;
@@ -143,6 +159,8 @@ private:
     /* Ends an attached relay session once. */
     void detachPeer(Peer *peer);
     void pollRelayPeer();
+    /* Spawner: terminate an app whose socket vanished, and release a stale one. */
+    void pollSpawnerSession();
     SupervisorToolResult waitSession(const nlohmann::json &arguments);
     /* The peer the proxy is talking to right now, or nullptr when there is none. */
     Peer *dataPath();
@@ -158,6 +176,13 @@ private:
     SupervisorToolResult spawn();
     bool startChild(Deadline deadline, nlohmann::json &window, std::string &failure);
     SupervisorToolResult failSpawn(const std::string &reason);
+
+    /* Spawner mode: bind, start the child, accept exactly one peer, hand off. */
+    SupervisorToolResult spawnerSpawn(const std::string &alias,
+                                      const nlohmann::json &arguments);
+    SupervisorToolResult failSpawnerSpawn(const std::string &alias,
+                                          const std::string &reason);
+
     SupervisorToolResult terminate(const nlohmann::json &arguments);
     /* Waits briefly for the exit handler to publish Idle after a child exit. */
     void awaitChildExitHandled(ChildPeer *process);
@@ -187,7 +212,7 @@ private:
     static void blockSigpipe();
     static int remainingMs(Deadline deadline);
 
-    Transport transport_;
+    std::unique_ptr<Peer> upstream_;
     SupervisorOptions options_;
 
     /* Serialises every byte written to the client, from either thread. */

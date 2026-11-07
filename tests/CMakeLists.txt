@@ -355,6 +355,27 @@ if(SDL3MCP_BUILD_SUPERVISOR)
              COMMAND sdl3mcp_test_relay
                      $<TARGET_FILE:sdl3mcp>)
 
+    # The spawner dials a relay the test itself listens on, then spawns the fake
+    # child through its own per-spawn listener; the fake child dials back with
+    # --mcp=<endpoint> and speaks MCP like the real app.
+    add_executable(sdl3mcp_test_spawner spawner_tests.cpp)
+    target_compile_features(sdl3mcp_test_spawner PRIVATE cxx_std_20)
+    target_include_directories(sdl3mcp_test_spawner PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../supervisor"
+    )
+    target_link_libraries(sdl3mcp_test_spawner PRIVATE
+        sdl3mcp_supervisor_objects
+        sdl3mcp_objects
+        SDL3::SDL3
+        nlohmann_json::nlohmann_json
+        Threads::Threads
+    )
+    add_test(NAME spawner_tests
+             COMMAND sdl3mcp_test_spawner
+                     $<TARGET_FILE:sdl3mcp>
+                     $<TARGET_FILE:sdl3mcp_fake_child>)
+
     # The same binary again, this time driving the real example through the
     # proxy. The dummy video driver gives a real software renderer headless;
     # as with the other dummy-driver tests, SDL's process-wide allocations are

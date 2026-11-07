@@ -4,10 +4,10 @@ An MCP server you link into any SDL3 application.
 
 SDL3MCP gives an agent two things every SDL3 app already has: **input** and a
 **rendered frame**. Link the library, wire six calls into your existing main
-callbacks, and the app speaks the Model Context Protocol over stdio. The agent
-can press keys, type text, move and click the mouse, scroll, inspect the window,
-and ask for the current frame: raw RGBA pixels from the library, or a PNG when
-it runs behind the supervisor.
+callbacks, and the app speaks the Model Context Protocol over stdio, or over a
+socket it dials. The agent can press keys, type text, move and click the mouse,
+scroll, inspect the window, and ask for the current frame: raw RGBA pixels from
+the library, or a PNG when it runs behind the supervisor.
 
 No renderer hooks, no window injection, no OS-level automation. Your app keeps
 owning its event loop, window, and renderer; SDL3MCP only feeds synthetic SDL
@@ -28,6 +28,8 @@ events into the queue and hands the pixels you give it back to the agent.
 - [Configuration](#configuration)
 - [Command line](#command-line)
 - [Supervisor](#supervisor)
+- [Relay](#relay)
+- [Spawner](#spawner)
 - [Public API](#public-api)
 - [Frame pipeline](#frame-pipeline)
 - [Input model](#input-model)
@@ -45,7 +47,7 @@ events into the queue and hands the pixels you give it back to the agent.
 | --- | --- |
 | `sdl_info` | Window title, size in points and pixels, pixel density, video driver, SDL version, held input, frame counters, capture statistics. |
 | `sdl_input` | Send a batch of key, text, mouse-move, mouse-button, scroll, or release-all actions. |
-| `sdl_capture` | Ask the app for a fresh frame, optionally cropped, and receive its raw RGBA8888 pixels plus the exact payload size; under the supervisor the same pixels are returned at the app's native pixel size as an `image/png` block. |
+| `sdl_capture` | Ask the app for a fresh frame, optionally cropped, and receive its raw RGBA8888 pixels plus the exact payload size; behind `sdl3mcp` the same pixels are returned at the app's native pixel size as an `image/png` block. |
 | `sdl_terminate` | Ask the app to exit cleanly by pushing one `SDL_EVENT_QUIT` into its own event loop. |
 
 Typical agent loop:
@@ -62,14 +64,14 @@ Typical agent loop:
 │                                                                          │
 │   app thread (SDL)                       server thread                    │
 │   ┌─────────────────────┐                ┌────────────────────────────┐   │
-│   │ SDL_AppInit         │                │ stdio transport            │   │
+│   │ SDL_AppInit         │                │ stdio or socket transport  │   │
 │   │ SDL_AppIterate ─────┼─ geometry ───▶ │  JSON-RPC 2.0, one line    │   │
 │   │  ├ apply input      │◀─ input batch ─┤  per message               │   │
 │   │  ├ WriteFrame ──────┼─ RGBA copy ───▶│  sdl_input  → input queue  │   │
 │   │ SDL_AppQuit         │◀─ frame req ───┤  sdl_capture → raw RGBA    │   │
 │   └─────────────────────┘                └────────────────────────────┘   │
 │             │                                            │                │
-│     SDL event queue, renderer                     client's pipes          │
+│     SDL event queue, renderer                  client's pipes or socket   │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -102,8 +104,10 @@ the same rule: the frame you receive was written after the request arrived.
 
 - Not an OS-level input injector. It posts SDL events into your process, so it
   only affects apps that link it (and only the event-driven parts of them).
-- Not a remote desktop. There is no network transport; the MCP client must be
-  able to spawn the app and own its stdin/stdout.
+- Not a remote desktop. The library itself never listens: in its default stdio
+  mode the MCP client must be able to spawn the app and own its stdin/stdout. The
+  optional `sdl3mcp` relay adds a socket below the client, so an app can also
+  dial in; see [Relay](#relay).
 - Not a screenshot API for other processes, and it cannot capture a window it
   was not given.
 - It does not create, resize, or move windows, and it has no audio, gamepad, or
@@ -114,8 +118,8 @@ the same rule: the frame you receive was written after the request arrived.
 - SDL 3.2 or newer. Both complete examples below use only SDL 3.2 APIs.
 - A C11 compiler for the public header; the implementation is C++20.
 - CMake 3.21 or newer.
-- A pthreads-capable platform. The stdio transport, fd isolation, and server
-  thread are POSIX today; Windows support is a TODO.
+- A pthreads-capable platform. The transports, fd isolation, and server thread
+  are POSIX today; Windows support is a TODO.
 - `nlohmann/json.hpp` for the protocol, plus `stb_image_write.h` for the
   supervisor's PNG encoding. nlohmann is resolved from the system first and
   falls back to `third_party/nlohmann/json.hpp`; stb is vendored in
@@ -160,7 +164,7 @@ Targets and options:
 | --- | --- | --- |
 | `SDL3MCP_BUILD_SHARED` | `OFF` | Build a shared library instead of a static one. |
 | `SDL3MCP_BUILD_EXAMPLES` | `OFF` | Build the `minimal` executable from `examples/minimal/main.c`. |
-| `SDL3MCP_BUILD_SUPERVISOR` | `OFF` | Build the `sdl3mcp` executable that runs an app as a restartable child. |
+| `SDL3MCP_BUILD_SUPERVISOR` | `OFF` | Build the `sdl3mcp` executable: child supervisor, relay, and spawner. |
 | `SDL3MCP_BUILD_TESTS` | `ON` if top-level | Build the unit tests and register them with CTest. |
 | `SDL3MCP_USE_SYSTEM_JSON` | `ON` | Try `find_package(nlohmann_json CONFIG QUIET)` before using the vendored header. |
 
@@ -499,7 +503,7 @@ int main(int argc, char **argv)
 ## Running it
 
 The default is **no MCP server**. Nothing starts unless the configuration
-enables stdio or the app is launched with `--mcp`.
+enables a transport or the app is launched with `--mcp`.
 
 `examples/CMakeLists.txt` builds the target `minimal` from
 `examples/minimal/main.c` at the examples level, so with a top-level `build`
@@ -515,8 +519,9 @@ or, equivalently:
 cd build && ./examples/minimal --mcp
 ```
 
-MCP over stdio means the client spawns the app and talks over its pipes. A
-client configuration looks like:
+MCP over stdio means the client spawns the app and talks over its pipes. With
+`--mcp=HOST:PORT` the app instead dials a server the client or a relay is
+listening on. A stdio client configuration looks like:
 
 ```json
 {
@@ -535,8 +540,8 @@ stdin.
 
 ### File descriptors
 
-The transport owns real file descriptors, so the two transports differ in what
-they do to the host process.
+The transport owns real file descriptors, so the transports differ in what they
+do to the host process.
 
 With `SDL3MCP_TRANSPORT_NONE` the library opens nothing, duplicates nothing,
 reads nothing, and writes nothing: the host's stdin and stdout are untouched.
@@ -550,16 +555,23 @@ stdin/stdout for the server and then redirects the host's descriptors:
   JSON-RPC stream;
 - stderr is never touched and is where diagnostics belong.
 
-The host must not write to stdout **before** `SDL3MCP_AppInit`: at that point
-stdout is still the pipe the client is reading. The originals are restored in
-`SDL3MCP_AppShutdown`.
+With `SDL3MCP_TRANSPORT_CONNECT`, the library opens one socket to its endpoint
+and uses it for both reading and writing. It duplicates and redirects nothing, so
+the host keeps its own stdin and stdout, and neither is the MCP stream. The dial
+happens once, in `SDL3MCP_AppInit`; a refused or unresolvable endpoint fails
+startup instead of leaving the app without MCP.
+
+The host must not write to stdout **before** `SDL3MCP_AppInit` when the stdio
+transport is in use: at that point stdout is still the pipe the client is
+reading. The originals are restored in `SDL3MCP_AppShutdown`.
 
 ## Configuration
 
 ```c
 typedef enum SDL3MCP_Transport {
     SDL3MCP_TRANSPORT_NONE = 0,
-    SDL3MCP_TRANSPORT_STDIO
+    SDL3MCP_TRANSPORT_STDIO,
+    SDL3MCP_TRANSPORT_CONNECT
 } SDL3MCP_Transport;
 
 typedef struct SDL3MCP_Configuration {
@@ -568,6 +580,8 @@ typedef struct SDL3MCP_Configuration {
     uint32_t max_frame_bytes;
     bool warp_cursor;
     int log_level;
+    char connect_host[64];
+    uint16_t connect_port;
 } SDL3MCP_Configuration;
 ```
 
@@ -588,11 +602,13 @@ command line says".
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `transport` | `SDL3MCP_TRANSPORT_NONE` | `NONE` starts no server; `STDIO` starts the stdio MCP server. |
+| `transport` | `SDL3MCP_TRANSPORT_NONE` | `NONE` starts no server; `STDIO` starts the stdio MCP server; `CONNECT` dials `connect_host:connect_port` and serves over that socket. |
 | `frame_timeout_ms` | `2000` | Default `sdl_capture` timeout and the time `sdl_input` waits for its F+1 acknowledgement. |
 | `max_frame_bytes` | `32 MiB` | Upper bound on a raw RGBA frame accepted by `SDL3MCP_WriteFrame`. 4K (`3840×2160×4`) fits; 5K and above need a larger value. |
 | `warp_cursor` | `true` | Move the OS cursor with `SDL_WarpMouseInWindow` on absolute mouse moves and positioned `mouse_button` actions. |
 | `log_level` | `-1` | Accepted and validated as -1..4 (`0` off, `1` error, `2` warn, `3` info, `4` debug). The library has no leveled logger yet, so today only command-line usage and errors are written to stderr. |
+| `connect_host` | empty | `CONNECT` only: the endpoint to dial, at most 63 bytes before the terminator. |
+| `connect_port` | `0` | `CONNECT` only: the endpoint port, 1–65535. |
 
 The structure contains no pointers, is copied by `SDL3MCP_AppInit`, and is never
 retained. Anything set in the structure can be overridden from the command line;
@@ -608,10 +624,16 @@ is left untouched for the app.
 | *(none)* | Use `cfg.transport`, which defaults to `NONE`. |
 | `--mcp` | Same as `--mcp=stdio`. |
 | `--mcp=stdio` | Start the stdio server. |
+| `--mcp=HOST:PORT` | Dial an MCP endpoint at `HOST:PORT` and serve it over that socket (`[V6]:PORT` is accepted for IPv6). |
 | `--mcp=off` | Start nothing. Useful to override a configuration that enabled stdio. |
 
-Transport values are case-insensitive. Any other value prints usage to stderr
-and makes `SDL3MCP_AppInit` return `SDL_APP_FAILURE`.
+Transport values are case-insensitive. A dialed endpoint is one connection with
+no retry: if the host cannot be resolved or reached, `SDL3MCP_AppInit` returns
+`SDL_APP_FAILURE` and `SDL_GetError()` names the endpoint. It never falls back to
+stdio or to no server, so a relay that is not listening is a loud startup failure
+rather than an app that silently has no MCP. The spawner supplies this argument
+itself; a launcher uses it to reach a relay. Any other value prints usage to
+stderr and fails the same way.
 
 Tuning flags, all optional; flags that take a value use `=`:
 
@@ -634,12 +656,21 @@ is opened.
 
 ## Supervisor
 
-The library speaks MCP on the app's own stdin/stdout, so a client that starts the
+The library speaks MCP on the app's own transport, so a client that starts the
 app directly loses its endpoint whenever the app exits or crashes.
 `sdl3mcp` is an optional executable that keeps one MCP connection
-alive across app restarts: it speaks MCP on its own stdin/stdout and runs the app
-as a child process behind it. The client keeps the same pipe; only the tools
-change when the child comes and goes.
+alive across app restarts. It has three modes, and they differ only in where the
+application peer comes from:
+
+- `--target <executable>` runs the app as a child process behind private pipes
+  (this section);
+- `--listen=HOST:PORT` relays the client's stdio to whichever app dials in
+  ([Relay](#relay));
+- `--connect=HOST:PORT --targets=FILE` spawns a configured app behind a relay
+  ([Spawner](#spawner)).
+
+In every mode the client keeps the same endpoint; only the tools change when the
+application comes and goes.
 
 Build it alongside the example:
 
@@ -775,6 +806,10 @@ that ignores `SDL_EVENT_QUIT`, hangs in a render loop, or never returns from
 `SDL_AppIterate` would otherwise keep the child alive forever behind a
 working-looking MCP endpoint.
 
+Over a relay the request cannot be enforced: the relay holds no pid, so
+`sdl_terminate` is an ordinary forwarded call and the application alone decides
+whether it quits.
+
 ### Stopping the supervisor
 
 Supervisor stdin EOF, SIGINT, SIGTERM, and a normal return all stop the child
@@ -807,8 +842,279 @@ relative paths resolve:
 ```
 
 The supervisor is POSIX-only, like the rest of the project: it uses
-`fork`/`exec`, pipes, and POSIX signals. `CMakeLists.txt` rejects a Windows
-configure rather than shipping an untested path.
+`fork`/`exec`, pipes, sockets, and POSIX signals. `CMakeLists.txt` rejects a
+Windows configure rather than shipping an untested path.
+
+## Relay
+
+A client cannot always launch the app: it may live in another container, on a
+device, or behind a port forward. `sdl3mcp --listen=HOST:PORT` is the same
+executable in **relay** mode. It still speaks MCP on its own stdin/stdout, but
+instead of starting a child it binds one TCP listener and proxies every request
+to whichever application dials in with `--mcp=HOST:PORT`. The client keeps one
+endpoint for the relay's whole lifetime; only the application behind it comes and
+goes.
+
+### Relay command line
+
+```text
+sdl3mcp --listen=HOST:PORT [--startup-timeout-ms N]
+```
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--listen=HOST:PORT` | *(required)* | Address to bind. `[V6]:PORT` is accepted for IPv6, and port `0` asks the kernel for an ephemeral port. The bound endpoint is printed to stderr as `sdl3mcp: listening on HOST:PORT`. |
+| `--startup-timeout-ms N` | `10000` | Budget for the application's private `initialize` and `tools/list` handshake after it connects. |
+
+`--listen` may be given only once and cannot be combined with `--target`. A bind
+failure is a startup error and the relay exits non-zero.
+
+### Before a session: `wait_session`
+
+`tools/list` advertises exactly one tool, `wait_session`, until an application
+connects, and every other `tools/call` fails with
+`no application session is attached; call wait_session first`.
+
+```json
+{
+  "name": "wait_session",
+  "description": "Wait for an application to connect to the relay's listening socket. Returns as soon as a session is attached; without timeout_ms it waits indefinitely and returns a normal tool error when timeout_ms expires. While a session is attached its tools replace this one.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "timeout_ms": { "type": "integer", "minimum": 1, "maximum": 60000 }
+    },
+    "additionalProperties": false
+  },
+  "annotations": {
+    "readOnlyHint": true,
+    "idempotentHint": false,
+    "openWorldHint": true
+  }
+}
+```
+
+- Without `timeout_ms` the call waits indefinitely; with it, an expired timeout
+  is a normal `isError: true` content result, not a JSON-RPC error.
+- It returns `an application session attached`, or
+  `an application session is already attached` when one is up.
+- Requests are serialized like every other call, so a `wait_session` parked on
+  the relay delays `ping` behind it.
+
+### After a session attaches
+
+The relay completes a private MCP handshake with the application (the same
+protocol version and a `tools/list`), then swaps its own tool view for the
+application's `tools/list` result, replacing `sdl_capture` with the supervisor's
+PNG definition exactly as it does for a child. Each change sends one
+`notifications/tools/list_changed`: the attach, and later the detach. After the
+notification `tools/list` is the application's set; before it, `wait_session`.
+
+Exactly one application session is accepted at a time. A second connection is
+closed as soon as it is accepted instead of queueing behind the first, and the
+listener never hands it to the proxy. When the attached application's socket
+closes — a clean exit, a crash, or a network drop — the relay clears the tool
+list, restores `wait_session`, sends one `list_changed`, and keeps the client's
+stdio endpoint open for the next application.
+
+`sdl_capture` keeps the supervisor contract while a session is attached: the
+library's raw `rgba8888` frame is encoded as a PNG at the app's native pixel size
+and returned as `image/png`, with `region` meaning the same crop rectangle in
+app pixels. Every other call, including `sdl_terminate`, is forwarded verbatim.
+
+### Stopping the relay
+
+Client stdin EOF, SIGINT, SIGTERM, and a normal return all close the listener and
+the attached session and exit. A relayed application is not a child: the relay
+never signals it, so it keeps running after the relay goes away.
+
+### Transport
+
+The MCP client keeps talking stdio to `sdl3mcp`; the relay is the only process
+that owns the client's pipes. Everything below the relay is a TCP socket. With a
+spawner in between there are two hops and both are sockets: the spawner dials the
+relay with `--connect`, and each application it starts dials the spawner with the
+`--mcp=HOST:PORT` endpoint it was given. That split is what lets the application
+run outside the client's container: publish the relay's port, forward it over
+SSH, or map it to a device with `adb reverse`, and the app on the other side
+dials in with its own `--mcp=`.
+
+The relay does no authentication and no TLS. Bind it to loopback or expose it
+only on a network you trust; anyone who can reach the port can drive the
+application that connects.
+
+### Relay client and application configuration
+
+A client points at the relay where it used to point at the supervisor, and the
+application is started separately with the relay's address:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "sdl3mcp": {
+        "type": "local",
+        "command": ["build/sdl3mcp", "--listen=127.0.0.1:7333"]
+      }
+    }
+  }
+}
+```
+
+```sh
+# On the machine or device that runs the app:
+./build/examples/minimal --mcp=relay-host:7333
+```
+
+## Spawner
+
+A relay waits for an application that somebody else started. The **spawner**
+closes that gap on the application's side: `sdl3mcp --connect=HOST:PORT
+--targets=FILE` dials a relay, offers one spawn tool per configured application,
+and starts the chosen one on demand, handing it a listener of its own to dial
+back to.
+
+```text
+client ──stdio──▶ relay (--listen) ◀──TCP── spawner (--connect --targets)
+                                                 │ spawn, then listen
+                                                 ▼
+                                        app (--mcp=<spawner endpoint>)
+```
+
+The relay sees the spawner as its one application session, so the client's tool
+view is the spawner's tools. Once an application is spawned, the spawner's
+`tools/list` becomes that application's tools and the relay forwards through.
+
+### Spawner command line
+
+```text
+sdl3mcp --connect=HOST:PORT --targets=FILE [--listen=HOST:PORT]
+```
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--connect=HOST:PORT` | *(required)* | Relay to dial. A failed dial is fatal: the spawner prints `--connect:` with the endpoint and exits non-zero. |
+| `--targets=FILE` | *(required)* | JSON file listing the applications the spawner may start. |
+| `--listen=HOST:PORT` | `127.0.0.1:0` | The address and port a spawned application dials back to. `[V6]:PORT` is accepted. |
+
+`--connect` and `--targets` must be given together, each at most once, and
+neither can be combined with `--target`. Without `--listen` the spawner binds
+`127.0.0.1:0`, so the kernel picks a port and only that machine can reach it.
+With an explicit `--listen` a bind failure fails the spawn; it never silently
+falls back to an ephemeral port.
+
+### Targets file
+
+The file is a JSON object. Each key is an alias and each value is the
+application's argument vector, executable first, arguments after it:
+
+```json
+{
+  "demo": ["./build/examples/minimal"],
+  "probe": ["/opt/probe/probe", "--fast", "--no-audio"]
+}
+```
+
+The spawner appends `--mcp=HOST:PORT` as the last argument, naming the listener it
+just bound, so an entry must not already carry an MCP argument.
+
+Validation happens at startup and a failure is fatal before any socket or child
+exists; the error names the file or entry:
+
+- the file must open and parse as JSON;
+- the top level must be a non-empty JSON object;
+- every key must match `[a-z0-9_]+` and must not begin with the reserved
+  `app_spawn_` prefix;
+- every value must be a non-empty array of strings;
+- no element may contain `--mcp` anywhere, because the spawner supplies it.
+
+### Tool view and spawning
+
+Before the first spawn, `tools/list` is one `app_spawn_<alias>` per targets entry
+and nothing else; any other `tools/call` fails with
+`no application is attached; call one of the app_spawn_* tools`. A spawn passes
+through an empty `Starting` view, and an attached application again exposes its
+own tools with the supervisor's `sdl_capture`; every change sends one
+`notifications/tools/list_changed`.
+
+One application runs at a time. Calling another `app_spawn_<alias>` while one is
+attached fails with `an application is already attached; one spawn at a time`;
+wait for the running application to exit first.
+
+```json
+{
+  "name": "app_spawn_demo",
+  "description": "Start the application registered as \"demo\" and wait until it connects back and completes the MCP handshake. Returns the child's process id; while it runs its own tools replace this one, and call app_spawn_<alias> again only after it has exited.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "timeout_ms": { "type": "integer", "minimum": 1, "maximum": 60000, "default": 5000 }
+    },
+    "additionalProperties": false
+  },
+  "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": false,
+    "idempotentHint": false,
+    "openWorldHint": false
+  }
+}
+```
+
+`timeout_ms` defaults to 5000 and covers the whole spawn — bind, fork/exec, the
+application dialing back, and its `initialize` and `tools/list` handshake — not
+just the connection. `app_spawn_<alias>` has three outcomes:
+
+1. **Success.** The application connected and completed the handshake. The result
+   is `spawned <alias> (pid N)`, and the tool list is now the application's.
+2. **The application died first.** It exited, or could not be executed, before it
+   connected. The `isError` result names the exit status or `exec` failure and
+   the pid, and the tool view returns to the `app_spawn_*` set.
+3. **Timeout.** `timeout_ms` expired before the handshake completed. The error
+   names the timeout and the pid, and the spawner terminates the child (SIGTERM,
+   about two seconds of grace, then SIGKILL) before returning, so a failed spawn
+   leaves no process behind.
+
+A bind or `exec` failure is reported like the second outcome, with the reason in
+the error text. After any failure the spawner is idle again and a later
+`app_spawn_<alias>` may be tried.
+
+### Terminating an application
+
+`sdl_terminate` is forwarded like any other application tool; the spawner does
+not wait for the exit or force it, and the application decides what the request
+means. When the application exits, whether from a clean request or on its own,
+its tools are replaced by the `app_spawn_*` set and one `list_changed` is sent.
+
+### Stopping the spawner
+
+The spawner lives exactly as long as its relay connection: when the relay closes
+the socket, the run loop ends and the spawner exits. On the way out it stops a
+live application with SIGTERM, a grace period, and SIGKILL, reaps it, and only
+then exits; SIGINT and SIGTERM take the same path. Closing the relay therefore
+never leaves an orphan application behind.
+
+### Spawner client configuration
+
+The client points at the relay, not at the spawner. This is a local development
+pair: a relay on 7333 and a spawner on the same machine.
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "sdl3mcp": {
+        "type": "local",
+        "command": ["build/sdl3mcp", "--listen=127.0.0.1:7333"]
+      }
+    }
+  }
+}
+```
+
+```sh
+build/sdl3mcp --connect=127.0.0.1:7333 --targets=./targets.json
+```
 
 ## Public API
 
@@ -838,11 +1144,13 @@ Call once, from the app thread, before any other SDL3MCP function.
 
 - `config == NULL` means defaults.
 - `argc`/`argv` are read but never modified; pass the values SDL gave you.
-- Starts the server thread when the resulting transport is `STDIO`; otherwise
-  records the configuration and does nothing else.
+- Starts the server thread when the resulting transport is `STDIO`, or dials the
+  configured endpoint and starts it for `CONNECT`; with `NONE` it records the
+  configuration and does nothing else.
 - Returns `SDL_APP_CONTINUE` on success, `SDL_APP_SUCCESS` for
   `--mcp-help`/`--mcp-version`, and `SDL_APP_FAILURE` for invalid arguments, a
-  broken stdin/stdout, or a thread that cannot start.
+  broken stdin/stdout, an unreachable `CONNECT` endpoint, or a thread that cannot
+  start.
 - On failure, no state is left behind; calling `SDL3MCP_AppShutdown` afterwards
   is still safe.
 - Calling it a second time in the same process fails, even after a shutdown.
@@ -1157,7 +1465,7 @@ portable way for this library to update SDL's private key array.
 
 ## MCP surface
 
-SDL3MCP speaks MCP over the standard stdio transport: UTF-8 JSON-RPC 2.0, one
+SDL3MCP speaks MCP over stdio or a dialed socket: UTF-8 JSON-RPC 2.0, one
 message per line, no batches. The server targets protocol revision
 `2025-11-25` and always answers `initialize` with that revision, whatever the
 client asked for.
@@ -1500,7 +1808,7 @@ The PNG is the app's native 1920x1080 frame, never resized, so a smaller
 | Thread | May touch | Must not touch |
 | --- | --- | --- |
 | App thread | SDL, the window, the renderer, all `SDL3MCP_*` functions. | — |
-| Server thread | stdin/stdout duplicates, JSON, the copied frame buffer, the input queue. | Any SDL function, including `SDL_GetWindowSize`. |
+| Server thread | the transport's fds (stdio duplicates or the dialed socket), JSON, the copied frame buffer, the input queue. | Any SDL function, including `SDL_GetWindowSize`. |
 
 Rules that make this safe:
 
@@ -1525,20 +1833,27 @@ thread-safe.
 
 ## Security and process model
 
-stdio-only is a small attack surface by construction:
+stdio-first is a small attack surface by construction:
 
-- There is **no listening socket**, no port, and no authentication. The only
-  way in is to start the app with `--mcp` (or a configuration that enables it)
-  and own its stdin/stdout.
+- The library opens **no listening socket**, no port, and no authentication. In
+  its stdio mode the only way in is to start the app with `--mcp` (or a
+  configuration that enables it) and own its stdin/stdout. In `CONNECT` mode it
+  dials exactly the endpoint it was configured with and still listens on
+  nothing.
 - The trust boundary is the process boundary. A client that can launch the app
   can already run it; SDL3MCP adds the ability to send input and read frames,
-  not to read files, spawn processes, or reach the network.
+  not to read files or spawn processes.
 - Frames come from your app's own rendering and may contain anything the app
   displays. Treat them as you would a screenshot of that window.
 - Everything runs with the app's privileges. Do not enable the server in a
   privileged or setuid context.
 
-Two process-level rules the app must respect:
+The optional `sdl3mcp` executable is the one part that listens. Its relay mode is
+plain TCP with no authentication and no TLS, so anyone who can reach the port can
+drive whichever application connects; bind it to loopback, use a private network,
+or tunnel the port rather than exposing it.
+
+Two process-level rules the app must respect when the stdio transport is in use:
 
 - **stdout belongs to MCP until `SDL3MCP_AppInit` returns.** With `--mcp` the
   library duplicates the original stdout for the protocol and redirects the
@@ -1608,7 +1923,8 @@ library's decision.
 Known limits in v0:
 
 - Event-based input only; `SDL_GetKeyboardState` polling is not updated.
-- One MCP client per process, stdio only, no TLS, no remote access.
+- One MCP client per process. Stdio between the client and `sdl3mcp`; the relay
+  and spawner add plain TCP below it with no TLS or authentication.
 - MCP `2026-07-28` and later stateless revisions are not implemented; clients
   must use the handshake-based revision.
 - Frames are raw RGBA8888 from the library; PNG is only available through the
@@ -1646,12 +1962,14 @@ src/info.*                         sdl_info serialization
 src/frame.*                        frame validation and region crop
 src/capture.*                      pending capture state and statistics
 src/transport.*                    line transport plus raw frame read/write
+src/socket_connect.*               the app's --mcp=HOST:PORT dial
 src/server.*                       server thread loop
 src/stdio_isolation.*              fd duplication and redirect
 third_party/stb/                   vendored stb_image_write.h (supervisor only)
 third_party/nlohmann/              vendored json.hpp fallback
 examples/minimal/main.c           the quick-start app
-supervisor/                        supervisor executable: CLI, child process, proxy
+supervisor/                        sdl3mcp: CLI, peers, child process, targets, proxy
+supervisor/peer.hpp                the data-path seam: stdio, accepted, or dialed
 supervisor/png.*                   PNG encode and base64
 supervisor/stb_image_write_impl.cpp
                                    the one stb implementation translation unit
@@ -1666,9 +1984,12 @@ Test suite (all registered with CTest): `header_c`, `header_cpp`,
 `json_rpc_tests`, `session_tests`, `frame_tests`, `info_tests`, `server_tests`,
 and six `lifecycle_*` scenarios. With `SDL3MCP_BUILD_SUPERVISOR=ON` it also adds
 `supervisor_png_tests` for the moved presentation code, `supervisor_tests`,
-which drives the real supervisor binary against a fake MCP child, and
+which drives the real supervisor binary against a fake MCP child, `relay_tests`,
+which drives `--listen` against a fake application over TCP, `spawner_tests`,
+which drives `--connect --targets` against a relay the test owns, and
 `supervisor_real_app`, which repeats the round trip through
-`examples/minimal` under `SDL_VIDEODRIVER=dummy`. When Python 3 is available,
+`examples/minimal` under `SDL_VIDEODRIVER=dummy`. `connect_tests` covers the
+app's dialed `--mcp=HOST:PORT` transport. When Python 3 is available,
 `readme_check` runs `tests/check_readme.py`: it compiles both complete C
 examples, parses every JSON block, and checks both `sdl_capture` schemas, the
 example run path, the supervisor states, and the loop order.

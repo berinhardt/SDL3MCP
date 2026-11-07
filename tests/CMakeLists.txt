@@ -87,6 +87,18 @@ add_test(NAME mouse_tests COMMAND sdl3mcp_test_mouse)
 
 find_package(Threads REQUIRED)
 
+add_executable(sdl3mcp_test_connect connect_tests.cpp)
+target_compile_features(sdl3mcp_test_connect PRIVATE cxx_std_20)
+target_include_directories(sdl3mcp_test_connect PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+)
+target_link_libraries(sdl3mcp_test_connect PRIVATE
+    ${SDL3MCP_TEST_INTERNAL_LIBRARY}
+    SDL3::SDL3
+    Threads::Threads
+)
+add_test(NAME connect_tests COMMAND sdl3mcp_test_connect)
+
 add_executable(sdl3mcp_test_queue queue_tests.cpp)
 target_compile_features(sdl3mcp_test_queue PRIVATE cxx_std_20)
 target_include_directories(sdl3mcp_test_queue PRIVATE

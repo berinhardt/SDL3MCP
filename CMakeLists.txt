@@ -70,6 +70,7 @@ add_library(sdl3mcp_objects OBJECT
     src/transport.cpp
     src/server.cpp
     src/stdio_isolation.cpp
+    src/socket_connect.cpp
 )
 add_library(SDL3MCP ${sdl3mcp_library_type} $<TARGET_OBJECTS:sdl3mcp_objects>)
 add_library(SDL3MCP::SDL3MCP ALIAS SDL3MCP)

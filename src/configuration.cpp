@@ -73,13 +73,12 @@ bool isValueFlag(std::string_view name)
 
 constexpr std::size_t kConnectHostCapacity = 64;
 
-/*
-  Parses "HOST:PORT" or "[V6]:PORT". An unbracketed host may not contain a
-  colon, so an IPv6 literal must be written in brackets; an empty host and a
-  port outside 1..65535 are rejected. The host is returned as a view into
-  `value` so the caller can copy it into its fixed-size field.
-*/
-bool parseEndpoint(std::string_view value, std::string_view &host, std::uint16_t &port)
+} // namespace
+
+bool parseEndpoint(std::string_view value,
+                   std::string_view &host,
+                   std::uint16_t &port,
+                   bool allowZeroPort)
 {
     std::string_view portText;
     if (!value.empty() && value.front() == '[') {
@@ -109,14 +108,13 @@ bool parseEndpoint(std::string_view value, std::string_view &host, std::uint16_t
     }
 
     std::uint64_t parsed = 0;
-    if (!parseDecimal(portText, parsed) || parsed < 1 || parsed > 65535) {
+    const std::uint64_t minimum = allowZeroPort ? 0u : 1u;
+    if (!parseDecimal(portText, parsed) || parsed < minimum || parsed > 65535) {
         return false;
     }
     port = static_cast<std::uint16_t>(parsed);
     return true;
 }
-
-} // namespace
 
 Configuration::Configuration() noexcept : value_(SDL3MCP_DefaultConfiguration())
 {

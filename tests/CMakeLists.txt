@@ -337,6 +337,24 @@ if(SDL3MCP_BUILD_SUPERVISOR)
                      $<TARGET_FILE:sdl3mcp>
                      $<TARGET_FILE:sdl3mcp_fake_child>)
 
+    # The relay drives the same executable with --listen and a fake application
+    # that dials in over TCP, so no child process and no SDL are involved.
+    add_executable(sdl3mcp_test_relay relay_tests.cpp)
+    target_compile_features(sdl3mcp_test_relay PRIVATE cxx_std_20)
+    target_include_directories(sdl3mcp_test_relay PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+    )
+    target_link_libraries(sdl3mcp_test_relay PRIVATE
+        sdl3mcp_supervisor_objects
+        sdl3mcp_objects
+        SDL3::SDL3
+        nlohmann_json::nlohmann_json
+        Threads::Threads
+    )
+    add_test(NAME relay_tests
+             COMMAND sdl3mcp_test_relay
+                     $<TARGET_FILE:sdl3mcp>)
+
     # The same binary again, this time driving the real example through the
     # proxy. The dummy video driver gives a real software renderer headless;
     # as with the other dummy-driver tests, SDL's process-wide allocations are

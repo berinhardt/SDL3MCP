@@ -134,6 +134,7 @@ if(SDL3MCP_BUILD_SUPERVISOR)
         supervisor/cli.cpp
         supervisor/child_process.cpp
         supervisor/child_peer.cpp
+        supervisor/socket_peer.cpp
         supervisor/png.cpp
         supervisor/stb_image_write_impl.cpp
         supervisor/supervisor.cpp

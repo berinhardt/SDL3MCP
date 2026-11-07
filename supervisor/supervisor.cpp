@@ -5,16 +5,21 @@
 #include <SDL3MCP/SDL3MCP_version.h>
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <csignal>
 #include <cstdint>
+#include <cstdio>
 #include <exception>
 #include <limits>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include <poll.h>
 #include <pthread.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 namespace sdl3mcp
 {
@@ -24,8 +29,11 @@ namespace
 constexpr std::string_view kProtocolVersion = "2025-11-25";
 constexpr std::string_view kServerName = "sdl3mcp";
 constexpr int kWindowPollMs = 50;
+/* The relay wakes the stdio read this often to notice a session that went away. */
+constexpr int kPeerPollMs = 50;
 /* SIGTERM to SIGKILL grace when the application ignores the quit request. */
 constexpr int kTerminateGraceMs = 2000;
+constexpr std::int64_t kMaxWaitSessionMs = 60000;
 
 /*
   The largest raw frame the supervisor accepts from the child. It bounds the
@@ -68,8 +76,24 @@ std::string stateName(SupervisorState state)
         return "starting";
     case SupervisorState::Running:
         return "running";
+    case SupervisorState::WaitingSession:
+        return "waiting for a session";
+    case SupervisorState::PeerAttached:
+        return "attached";
     }
     return "idle";
+}
+
+/* Prints IPv6 literals in brackets, like the library's connect error text. */
+std::string endpointText(std::string_view host, std::uint16_t port)
+{
+    std::string text;
+    if (host.find(':') != std::string_view::npos) {
+        text = "[" + std::string(host) + "]";
+    } else {
+        text = std::string(host);
+    }
+    return text + ":" + std::to_string(port);
 }
 
 std::string describeRpcError(const nlohmann::json &error)
@@ -271,6 +295,36 @@ nlohmann::json spawnToolDefinition()
     };
 }
 
+nlohmann::json waitSessionToolDefinition()
+{
+    return nlohmann::json{
+        {"name", "wait_session"},
+        {"description",
+         "Wait for an application to connect to the relay's listening socket. "
+         "Returns as soon as a session is attached; without timeout_ms it waits "
+         "indefinitely and returns a normal tool error when timeout_ms expires. "
+         "While a session is attached its tools replace this one."},
+        {"inputSchema",
+         nlohmann::json{
+             {"type", "object"},
+             {"properties", nlohmann::json{
+                  {"timeout_ms", nlohmann::json{
+                                     {"type", "integer"},
+                                     {"minimum", 1},
+                                     {"maximum", kMaxWaitSessionMs},
+                                 }},
+              }},
+             {"additionalProperties", false},
+         }},
+        {"annotations",
+         nlohmann::json{
+             {"readOnlyHint", true},
+             {"idempotentHint", false},
+             {"openWorldHint", true},
+         }},
+    };
+}
+
 nlohmann::json supervisorCaptureToolDefinition()
 {
     return nlohmann::json{
@@ -321,6 +375,26 @@ nlohmann::json supervisorCaptureToolDefinition()
     };
 }
 
+/*
+  The tool view while an application is attached, whether it is a spawned child
+  or a relayed session. sdl_capture is replaced because PNG and base64 are the
+  supervisor's presentation policy; every other app tool keeps its entry.
+*/
+nlohmann::json attachedToolList(const nlohmann::json &appTools)
+{
+    nlohmann::json tools = nlohmann::json::array();
+    if (appTools.is_array()) {
+        for (const nlohmann::json &tool : appTools) {
+            if (tool.is_object() && tool.value("name", std::string()) == "sdl_capture") {
+                tools.push_back(supervisorCaptureToolDefinition());
+            } else {
+                tools.push_back(tool);
+            }
+        }
+    }
+    return nlohmann::json{{"tools", std::move(tools)}};
+}
+
 nlohmann::json supervisorToolList(SupervisorState state, const nlohmann::json &childTools)
 {
     switch (state) {
@@ -330,20 +404,14 @@ nlohmann::json supervisorToolList(SupervisorState state, const nlohmann::json &c
         };
     case SupervisorState::Starting:
         return nlohmann::json{{"tools", nlohmann::json::array()}};
-    case SupervisorState::Running: {
-        /* The child's sdl_capture has no presentation, so the supervisor's replaces it. */
-        nlohmann::json tools = nlohmann::json::array();
-        if (childTools.is_array()) {
-            for (const nlohmann::json &tool : childTools) {
-                if (tool.is_object() && tool.value("name", std::string()) == "sdl_capture") {
-                    tools.push_back(supervisorCaptureToolDefinition());
-                } else {
-                    tools.push_back(tool);
-                }
-            }
-        }
-        return nlohmann::json{{"tools", std::move(tools)}};
-    }
+    case SupervisorState::Running:
+        return attachedToolList(childTools);
+    case SupervisorState::WaitingSession:
+        return nlohmann::json{
+            {"tools", nlohmann::json::array({waitSessionToolDefinition()})},
+        };
+    case SupervisorState::PeerAttached:
+        return attachedToolList(childTools);
     }
     return nlohmann::json{{"tools", nlohmann::json::array()}};
 }
@@ -351,6 +419,9 @@ nlohmann::json supervisorToolList(SupervisorState state, const nlohmann::json &c
 Supervisor::Supervisor(int readFd, int writeFd, SupervisorOptions options)
     : transport_(readFd, writeFd), options_(std::move(options))
 {
+    if (options_.relay()) {
+        state_ = SupervisorState::WaitingSession;
+    }
 }
 
 Supervisor::~Supervisor()
@@ -362,18 +433,35 @@ int Supervisor::run()
 {
     blockSigpipe();
 
-    try {
-        monitor_ = std::thread(&Supervisor::monitorLoop, this);
-    } catch (const std::exception &) {
-        failed_.store(true);
-        shutdown();
-        return 1;
+    if (options_.relay()) {
+        std::string error;
+        if (!listen(error)) {
+            std::fprintf(stderr, "sdl3mcp: %s\n", error.c_str());
+            std::fflush(stderr);
+            return 1;
+        }
+        try {
+            acceptor_ = std::thread(&Supervisor::acceptLoop, this);
+        } catch (const std::exception &) {
+            failed_.store(true);
+            shutdown();
+            return 1;
+        }
+    } else {
+        try {
+            monitor_ = std::thread(&Supervisor::monitorLoop, this);
+        } catch (const std::exception &) {
+            failed_.store(true);
+            shutdown();
+            return 1;
+        }
     }
 
+    const int tickMs = options_.relay() ? kPeerPollMs : -1;
     for (;;) {
         std::string line;
         std::string error;
-        const ReadStatus status = transport_.readLine(line, error);
+        const ReadStatus status = transport_.readLine(line, error, tickMs);
         if (status == ReadStatus::Eof || status == ReadStatus::Stopped) {
             break;
         }
@@ -382,6 +470,8 @@ int Supervisor::run()
             break;
         }
         if (status == ReadStatus::Timeout) {
+            /* A relayed session may close while no call is in flight. */
+            pollRelayPeer();
             continue;
         }
         try {
@@ -390,7 +480,7 @@ int Supervisor::run()
             }
         } catch (const std::exception &) {
             /* An exception from a hostile or broken peer stops the supervisor,
-               but only after shutdown() has stopped the child. */
+               but only after shutdown() has stopped the application. */
             failed_.store(true);
             break;
         }
@@ -400,9 +490,30 @@ int Supervisor::run()
     return failed_.load() ? 1 : 0;
 }
 
+bool Supervisor::listen(std::string &error)
+{
+    int fd = -1;
+    if (!listenSocket(options_.listenHost.c_str(), options_.listenPort, fd, boundPort_,
+                      error)) {
+        return false;
+    }
+
+    listenerFd_ = fd;
+    /* The bound endpoint goes to stderr: stdout is the MCP channel. */
+    std::fprintf(stderr, "sdl3mcp: listening on %s\n",
+                 endpointText(options_.listenHost, boundPort_).c_str());
+    std::fflush(stderr);
+    return true;
+}
+
 void Supervisor::stop()
 {
     transport_.stop();
+    {
+        const std::lock_guard<std::mutex> lock(stateMutex_);
+        stopRequested_ = true;
+    }
+    monitorCondition_.notify_all();
 }
 
 SupervisorState Supervisor::state() const
@@ -468,13 +579,249 @@ void Supervisor::monitorLoop()
                 continue;
             }
             state_ = SupervisorState::Idle;
-            childTools_ = nlohmann::json::array();
+            peerTools_ = nlohmann::json::array();
         }
         /* Wake a terminate call waiting for the exit to be published. */
         monitorCondition_.notify_all();
 
         sendToolsListChanged();
     }
+}
+
+void Supervisor::acceptLoop()
+{
+    blockSigpipe();
+
+    for (;;) {
+        {
+            const std::lock_guard<std::mutex> lock(stateMutex_);
+            if (stopping_) {
+                return;
+            }
+        }
+
+        pollfd descriptor{};
+        descriptor.fd = listenerFd_;
+        descriptor.events = POLLIN;
+        const int ready = ::poll(&descriptor, 1, kPeerPollMs);
+        if (ready < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return;
+        }
+        if (ready == 0 || (descriptor.revents & POLLIN) == 0) {
+            continue;
+        }
+
+        const int client = ::accept(listenerFd_, nullptr, nullptr);
+        if (client < 0) {
+            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+                continue;
+            }
+            return;
+        }
+
+        /*
+          Exactly one session. The listener keeps accepting only so a second
+          connection is closed here at once instead of rotting in the backlog;
+          it is never handed to the proxy.
+        */
+        bool refuse = false;
+        {
+            const std::lock_guard<std::mutex> lock(stateMutex_);
+            refuse = stopping_ || state_ == SupervisorState::PeerAttached;
+        }
+        if (refuse) {
+            ::close(client);
+            continue;
+        }
+
+        attachPeer(client);
+    }
+}
+
+void Supervisor::attachPeer(int fd)
+{
+    auto peer = std::make_unique<SocketPeer>(fd);
+    {
+        const std::lock_guard<std::mutex> lock(stateMutex_);
+        if (stopping_) {
+            return;
+        }
+        pendingPeer_ = peer.get();
+    }
+
+    const Deadline deadline = std::chrono::steady_clock::now() +
+                              std::chrono::milliseconds(options_.startupTimeoutMs);
+
+    nlohmann::json tools;
+    std::string failure;
+    if (!initializePeer(peer.get(), deadline, tools, failure)) {
+        /* The peer owns the fd, so the failed session closes with it. */
+        {
+            const std::lock_guard<std::mutex> lock(stateMutex_);
+            pendingPeer_ = nullptr;
+        }
+        std::fprintf(stderr, "sdl3mcp: %s\n", failure.c_str());
+        std::fflush(stderr);
+        return;
+    }
+
+    bool attached = false;
+    {
+        const std::lock_guard<std::mutex> lock(stateMutex_);
+        pendingPeer_ = nullptr;
+        if (!stopping_ && state_ != SupervisorState::PeerAttached) {
+            relayPeer_ = std::move(peer);
+            peer_ = relayPeer_.get();
+            peerTools_ = std::move(tools);
+            state_ = SupervisorState::PeerAttached;
+            attached = true;
+        }
+    }
+    if (!attached) {
+        return;
+    }
+
+    /* Wake wait_session, then announce the new tool view once. */
+    monitorCondition_.notify_all();
+    sendToolsListChanged();
+}
+
+bool Supervisor::initializePeer(Peer *peer,
+                                Deadline deadline,
+                                nlohmann::json &tools,
+                                std::string &failure)
+{
+    const nlohmann::json initializeParams{
+        {"protocolVersion", std::string(kProtocolVersion)},
+        {"capabilities", nlohmann::json::object()},
+        {"clientInfo", nlohmann::json{
+             {"name", std::string(kServerName)},
+             {"version", std::string(SDL3MCP_VERSION_STRING)},
+         }},
+    };
+
+    nlohmann::json ignored;
+    std::string error;
+    if (!requestPeer(peer, "initialize", initializeParams, ignored, deadline, error)) {
+        failure = "cannot initialize the application session: " + error;
+        return false;
+    }
+
+    /* The app is now a server; a real MCP client acknowledges initialize. */
+    if (!peer->writeLine(nlohmann::json{
+                                    {"jsonrpc", "2.0"},
+                                    {"method", "notifications/initialized"},
+                                }
+                            .dump())) {
+        failure = "cannot acknowledge initialize to the application session";
+        return false;
+    }
+
+    nlohmann::json listResult;
+    if (!requestPeer(peer, "tools/list", nlohmann::json::object(), listResult, deadline,
+                     error)) {
+        failure = "cannot list the application session's tools: " + error;
+        return false;
+    }
+
+    const auto entries = listResult.find("tools");
+    if (entries == listResult.end() || !entries->is_array()) {
+        failure = "the application answered tools/list without a tools array";
+        return false;
+    }
+
+    tools = *entries;
+    return true;
+}
+
+void Supervisor::detachPeer(Peer *peer)
+{
+    std::unique_ptr<Peer> released;
+    {
+        const std::lock_guard<std::mutex> lock(stateMutex_);
+        if (!options_.relay() || state_ != SupervisorState::PeerAttached || peer_ != peer) {
+            return;
+        }
+        released = std::move(relayPeer_);
+        peer_ = nullptr;
+        peerTools_ = nlohmann::json::array();
+        state_ = SupervisorState::WaitingSession;
+    }
+
+    /* `released` closes the socket; the waiter and the client hear about it once. */
+    monitorCondition_.notify_all();
+    sendToolsListChanged();
+}
+
+void Supervisor::pollRelayPeer()
+{
+    if (!options_.relay()) {
+        return;
+    }
+
+    Peer *peer = nullptr;
+    {
+        const std::lock_guard<std::mutex> lock(stateMutex_);
+        if (state_ == SupervisorState::PeerAttached) {
+            peer = peer_;
+        }
+    }
+    if (peer != nullptr && peer->closed()) {
+        detachPeer(peer);
+    }
+}
+
+Peer *Supervisor::dataPath()
+{
+    const std::lock_guard<std::mutex> lock(stateMutex_);
+    return peer_;
+}
+
+SupervisorToolResult Supervisor::waitSession(const nlohmann::json &arguments)
+{
+    std::int64_t timeoutMs = -1;
+    if (arguments.contains("timeout_ms")) {
+        if (!readInteger(arguments, "timeout_ms", timeoutMs) || timeoutMs < 1 ||
+            timeoutMs > kMaxWaitSessionMs) {
+            return toolError("wait_session timeout_ms must be in 1.." +
+                             std::to_string(kMaxWaitSessionMs));
+        }
+    }
+
+    const auto attached = [this] { return state_ == SupervisorState::PeerAttached; };
+
+    std::unique_lock<std::mutex> lock(stateMutex_);
+    if (attached()) {
+        return toolOk("an application session is already attached");
+    }
+
+    if (timeoutMs < 0) {
+        monitorCondition_.wait(lock, [this, &attached] {
+            return attached() || stopping_ || stopRequested_;
+        });
+    } else {
+        const Deadline deadline = std::chrono::steady_clock::now() +
+                                  std::chrono::milliseconds(timeoutMs);
+        while (!attached() && !stopping_ && !stopRequested_) {
+            if (monitorCondition_.wait_until(lock, deadline) ==
+                std::cv_status::timeout) {
+                break;
+            }
+        }
+    }
+
+    if (attached()) {
+        return toolOk("an application session attached");
+    }
+    if (stopping_ || stopRequested_) {
+        return toolError("the supervisor is stopping before an application session "
+                         "attached");
+    }
+    return toolError("no application session connected within " +
+                     std::to_string(timeoutMs) + " ms");
 }
 
 void Supervisor::shutdown()
@@ -484,6 +831,10 @@ void Supervisor::shutdown()
         const std::lock_guard<std::mutex> lock(stateMutex_);
         stopping_ = true;
         process = child_.get();
+        /* A handshake in progress must not delay shutdown for the whole timeout. */
+        if (pendingPeer_ != nullptr) {
+            pendingPeer_->stop();
+        }
     }
     monitorCondition_.notify_all();
     transport_.stop();
@@ -494,13 +845,23 @@ void Supervisor::shutdown()
     if (monitor_.joinable()) {
         monitor_.join();
     }
+    if (acceptor_.joinable()) {
+        acceptor_.join();
+    }
+    if (listenerFd_ >= 0) {
+        ::close(listenerFd_);
+        listenerFd_ = -1;
+    }
 
-    childPeer_ = nullptr;
     {
         const std::lock_guard<std::mutex> lock(stateMutex_);
+        peer_ = nullptr;
+        pendingPeer_ = nullptr;
+        relayPeer_.reset();
         child_.reset();
-        state_ = SupervisorState::Idle;
-        childTools_ = nlohmann::json::array();
+        state_ = options_.relay() ? SupervisorState::WaitingSession
+                                  : SupervisorState::Idle;
+        peerTools_ = nlohmann::json::array();
     }
 }
 
@@ -584,7 +945,7 @@ void Supervisor::handleToolsList(const nlohmann::json &id)
     {
         const std::lock_guard<std::mutex> lock(stateMutex_);
         current = state_;
-        tools = childTools_;
+        tools = peerTools_;
     }
 
     writeJson(makeResult(id, supervisorToolList(current, tools)));
@@ -615,6 +976,31 @@ void Supervisor::handleToolsCall(const nlohmann::json &id, const nlohmann::json 
             return;
         }
         arguments = *supplied;
+    }
+
+    /*
+      Relay mode: the supervisor is the client-facing endpoint and every call
+      goes to the attached session. wait_session belongs to the supervisor and
+      is legal whether or not one is attached.
+    */
+    if (options_.relay()) {
+        if (toolName == "wait_session") {
+            writeToolResult(id, waitSession(arguments));
+            return;
+        }
+        if (state() != SupervisorState::PeerAttached || dataPath() == nullptr) {
+            writeToolResult(
+                id, toolError("no application session is attached; call wait_session first"));
+            return;
+        }
+        /* sdl_capture keeps the same PNG presentation the child path gives it. */
+        if (toolName == "sdl_capture") {
+            writeJson(forwardCapture(id, arguments));
+            return;
+        }
+        /* sdl_terminate is an ordinary forward: the app owns its own process. */
+        writeJson(forwardChildCall(id, toolName, arguments));
+        return;
     }
 
     /*
@@ -662,7 +1048,7 @@ SupervisorToolResult Supervisor::spawn()
                              stateName(state_) + ".");
         }
         state_ = SupervisorState::Starting;
-        childTools_ = nlohmann::json::array();
+        peerTools_ = nlohmann::json::array();
     }
     sendToolsListChanged();
 
@@ -690,8 +1076,8 @@ bool Supervisor::startChild(Deadline deadline, nlohmann::json &window, std::stri
         const std::lock_guard<std::mutex> lock(stateMutex_);
         child_ = std::move(child);
         process = child_.get();
+        peer_ = process;
     }
-    childPeer_ = process;
 
     const int execTimeout = std::max(remainingMs(deadline), 1);
     if (!process->waitForExec(execTimeout, failure)) {
@@ -708,23 +1094,24 @@ bool Supervisor::startChild(Deadline deadline, nlohmann::json &window, std::stri
              {"version", std::string(SDL3MCP_VERSION_STRING)},
          }},
     };
-    if (!requestChild("initialize", initializeParams, ignored, deadline, error)) {
+    if (!requestPeer(process, "initialize", initializeParams, ignored, deadline, error)) {
         failure = error;
         return false;
     }
 
     /* The child is now a server; a real MCP client acknowledges initialize. */
-    if (!childPeer_->writeLine(nlohmann::json{
-                                           {"jsonrpc", "2.0"},
-                                           {"method", "notifications/initialized"},
-                                       }
-                                           .dump())) {
+    if (!process->writeLine(nlohmann::json{
+                                    {"jsonrpc", "2.0"},
+                                    {"method", "notifications/initialized"},
+                                }
+                                .dump())) {
         failure = "cannot acknowledge initialize to the application";
         return false;
     }
 
     nlohmann::json listResult;
-    if (!requestChild("tools/list", nlohmann::json::object(), listResult, deadline, error)) {
+    if (!requestPeer(process, "tools/list", nlohmann::json::object(), listResult, deadline,
+                     error)) {
         failure = error;
         return false;
     }
@@ -754,7 +1141,8 @@ bool Supervisor::startChild(Deadline deadline, nlohmann::json &window, std::stri
             {"name", "sdl_info"},
             {"arguments", nlohmann::json::object()},
         };
-        if (!requestChild("tools/call", infoRequest, infoResult, deadline, error)) {
+        if (!requestPeer(process, "tools/call", infoRequest, infoResult, deadline,
+                         error)) {
             failure = error;
             return false;
         }
@@ -768,7 +1156,7 @@ bool Supervisor::startChild(Deadline deadline, nlohmann::json &window, std::stri
 
     {
         const std::lock_guard<std::mutex> lock(stateMutex_);
-        childTools_ = *tools;
+        peerTools_ = *tools;
         state_ = SupervisorState::Running;
     }
     monitorCondition_.notify_all();
@@ -790,12 +1178,12 @@ SupervisorToolResult Supervisor::failSpawn(const std::string &reason)
         stderrTail = process->stderrTail();
     }
 
-    childPeer_ = nullptr;
     {
         const std::lock_guard<std::mutex> lock(stateMutex_);
         child_.reset();
+        peer_ = nullptr;
         state_ = SupervisorState::Idle;
-        childTools_ = nlohmann::json::array();
+        peerTools_ = nlohmann::json::array();
     }
     monitorCondition_.notify_all();
     sendToolsListChanged();
@@ -834,7 +1222,7 @@ SupervisorToolResult Supervisor::terminate(const nlohmann::json &arguments)
       The child normally answers "termination requested" before it exits, but it
       may close its pipe first. Either way the exit below decides the result.
     */
-    (void)requestChild("tools/call", params, ignored, deadline, error);
+    (void)requestPeer(process, "tools/call", params, ignored, deadline, error);
 
     if (process->waitForExit(remainingMs(deadline))) {
         awaitChildExitHandled(process);
@@ -857,26 +1245,27 @@ void Supervisor::awaitChildExitHandled(ChildPeer *process)
     });
 }
 
-bool Supervisor::requestChild(std::string_view method,
-                              const nlohmann::json &params,
-                              nlohmann::json &result,
-                              Deadline deadline,
-                              std::string &error)
+bool Supervisor::requestPeer(Peer *peer,
+                             std::string_view method,
+                             const nlohmann::json &params,
+                             nlohmann::json &result,
+                             Deadline deadline,
+                             std::string &error)
 {
     error.clear();
-    if (!childPeer_) {
+    if (peer == nullptr) {
         error = "the application is not running";
         return false;
     }
 
-    const long long requestId = nextChildRequestId_++;
+    const long long requestId = nextRequestId_.fetch_add(1);
     const nlohmann::json request{
         {"jsonrpc", "2.0"},
         {"id", requestId},
         {"method", std::string(method)},
         {"params", params},
     };
-    if (!childPeer_->writeLine(request.dump())) {
+    if (!peer->writeLine(request.dump())) {
         error = "cannot write " + std::string(method) + " to the application";
         return false;
     }
@@ -891,7 +1280,7 @@ bool Supervisor::requestChild(std::string_view method,
 
         std::string line;
         std::string readError;
-        const ReadStatus status = childPeer_->readLine(line, readError, remaining);
+        const ReadStatus status = peer->readLine(line, readError, remaining);
         if (status == ReadStatus::Timeout) {
             error = "the application did not answer " + std::string(method) +
                     " before the startup timeout";
@@ -930,30 +1319,38 @@ nlohmann::json Supervisor::forwardChildCall(const nlohmann::json &id,
                                             const std::string &name,
                                             const nlohmann::json &arguments)
 {
-    if (!childPeer_) {
+    Peer *peer = dataPath();
+    if (peer == nullptr) {
         return toolResultJson(id, toolError("the application is not running"));
     }
 
-    const long long requestId = nextChildRequestId_++;
+    const long long requestId = nextRequestId_.fetch_add(1);
     const nlohmann::json request{
         {"jsonrpc", "2.0"},
         {"id", requestId},
         {"method", "tools/call"},
         {"params", nlohmann::json{{"name", name}, {"arguments", arguments}}},
     };
-    if (!childPeer_->writeLine(request.dump())) {
+    if (!peer->writeLine(request.dump())) {
+        if (options_.relay()) {
+            detachPeer(peer);
+        }
         return toolResultJson(id, toolError("cannot reach the application"));
     }
 
     /*
-      No deadline: the child's own tool timeouts bound the wait, and a child that
-      dies closes the pipe, which is reported as a tool error.
+      No deadline: the app's own tool timeouts bound the wait, and a peer that
+      dies closes its connection, which is reported as a tool error.
     */
     for (;;) {
         std::string line;
         std::string error;
-        const ReadStatus status = childPeer_->readLine(line, error);
+        const ReadStatus status = peer->readLine(line, error);
         if (status != ReadStatus::Line) {
+            if (options_.relay() && status != ReadStatus::Stopped) {
+                /* A relayed session that went away returns the relay to wait_session. */
+                detachPeer(peer);
+            }
             return toolResultJson(
                 id, toolError("the application closed its connection during " + name));
         }
@@ -997,26 +1394,33 @@ nlohmann::json Supervisor::forwardChildCall(const nlohmann::json &id,
 nlohmann::json Supervisor::forwardCapture(const nlohmann::json &id,
                                           const nlohmann::json &arguments)
 {
-    if (!childPeer_) {
+    Peer *peer = dataPath();
+    if (peer == nullptr) {
         return toolResultJson(id, toolError("the application is not running"));
     }
 
-    const long long requestId = nextChildRequestId_++;
+    const long long requestId = nextRequestId_.fetch_add(1);
     const nlohmann::json request{
         {"jsonrpc", "2.0"},
         {"id", requestId},
         {"method", "tools/call"},
         {"params", nlohmann::json{{"name", "sdl_capture"}, {"arguments", arguments}}},
     };
-    if (!childPeer_->writeLine(request.dump())) {
+    if (!peer->writeLine(request.dump())) {
+        if (options_.relay()) {
+            detachPeer(peer);
+        }
         return toolResultJson(id, toolError("cannot reach the application"));
     }
 
     for (;;) {
         std::string line;
         std::string error;
-        const ReadStatus status = childPeer_->readLine(line, error);
+        const ReadStatus status = peer->readLine(line, error);
         if (status != ReadStatus::Line) {
+            if (options_.relay() && status != ReadStatus::Stopped) {
+                detachPeer(peer);
+            }
             return toolResultJson(
                 id, toolError("the application closed its connection during sdl_capture"));
         }
@@ -1065,9 +1469,12 @@ nlohmann::json Supervisor::forwardCapture(const nlohmann::json &id,
             return toolResultJson(id, toolError(std::move(headerError)));
         }
 
-        /* No deadline, like every other forwarded call: the child's timeout bounds it. */
+        /* No deadline, like every other forwarded call: the app's timeout bounds it. */
         std::vector<uint8_t> pixels;
-        if (!childPeer_->readBytes(byteLength, pixels, error)) {
+        if (!peer->readBytes(byteLength, pixels, error)) {
+            if (options_.relay()) {
+                detachPeer(peer);
+            }
             return toolResultJson(
                 id, toolError("cannot read the frame from the application: " + error));
         }

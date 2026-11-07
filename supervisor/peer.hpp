@@ -2,9 +2,11 @@
   The application behind the supervisor, as a data path.
 
   The proxy loop only ever reads lines, reads a raw payload, writes lines,
-  writes raw bytes, and stops. Those five operations are exactly the surface
+  writes raw bytes, and stops. Those operations are exactly the surface
   Transport already offers, so the seam is named around it: a child over pipes
-  and a future peer that arrives from a socket are interchangeable here.
+  and a peer that arrives from a socket are interchangeable here. closed() is
+  the one addition: the relay needs a non-consuming "has the session ended?"
+  check while it is idle.
 
   This interface is deliberately data-only. Lifecycle (spawn, wait, exit
   status, terminate) belongs to the concrete peer for now; the proxy loop has
@@ -48,6 +50,13 @@ public:
 
     /* Asynchronous and idempotent; safe to call from another thread. */
     virtual void stop() = 0;
+
+    /*
+      True when the peer has ended without a read to report it: a child that
+      exited, or a socket whose peer closed. The relay polls this while idle;
+      a read failure mid-call reports the same end to the forwarding code.
+    */
+    virtual bool closed() const = 0;
 };
 
 } // namespace sdl3mcp

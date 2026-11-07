@@ -94,4 +94,9 @@ void ChildPeer::stop()
     }
 }
 
+bool ChildPeer::closed() const
+{
+    return process_.hasExited();
+}
+
 } // namespace sdl3mcp

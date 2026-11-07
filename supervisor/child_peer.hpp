@@ -63,6 +63,7 @@ public:
     bool writeLine(std::string_view line) override;
     bool writeBytes(const uint8_t *data, size_t size) override;
     void stop() override;
+    bool closed() const override;
 
 private:
     ChildProcess process_;

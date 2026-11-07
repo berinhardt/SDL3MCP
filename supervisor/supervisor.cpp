@@ -442,7 +442,7 @@ void Supervisor::monitorLoop()
     blockSigpipe();
 
     for (;;) {
-        ChildProcess *child = nullptr;
+        ChildPeer *child = nullptr;
         {
             std::unique_lock<std::mutex> lock(stateMutex_);
             monitorCondition_.wait(lock, [this] {
@@ -479,7 +479,7 @@ void Supervisor::monitorLoop()
 
 void Supervisor::shutdown()
 {
-    ChildProcess *process = nullptr;
+    ChildPeer *process = nullptr;
     {
         const std::lock_guard<std::mutex> lock(stateMutex_);
         stopping_ = true;
@@ -495,7 +495,7 @@ void Supervisor::shutdown()
         monitor_.join();
     }
 
-    childTransport_.reset();
+    childPeer_ = nullptr;
     {
         const std::lock_guard<std::mutex> lock(stateMutex_);
         child_.reset();
@@ -680,25 +680,23 @@ SupervisorToolResult Supervisor::spawn()
 
 bool Supervisor::startChild(Deadline deadline, nlohmann::json &window, std::string &failure)
 {
-    auto child = std::make_unique<ChildProcess>();
+    auto child = std::make_unique<ChildPeer>();
     if (!child->start(ChildCommand{options_.target, options_.targetArguments}, failure)) {
         return false;
     }
 
-    childTransport_.reset();
-    ChildProcess *process = nullptr;
+    ChildPeer *process = nullptr;
     {
         const std::lock_guard<std::mutex> lock(stateMutex_);
         child_ = std::move(child);
         process = child_.get();
     }
+    childPeer_ = process;
 
     const int execTimeout = std::max(remainingMs(deadline), 1);
     if (!process->waitForExec(execTimeout, failure)) {
         return false;
     }
-
-    childTransport_ = std::make_unique<Transport>(process->stdoutFd(), process->stdinFd());
 
     std::string error;
     nlohmann::json ignored;
@@ -716,11 +714,11 @@ bool Supervisor::startChild(Deadline deadline, nlohmann::json &window, std::stri
     }
 
     /* The child is now a server; a real MCP client acknowledges initialize. */
-    if (!childTransport_->writeLine(nlohmann::json{
-                                          {"jsonrpc", "2.0"},
-                                          {"method", "notifications/initialized"},
-                                      }
-                                          .dump())) {
+    if (!childPeer_->writeLine(nlohmann::json{
+                                           {"jsonrpc", "2.0"},
+                                           {"method", "notifications/initialized"},
+                                       }
+                                           .dump())) {
         failure = "cannot acknowledge initialize to the application";
         return false;
     }
@@ -780,7 +778,7 @@ bool Supervisor::startChild(Deadline deadline, nlohmann::json &window, std::stri
 
 SupervisorToolResult Supervisor::failSpawn(const std::string &reason)
 {
-    ChildProcess *process = nullptr;
+    ChildPeer *process = nullptr;
     {
         const std::lock_guard<std::mutex> lock(stateMutex_);
         process = child_.get();
@@ -792,7 +790,7 @@ SupervisorToolResult Supervisor::failSpawn(const std::string &reason)
         stderrTail = process->stderrTail();
     }
 
-    childTransport_.reset();
+    childPeer_ = nullptr;
     {
         const std::lock_guard<std::mutex> lock(stateMutex_);
         child_.reset();
@@ -813,7 +811,7 @@ SupervisorToolResult Supervisor::failSpawn(const std::string &reason)
 
 SupervisorToolResult Supervisor::terminate(const nlohmann::json &arguments)
 {
-    ChildProcess *process = nullptr;
+    ChildPeer *process = nullptr;
     {
         const std::lock_guard<std::mutex> lock(stateMutex_);
         if (state_ != SupervisorState::Running || !child_) {
@@ -851,7 +849,7 @@ SupervisorToolResult Supervisor::terminate(const nlohmann::json &arguments)
                   " ms, so it was sent SIGTERM and then SIGKILL");
 }
 
-void Supervisor::awaitChildExitHandled(ChildProcess *process)
+void Supervisor::awaitChildExitHandled(ChildPeer *process)
 {
     std::unique_lock<std::mutex> lock(stateMutex_);
     monitorCondition_.wait_for(lock, std::chrono::seconds(5), [this, process] {
@@ -866,7 +864,7 @@ bool Supervisor::requestChild(std::string_view method,
                               std::string &error)
 {
     error.clear();
-    if (!childTransport_) {
+    if (!childPeer_) {
         error = "the application is not running";
         return false;
     }
@@ -878,7 +876,7 @@ bool Supervisor::requestChild(std::string_view method,
         {"method", std::string(method)},
         {"params", params},
     };
-    if (!childTransport_->writeLine(request.dump())) {
+    if (!childPeer_->writeLine(request.dump())) {
         error = "cannot write " + std::string(method) + " to the application";
         return false;
     }
@@ -893,7 +891,7 @@ bool Supervisor::requestChild(std::string_view method,
 
         std::string line;
         std::string readError;
-        const ReadStatus status = childTransport_->readLine(line, readError, remaining);
+        const ReadStatus status = childPeer_->readLine(line, readError, remaining);
         if (status == ReadStatus::Timeout) {
             error = "the application did not answer " + std::string(method) +
                     " before the startup timeout";
@@ -932,7 +930,7 @@ nlohmann::json Supervisor::forwardChildCall(const nlohmann::json &id,
                                             const std::string &name,
                                             const nlohmann::json &arguments)
 {
-    if (!childTransport_) {
+    if (!childPeer_) {
         return toolResultJson(id, toolError("the application is not running"));
     }
 
@@ -943,7 +941,7 @@ nlohmann::json Supervisor::forwardChildCall(const nlohmann::json &id,
         {"method", "tools/call"},
         {"params", nlohmann::json{{"name", name}, {"arguments", arguments}}},
     };
-    if (!childTransport_->writeLine(request.dump())) {
+    if (!childPeer_->writeLine(request.dump())) {
         return toolResultJson(id, toolError("cannot reach the application"));
     }
 
@@ -954,7 +952,7 @@ nlohmann::json Supervisor::forwardChildCall(const nlohmann::json &id,
     for (;;) {
         std::string line;
         std::string error;
-        const ReadStatus status = childTransport_->readLine(line, error);
+        const ReadStatus status = childPeer_->readLine(line, error);
         if (status != ReadStatus::Line) {
             return toolResultJson(
                 id, toolError("the application closed its connection during " + name));
@@ -999,7 +997,7 @@ nlohmann::json Supervisor::forwardChildCall(const nlohmann::json &id,
 nlohmann::json Supervisor::forwardCapture(const nlohmann::json &id,
                                           const nlohmann::json &arguments)
 {
-    if (!childTransport_) {
+    if (!childPeer_) {
         return toolResultJson(id, toolError("the application is not running"));
     }
 
@@ -1010,14 +1008,14 @@ nlohmann::json Supervisor::forwardCapture(const nlohmann::json &id,
         {"method", "tools/call"},
         {"params", nlohmann::json{{"name", "sdl_capture"}, {"arguments", arguments}}},
     };
-    if (!childTransport_->writeLine(request.dump())) {
+    if (!childPeer_->writeLine(request.dump())) {
         return toolResultJson(id, toolError("cannot reach the application"));
     }
 
     for (;;) {
         std::string line;
         std::string error;
-        const ReadStatus status = childTransport_->readLine(line, error);
+        const ReadStatus status = childPeer_->readLine(line, error);
         if (status != ReadStatus::Line) {
             return toolResultJson(
                 id, toolError("the application closed its connection during sdl_capture"));
@@ -1069,7 +1067,7 @@ nlohmann::json Supervisor::forwardCapture(const nlohmann::json &id,
 
         /* No deadline, like every other forwarded call: the child's timeout bounds it. */
         std::vector<uint8_t> pixels;
-        if (!childTransport_->readBytes(byteLength, pixels, error)) {
+        if (!childPeer_->readBytes(byteLength, pixels, error)) {
             return toolResultJson(
                 id, toolError("cannot read the frame from the application: " + error));
         }

@@ -37,9 +37,10 @@
 #ifndef SDL3MCP_SUPERVISOR_SUPERVISOR_HPP
 #define SDL3MCP_SUPERVISOR_SUPERVISOR_HPP
 
-#include "child_process.hpp"
+#include "child_peer.hpp"
 #include "cli.hpp"
 #include "json_rpc.hpp"
+#include "peer.hpp"
 #include "transport.hpp"
 
 #include <nlohmann/json.hpp>
@@ -126,7 +127,7 @@ private:
     SupervisorToolResult failSpawn(const std::string &reason);
     SupervisorToolResult terminate(const nlohmann::json &arguments);
     /* Waits briefly for the exit handler to publish Idle after a child exit. */
-    void awaitChildExitHandled(ChildProcess *process);
+    void awaitChildExitHandled(ChildPeer *process);
 
     bool requestChild(std::string_view method,
                       const nlohmann::json &params,
@@ -162,11 +163,12 @@ private:
     std::condition_variable monitorCondition_;
     SupervisorState state_ = SupervisorState::Idle;
     nlohmann::json childTools_ = nlohmann::json::array();
-    std::unique_ptr<ChildProcess> child_;
+    std::unique_ptr<ChildPeer> child_;
     bool stopping_ = false;
 
     /* Only the main (request) thread touches the members below. */
-    std::unique_ptr<Transport> childTransport_;
+    /* The data path into *child_; every proxy read, write, and stop goes through it. */
+    Peer *childPeer_ = nullptr;
     long long nextChildRequestId_ = 1;
     bool initialized_ = false;
     std::atomic<bool> failed_{false};

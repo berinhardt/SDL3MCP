@@ -15,7 +15,7 @@ the loop order is a bug. The checks are deliberately mechanical:
 - the ``sdl_terminate`` schema is the empty object with all four hints;
 - the quick start matches ``examples/minimal/main.c`` and contains R/G/B;
 - the documented run command points at ``<build>/examples/minimal``;
-- the supervisor section documents ``sdl3mcp-supervisor --target`` and its
+- the supervisor section documents the ``sdl3mcp`` command with ``--target`` and its
   Idle/Starting/Running states;
 - stale phrases from earlier drafts are gone;
 - ``SDL3MCP_AppIterate`` is the last call, after ``SDL_RenderPresent``.
@@ -341,8 +341,8 @@ def check_supervisor_docs(readme: str, failures: list[str]) -> None:
     """The supervisor is part of the shipped binary, so its contract is checked."""
     if "## Supervisor" not in readme:
         failures.append("README has no Supervisor section")
-    if "sdl3mcp-supervisor" not in readme:
-        failures.append("README does not document the sdl3mcp-supervisor command")
+    if "sdl3mcp [--startup-timeout-ms" not in readme:
+        failures.append("README does not document the sdl3mcp command")
     if "--target" not in readme:
         failures.append("README does not document the supervisor's --target option")
     for state in SUPERVISOR_STATES:

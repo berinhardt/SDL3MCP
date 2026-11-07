@@ -322,7 +322,7 @@ if(SDL3MCP_BUILD_SUPERVISOR)
     )
     add_test(NAME supervisor_tests
              COMMAND sdl3mcp_test_supervisor
-                     $<TARGET_FILE:sdl3mcp-supervisor>
+                     $<TARGET_FILE:sdl3mcp>
                      $<TARGET_FILE:sdl3mcp_fake_child>)
 
     # The same binary again, this time driving the real example through the
@@ -333,7 +333,7 @@ if(SDL3MCP_BUILD_SUPERVISOR)
     if(SDL3MCP_BUILD_EXAMPLES)
         add_test(NAME supervisor_real_app
                  COMMAND sdl3mcp_test_supervisor
-                         $<TARGET_FILE:sdl3mcp-supervisor>
+                         $<TARGET_FILE:sdl3mcp>
                          $<TARGET_FILE:sdl3mcp_fake_child>
                          $<TARGET_FILE:minimal>)
         set_tests_properties(supervisor_real_app PROPERTIES ENVIRONMENT

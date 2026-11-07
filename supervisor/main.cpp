@@ -44,7 +44,7 @@ int main(int argc, char **argv)
 
     const sdl3mcp::CliParseResult parsed = sdl3mcp::parseCommandLine(arguments);
     if (!parsed.ok) {
-        std::fprintf(stderr, "sdl3mcp-supervisor: %s\n%s\n", parsed.error.c_str(),
+        std::fprintf(stderr, "sdl3mcp: %s\n%s\n", parsed.error.c_str(),
                      sdl3mcp::usageLine().c_str());
         return 2;
     }
@@ -56,7 +56,7 @@ int main(int argc, char **argv)
     */
     sigset_t stopSignals;
     if (!blockStopSignals(stopSignals)) {
-        std::fprintf(stderr, "sdl3mcp-supervisor: cannot block stop signals\n");
+        std::fprintf(stderr, "sdl3mcp: cannot block stop signals\n");
         return 1;
     }
 

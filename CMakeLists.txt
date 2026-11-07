@@ -12,7 +12,7 @@ include(CMakePackageConfigHelpers)
 option(SDL3MCP_BUILD_SHARED "Build SDL3MCP as a shared library" OFF)
 option(SDL3MCP_BUILD_TESTS "Build the SDL3MCP smoke tests" ${PROJECT_IS_TOP_LEVEL})
 option(SDL3MCP_BUILD_EXAMPLES "Build the SDL3MCP examples" OFF)
-option(SDL3MCP_BUILD_SUPERVISOR "Build the sdl3mcp-supervisor executable" OFF)
+option(SDL3MCP_BUILD_SUPERVISOR "Build the sdl3mcp executable" OFF)
 option(SDL3MCP_USE_SYSTEM_JSON "Resolve nlohmann_json from the system before vendoring" ON)
 
 # A parent project that vendors SDL through add_subdirectory already defines the
@@ -151,15 +151,15 @@ if(SDL3MCP_BUILD_SUPERVISOR)
             Threads::Threads
     )
 
-    add_executable(sdl3mcp-supervisor supervisor/main.cpp)
-    target_compile_features(sdl3mcp-supervisor PRIVATE cxx_std_20)
-    target_include_directories(sdl3mcp-supervisor PRIVATE
+    add_executable(sdl3mcp supervisor/main.cpp)
+    target_compile_features(sdl3mcp PRIVATE cxx_std_20)
+    target_include_directories(sdl3mcp PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/src"
     )
     # Object files from a linked object library do not propagate transitively, so
     # the library objects are named here as well as in the supervisor objects.
     # The object library's own link dependencies are private, hence SDL3 too.
-    target_link_libraries(sdl3mcp-supervisor PRIVATE
+    target_link_libraries(sdl3mcp PRIVATE
         sdl3mcp_supervisor_objects
         sdl3mcp_objects
         SDL3::SDL3

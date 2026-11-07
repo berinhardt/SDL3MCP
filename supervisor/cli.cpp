@@ -89,7 +89,7 @@ CliParseResult parseCommandLine(const std::vector<std::string> &arguments)
 
 std::string usageLine()
 {
-    return "usage: sdl3mcp-supervisor [--startup-timeout-ms N] "
+    return "usage: sdl3mcp [--startup-timeout-ms N] "
            "[--terminate-timeout-ms N] --target <executable> [app args...]";
 }
 

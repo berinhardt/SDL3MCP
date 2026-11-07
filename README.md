@@ -119,7 +119,7 @@ the same rule: the frame you receive was written after the request arrived.
 - `nlohmann/json.hpp` for the protocol, plus `stb_image_write.h` for the
   supervisor's PNG encoding. nlohmann is resolved from the system first and
   falls back to `third_party/nlohmann/json.hpp`; stb is vendored in
-  `third_party/stb` and used only by `sdl3mcp-supervisor`.
+  `third_party/stb` and used only by `sdl3mcp`.
 
 No other runtime dependencies. The public header includes only `<SDL3/SDL.h>`
 and the C standard headers.
@@ -160,7 +160,7 @@ Targets and options:
 | --- | --- | --- |
 | `SDL3MCP_BUILD_SHARED` | `OFF` | Build a shared library instead of a static one. |
 | `SDL3MCP_BUILD_EXAMPLES` | `OFF` | Build the `minimal` executable from `examples/minimal/main.c`. |
-| `SDL3MCP_BUILD_SUPERVISOR` | `OFF` | Build the `sdl3mcp-supervisor` executable that runs an app as a restartable child. |
+| `SDL3MCP_BUILD_SUPERVISOR` | `OFF` | Build the `sdl3mcp` executable that runs an app as a restartable child. |
 | `SDL3MCP_BUILD_TESTS` | `ON` if top-level | Build the unit tests and register them with CTest. |
 | `SDL3MCP_USE_SYSTEM_JSON` | `ON` | Try `find_package(nlohmann_json CONFIG QUIET)` before using the vendored header. |
 
@@ -636,7 +636,7 @@ is opened.
 
 The library speaks MCP on the app's own stdin/stdout, so a client that starts the
 app directly loses its endpoint whenever the app exits or crashes.
-`sdl3mcp-supervisor` is an optional executable that keeps one MCP connection
+`sdl3mcp` is an optional executable that keeps one MCP connection
 alive across app restarts: it speaks MCP on its own stdin/stdout and runs the app
 as a child process behind it. The client keeps the same pipe; only the tools
 change when the child comes and goes.
@@ -650,7 +650,7 @@ cmake --build build --parallel
 
 `SDL3MCP_BUILD_SUPERVISOR` stays `OFF` by default, so the plain
 `cmake -S . -B build` flow does not build it. The `debug`, `shared`, `asan` and
-`tsan` presets set it to `ON`: each one builds `sdl3mcp-supervisor` and registers
+`tsan` presets set it to `ON`: each one builds `sdl3mcp` and registers
 `supervisor_tests` and `supervisor_real_app`. The `asan` preset runs both with
 leak detection on, except that `supervisor_real_app` turns leak detection off for
 itself and the SDL process it spawns; the `tsan` preset includes only
@@ -659,7 +659,7 @@ itself and the SDL process it spawns; the `tsan` preset includes only
 ### Supervisor command line
 
 ```text
-sdl3mcp-supervisor [--startup-timeout-ms N] [--terminate-timeout-ms N] --target <executable> [app args...]
+sdl3mcp [--startup-timeout-ms N] [--terminate-timeout-ms N] --target <executable> [app args...]
 ```
 
 | Option | Default | Meaning |
@@ -795,7 +795,7 @@ relative paths resolve:
       "sdl3mcp": {
         "type": "local",
         "command": [
-          "build/sdl3mcp-supervisor",
+          "build/sdl3mcp",
           "--target",
           "build/examples/minimal",
           "--mcp"
@@ -987,7 +987,7 @@ asks:
 7. The app continues its loop; nothing blocked.
 
 A direct library client receives those raw bytes. When the app runs behind
-`sdl3mcp-supervisor`, the supervisor reads the payload, encodes it as PNG at
+`sdl3mcp`, the supervisor reads the payload, encodes it as PNG at
 exactly the dimensions the app sent, base64-encodes it, and returns the usual
 `image/png` content block. Captures are never resized, so image pixels map 1:1
 to app pixels. That split keeps stb and every image decision out of the library
@@ -1490,7 +1490,7 @@ request pushes nothing.
 ```
 
 The supervisor keeps the client-facing contract an image: the same session
-through `sdl3mcp-supervisor` ends the capture at
+through `sdl3mcp` ends the capture at
 `← {"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"1920x1080 PNG, 91234 bytes"},{"type":"image","mimeType":"image/png","data":"iVBORw0KGgo..."}],"isError":false}}`.
 The PNG is the app's native 1920x1080 frame, never resized, so a smaller
 `region` is the only way to shrink it.

@@ -22,7 +22,7 @@ namespace
 {
 
 constexpr std::string_view kProtocolVersion = "2025-11-25";
-constexpr std::string_view kServerName = "sdl3mcp-supervisor";
+constexpr std::string_view kServerName = "sdl3mcp";
 constexpr int kWindowPollMs = 50;
 /* SIGTERM to SIGKILL grace when the application ignores the quit request. */
 constexpr int kTerminateGraceMs = 2000;

@@ -753,7 +753,10 @@ arrive late behind an asynchronous refresh.
 
 `spawn` is the supervisor's own tool and is never forwarded. It starts one child
 (synchronously, so there is never more than one), completes the MCP handshake,
-and waits until `sdl_info` reports a bound window. On failure the result is an
+and waits until `sdl_info` reports a bound window. On success the result is
+`spawned "<title>"`, with `(untitled)` when the window has no title: it quotes no
+geometry, because the size is sampled at the handshake and the window manager
+may resize the window afterwards. On failure the result is an
 error that includes the child's recent stderr, and the supervisor returns to
 `Idle`.
 
@@ -1320,7 +1323,10 @@ The window is used for three things:
 
 - **geometry** — `SDL_GetWindowSize` (points) for mouse coordinates and
   `SDL_GetWindowSizeInPixels` for the reported pixel size, published to the
-  server thread once per `SDL3MCP_AppIterate`;
+  server thread once per `SDL3MCP_AppIterate`. A window manager commonly resizes
+  a window shortly after creation, so these values are live rather than fixed:
+  read them from `sdl_info` when they are needed instead of caching what the
+  window was created with;
 - **event routing** — synthetic events carry this window's `windowID`;
 - **text input and cursor** — `SDL_TextInputActive`, `SDL_StartTextInput`,
   `SDL_StopTextInput`, `SDL_WarpMouseInWindow`, and

@@ -178,28 +178,13 @@ std::string describeWindow(const nlohmann::json &window)
         title = titleEntry->get<std::string>();
     }
 
-    const auto dimension = [&window](const char *name) {
-        const auto entry = window.find(name);
-        return entry != window.end() && entry->is_number_integer()
-                   ? entry->get<int>()
-                   : 0;
-    };
-
-    const int width = dimension("width");
-    const int height = dimension("height");
-
-    std::string text = "spawned \"" + title + "\" (" + std::to_string(width) + "x" +
-                       std::to_string(height) + " points";
-
-    const int pixelWidth = dimension("pixelWidth");
-    const int pixelHeight = dimension("pixelHeight");
-    if (pixelWidth > 0 && pixelHeight > 0) {
-        text += ", " + std::to_string(pixelWidth) + "x" + std::to_string(pixelHeight) +
-                " pixels";
-    }
-
-    text += ")";
-    return text;
+    /*
+      No geometry here. The size is sampled at the handshake, before the window
+      manager has resized the window, so any number quoted would be stale by the
+      time the caller read it. sdl_info is the live source, and a capture names
+      the pixel size it actually returned.
+    */
+    return "spawned \"" + title + "\"";
 }
 
 /* Reads a JSON integer, including unsigned values that still fit in int64_t. */

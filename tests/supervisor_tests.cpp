@@ -591,8 +591,9 @@ void testSpawnAndProxy(const std::string &supervisor,
 
     const std::string text = spawnText(spawn);
     CHECK(text.find("Fake Child Window") != std::string::npos);
-    CHECK(text.find("640") != std::string::npos);
-    CHECK(text.find("480") != std::string::npos);
+    /* Geometry is sampled at the handshake, before the window manager settles it, so none is quoted. */
+    CHECK(text.find("640") == std::string::npos);
+    CHECK(text.find(" points") == std::string::npos);
 
     /* A spawn changes no tool list, so it announces no change either. */
     CHECK(client.listChangedCount() == 0);
@@ -1087,6 +1088,9 @@ void testRealExample(const std::string &supervisor, const std::string &example)
     const nlohmann::json spawn = client.spawn(20000);
     CHECK(spawn["result"]["isError"] == false);
     CHECK(spawnText(spawn).find("SDL3MCP demo") != std::string::npos);
+    /* The window manager settles the size after the handshake, so no geometry is quoted. */
+    CHECK(spawnText(spawn).find(" points") == std::string::npos);
+    CHECK(spawnText(spawn).find(" pixels") == std::string::npos);
 
     const std::vector<std::string> runningNames = toolNames(client.toolsList());
     for (const char *name : {"sdl_info", "sdl_input", "sdl_capture", "sdl_terminate"}) {

@@ -173,9 +173,16 @@ are in `src/`, and `examples/minimal` is a complete host.
   transport, endpoint parsing and dialing, and JSON-RPC dispatch come from
   `supervisor/cli.*`, `src/transport.*`, `src/configuration.*`,
   `src/socket_connect.*`, and `src/json_rpc.*`; the supervisor links
-  `sdl3mcp_objects` and `sdl3mcp_supervisor_objects` rather than duplicating
-  them. It never calls SDL and is POSIX-only (`fork`/`exec`, pipes, sockets,
-  signals), matching the platform stance above.
+  `sdl3mcp_supervisor_objects` and the library's SDL-free half
+  `sdl3mcp_wire_objects` rather than duplicating them. The library's sources are
+  split into `sdl3mcp_wire_objects` (protocol, session, framing, transports,
+  configuration; no SDL symbol and no `SDL3::SDL3` on the link line) and
+  `sdl3mcp_app_objects` (input, replay, capture plumbing, info; the only half
+  that links SDL), and `SDL3MCP` keeps both. The proxy never links the app half
+  or `SDL3::SDL3`, so a wire unit that starts calling SDL breaks the proxy link
+  instead of silently dragging SDL into the relay. It never calls SDL and is
+  POSIX-only (`fork`/`exec`, pipes, sockets, signals), matching the platform
+  stance above.
 - **fd ownership.** `NONE` leaves stdin/stdout untouched. `STDIO` duplicates the
   originals for MCP, redirects the host stdin to `/dev/null` and the host stdout
   to stderr, and restores both at shutdown. `CONNECT` dials one socket and
@@ -194,9 +201,10 @@ are in `src/`, and `examples/minimal` is a complete host.
   as `SDL3MCP_DECLSPEC`, `SDL3MCP_BUILDING_LIBRARY`, or `SDL3MCP_STATIC`.
 - **A shared build exports only the C surface.** The C++ internals stay hidden
   (`CXX_VISIBILITY_PRESET hidden`), so unit tests that include `src/` headers
-  link the object library `sdl3mcp_objects` rather than the shared object. The
-  sources are compiled once; do not add a second static copy for the tests or
-  drop the hidden visibility to make them link.
+  link the object libraries `sdl3mcp_wire_objects` and `sdl3mcp_app_objects`
+  rather than the shared object. The sources are compiled once; do not add a
+  second static copy for the tests or drop the hidden visibility to make them
+  link.
 - **The transports and stdio isolation are POSIX-only; Windows is a TODO.**
   `poll`/`read`/`write`, `dup`/`dup2`, `/dev/null`, blocking `SIGPIPE` on the
   server thread, and the socket dial/listen/accept path (`getaddrinfo`, `socket`,

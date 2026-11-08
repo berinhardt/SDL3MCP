@@ -176,6 +176,15 @@ exactly once in `supervisor/stb_image_write_impl.cpp`, so no stb symbol reaches
 `nlohmann_json::nlohmann_json` interface target: the system package when found,
 otherwise the header in `third_party/nlohmann`.
 
+The library's translation units are split into two object libraries:
+`sdl3mcp_wire_objects` (protocol, session, framing, transports, and
+configuration) and `sdl3mcp_app_objects` (input, replay, capture plumbing, and
+info). The wire half references no SDL symbol; the app half is the only one that
+links `SDL3::SDL3`. `SDL3MCP` keeps both, so applications are unaffected, while
+the `sdl3mcp` supervisor links only `sdl3mcp_supervisor_objects` and
+`sdl3mcp_wire_objects`: no SDL target and no SDL symbol reach the relay binary,
+which is what makes a minimal relay image possible.
+
 The shared configuration uses a separate build directory:
 
 ```sh
@@ -187,8 +196,8 @@ ctest --test-dir build-shared --output-on-failure
 The shared library exports only the six public C entry points while its C++
 internals stay hidden, so unit tests that include the private `src/` headers
 link the library's object files instead of the shared object. The sources are
-compiled once in an object library that both the library and those tests
-consume.
+compiled once in the wire and app object libraries that both the library and
+those tests consume.
 
 `CMakePresets.json` adds optional presets for those two configurations and for
 the sanitizer runs. They live under `build/<preset>` and do not replace the

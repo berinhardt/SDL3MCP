@@ -1,8 +1,9 @@
-# Unit tests that include the private src/ headers link the library objects:
-# a shared library hides those symbols from its dynamic symbol table. Tests
-# that only use the public C API keep linking the library target itself.
+# Unit tests that include the private src/ headers link the library objects
+# (wire and app halves): a shared library hides those symbols from its dynamic
+# symbol table. Tests that only use the public C API keep linking the library
+# target itself.
 if(SDL3MCP_BUILD_SHARED)
-    set(SDL3MCP_TEST_INTERNAL_LIBRARY sdl3mcp_objects)
+    set(SDL3MCP_TEST_INTERNAL_LIBRARY sdl3mcp_wire_objects sdl3mcp_app_objects)
 else()
     set(SDL3MCP_TEST_INTERNAL_LIBRARY SDL3MCP::SDL3MCP)
 endif()
@@ -310,7 +311,8 @@ if(SDL3MCP_BUILD_SUPERVISOR)
     )
     target_link_libraries(sdl3mcp_test_supervisor_png PRIVATE
         sdl3mcp_supervisor_objects
-        sdl3mcp_objects
+        sdl3mcp_wire_objects
+        sdl3mcp_app_objects
         SDL3::SDL3
         Threads::Threads
     )
@@ -327,7 +329,8 @@ if(SDL3MCP_BUILD_SUPERVISOR)
     )
     target_link_libraries(sdl3mcp_test_supervisor PRIVATE
         sdl3mcp_supervisor_objects
-        sdl3mcp_objects
+        sdl3mcp_wire_objects
+        sdl3mcp_app_objects
         SDL3::SDL3
         nlohmann_json::nlohmann_json
         Threads::Threads
@@ -346,7 +349,8 @@ if(SDL3MCP_BUILD_SUPERVISOR)
     )
     target_link_libraries(sdl3mcp_test_relay PRIVATE
         sdl3mcp_supervisor_objects
-        sdl3mcp_objects
+        sdl3mcp_wire_objects
+        sdl3mcp_app_objects
         SDL3::SDL3
         nlohmann_json::nlohmann_json
         Threads::Threads
@@ -366,7 +370,8 @@ if(SDL3MCP_BUILD_SUPERVISOR)
     )
     target_link_libraries(sdl3mcp_test_spawner PRIVATE
         sdl3mcp_supervisor_objects
-        sdl3mcp_objects
+        sdl3mcp_wire_objects
+        sdl3mcp_app_objects
         SDL3::SDL3
         nlohmann_json::nlohmann_json
         Threads::Threads

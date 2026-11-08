@@ -5,13 +5,12 @@
 
   Covered here: every --targets validation failure, the app_spawn_<alias> tool
   view, a successful spawn (the pid arrives only after the child answers
-  initialize, measured against a child that answers late), the tool list becoming
-  the application's and returning to app_spawn_*, both observed through
-  tools/list, the child-exits-first error, the dial-timeout and
-  initialize-timeout paths terminating the child, the explicit --listen bind
-  failure, the spawner taking its live child with it when the relay connection
-  closes, and the assembled relay + spawner + dial-back-child loopback that a
-  manual run exercises.
+  initialize, measured against a child that answers late), the tool list staying
+  byte-identical through spawn, attach, and exit, the child-exits-first error,
+  the dial-timeout and initialize-timeout paths terminating the child, the
+  explicit --listen bind failure, the spawner taking its live child with it when
+  the relay connection closes, and the assembled relay + spawner +
+  dial-back-child loopback that a manual run exercises.
 */
 
 #include "cli.hpp"
@@ -504,19 +503,31 @@ std::vector<std::string> awaitToolList(
     }
 }
 
-bool hasAttachedTools(const std::vector<std::string> &names)
+/*
+  The tool list no longer reveals whether an application is attached, so the
+  spawner's Idle is observed through behaviour: `sdl_info` is refused with the
+  no-application message until the child has exited and the monitor has published
+  Idle. Polling it is harmless while a child runs.
+*/
+void awaitSpawnerIdle(RelaySide &relay, int timeoutMs = kLineTimeoutMs)
 {
-    return hasTool(names, "sdl_info") && hasTool(names, "sdl_capture");
-}
-
-bool hasSpawnTools(const std::vector<std::string> &names)
-{
-    for (const std::string &name : names) {
-        if (name.rfind("app_spawn_", 0) == 0) {
-            return true;
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(timeoutMs);
+    for (;;) {
+        const nlohmann::json info = relay.callTool("sdl_info");
+        CHECK(!info.contains("error"));
+        if (info["result"]["isError"] == true &&
+            resultText(info).find("no application is attached") != std::string::npos) {
+            return;
         }
+        if (std::chrono::steady_clock::now() >= deadline) {
+            std::fprintf(stderr, "the spawner never returned to idle; last sdl_info: %s\n",
+                         info.dump().c_str());
+            CHECK(false);
+            return;
+        }
+        std::this_thread::sleep_for(20ms);
     }
-    return false;
 }
 
 bool processIsGone(pid_t pid)
@@ -750,8 +761,14 @@ void testSpawnerRoundTrip(const std::string &spawner, const std::string &fakeChi
     fixture.writeTargets(fakeChild);
     fixture.start(spawner);
 
-    const std::vector<std::string> idleNames = toolNames(fixture.relay.toolsList());
-    CHECK(idleNames.size() == 5);
+    /* The mode-derived view: app_spawn_* plus the application block, always. */
+    const nlohmann::json idleList = fixture.relay.toolsList();
+    const std::vector<std::string> idleNames = toolNames(idleList);
+    CHECK(idleNames.size() == 9);
+    CHECK(hasTool(idleNames, "sdl_info"));
+    CHECK(hasTool(idleNames, "sdl_input"));
+    CHECK(hasTool(idleNames, "sdl_capture"));
+    CHECK(hasTool(idleNames, "sdl_terminate"));
     CHECK(hasTool(idleNames, "app_spawn_app"));
     CHECK(hasTool(idleNames, "app_spawn_slow"));
     CHECK(hasTool(idleNames, "app_spawn_slowinit"));
@@ -774,30 +791,24 @@ void testSpawnerRoundTrip(const std::string &spawner, const std::string &fakeChi
     const pid_t appPid = parsePidFile(fixture.slowInitPidFile.path);
     CHECK(::kill(appPid, 0) == 0);
 
-    /* The attached view is the application's, not the spawner's. */
-    const std::vector<std::string> attachedNames =
-        awaitToolList(fixture.relay, hasAttachedTools);
-    for (const std::string &name : attachedNames) {
-        CHECK(name.rfind("app_spawn_", 0) != 0);
-    }
+    /* Attaching the application does not move the spawner's list by one byte. */
+    CHECK(fixture.relay.toolsList()["result"].dump() == idleList["result"].dump());
 
     /* sdl_terminate is an ordinary forward; the app then exits on its own. */
     const nlohmann::json terminated = fixture.relay.callTool("sdl_terminate");
     CHECK(terminated["result"]["isError"] == false);
     CHECK(resultText(terminated) == "termination requested");
 
-    /* The withdrawal is observed by listing, not by trusting the notification. */
-    const std::vector<std::string> afterTerminate =
-        awaitToolList(fixture.relay, hasSpawnTools);
-    CHECK(hasTool(afterTerminate, "app_spawn_app"));
-    CHECK(!hasTool(afterTerminate, "sdl_info"));
+    /* The exit restores Idle without changing the list. */
+    awaitSpawnerIdle(fixture.relay);
+    CHECK(fixture.relay.toolsList()["result"].dump() == idleList["result"].dump());
 
     /* A child that exits before connecting reports its exit status. */
     const nlohmann::json crashed = fixture.relay.callTool("app_spawn_crasher");
     CHECK(crashed["result"]["isError"] == true);
     const std::string crashText = resultText(crashed);
     CHECK(crashText.find("7") != std::string::npos);
-    awaitToolList(fixture.relay, hasSpawnTools);
+    CHECK(fixture.relay.toolsList()["result"].dump() == idleList["result"].dump());
 
     /* A child that never dials is terminated when timeout_ms expires. */
     const auto dialStarted = std::chrono::steady_clock::now();
@@ -813,7 +824,7 @@ void testSpawnerRoundTrip(const std::string &spawner, const std::string &fakeChi
     CHECK(dialElapsed >= 250);
     CHECK(dialElapsed < 5000);
     CHECK(processIsGone(parsePidFile(fixture.slowPidFile.path)));
-    awaitToolList(fixture.relay, hasSpawnTools);
+    CHECK(fixture.relay.toolsList()["result"].dump() == idleList["result"].dump());
 
     /* A child that connects but never answers initialize hits the same path. */
     const auto answerStarted = std::chrono::steady_clock::now();
@@ -830,15 +841,15 @@ void testSpawnerRoundTrip(const std::string &spawner, const std::string &fakeChi
     CHECK(answerElapsed >= 350);
     CHECK(answerElapsed < 5000);
     CHECK(processIsGone(parsePidFile(fixture.silentPidFile.path)));
-    awaitToolList(fixture.relay, hasSpawnTools);
+    CHECK(fixture.relay.toolsList()["result"].dump() == idleList["result"].dump());
 
-    /* At least the attach and the withdrawal were announced. */
-    CHECK(fixture.relay.listChangedCount() >= 3);
+    /* A spawn and an exit change nothing a client can list, so nothing is announced. */
+    CHECK(fixture.relay.listChangedCount() == 0);
 
     /* Spawn again, then close the relay: the spawner exits and takes the child. */
     const nlohmann::json again = fixture.relay.callTool("app_spawn_app");
     CHECK(again["result"]["isError"] == false);
-    awaitToolList(fixture.relay, hasAttachedTools);
+    CHECK(fixture.relay.toolsList()["result"].dump() == idleList["result"].dump());
     const pid_t livePid = parsePidFile(fixture.appPidFile.path);
 
     fixture.relay.transport->stop();
@@ -894,7 +905,13 @@ void testRelayLoopback(const std::string &sdl3mcp, const std::string &fakeChild)
         awaitToolList(client, [](const std::vector<std::string> &names) {
             return hasTool(names, "app_spawn_app");
         });
-    CHECK(beforeSpawn.size() == 1);
+    CHECK(beforeSpawn.size() == 6);
+    CHECK(hasTool(beforeSpawn, "wait_session"));
+    CHECK(hasTool(beforeSpawn, "sdl_info"));
+    CHECK(hasTool(beforeSpawn, "sdl_capture"));
+
+    /* Snapshot the exact bytes: a spawn inside the spawner must not move them. */
+    const nlohmann::json stable = client.toolsList();
 
     /* The spawn answer carries the pid only once the child answered initialize. */
     const nlohmann::json spawned = client.callTool("app_spawn_app");
@@ -904,13 +921,10 @@ void testRelayLoopback(const std::string &sdl3mcp, const std::string &fakeChild)
     CHECK(::kill(childPid, 0) == 0);
 
     /*
-      By the time that answer is written, both hops have taken the child's list:
-      the very next tools/list at the relay is the application's, not a stale
-      `app_spawn_*` view that would only change after a notification.
+      The relay's list is fixed before the spawn and stays byte-identical during
+      it: the spawner never moved its own list, so nothing arrived late.
     */
-    const std::vector<std::string> attached = toolNames(client.toolsList());
-    CHECK(hasAttachedTools(attached));
-    CHECK(!hasSpawnTools(attached));
+    CHECK(client.toolsList()["result"].dump() == stable["result"].dump());
 
     /* The capture keeps its dimensions and its image form across both hops. */
     const nlohmann::json capture = client.callTool("sdl_capture");
@@ -925,13 +939,11 @@ void testRelayLoopback(const std::string &sdl3mcp, const std::string &fakeChild)
     /* The base64 of the PNG signature: the payload crossed both hops intact. */
     CHECK(data.rfind("iVBORw0KGgo", 0) == 0);
 
-    /* Termination runs back through the same chain and restores the spawn tools. */
+    /* Termination runs back through the same chain; the list still does not move. */
     const nlohmann::json terminated = client.callTool("sdl_terminate");
     CHECK(terminated["result"]["isError"] == false);
     CHECK(resultText(terminated) == "termination requested");
-    const std::vector<std::string> idle = awaitToolList(client, hasSpawnTools);
-    CHECK(hasTool(idle, "app_spawn_app"));
-    CHECK(!hasTool(idle, "sdl_capture"));
+    CHECK(client.toolsList()["result"].dump() == stable["result"].dump());
     CHECK(processIsGone(childPid));
 
     /* The client leaving ends the relay, which ends the spawner behind it. */
@@ -942,7 +954,7 @@ void testRelayLoopback(const std::string &sdl3mcp, const std::string &fakeChild)
 
 /*
   The application-side peer: the same recovery as the relay's, observed through
-  the spawner. A dead application returns the app_spawn_* view, and a forwarded
+  the spawner. A dead application leaves the list untouched, and a forwarded
   call that was in flight when it died answers instead of holding the slot.
 */
 void testAppPeerGone(const std::string &spawner, const std::string &fakeChild)
@@ -954,22 +966,22 @@ void testAppPeerGone(const std::string &spawner, const std::string &fakeChild)
     const nlohmann::json spawned = fixture.relay.callTool("app_spawn_app");
     CHECK(spawned["result"]["isError"] == false);
     const pid_t appPid = parsePidFile(fixture.appPidFile.path);
-    awaitToolList(fixture.relay, hasAttachedTools);
+    const nlohmann::json stable = fixture.relay.toolsList();
 
     /* The application dies while the spawner is idle. */
     CHECK(::kill(appPid, SIGKILL) == 0);
-    const std::vector<std::string> idle = awaitToolList(fixture.relay, hasSpawnTools);
-    CHECK(hasTool(idle, "app_spawn_app"));
+    awaitSpawnerIdle(fixture.relay);
     CHECK(processIsGone(appPid));
+    CHECK(fixture.relay.toolsList()["result"].dump() == stable["result"].dump());
 
     /* The session recovered, so the same alias spawns again. */
     const nlohmann::json again = fixture.relay.callTool("app_spawn_app");
     CHECK(again["result"]["isError"] == false);
-    awaitToolList(fixture.relay, hasAttachedTools);
+    CHECK(fixture.relay.toolsList()["result"].dump() == stable["result"].dump());
 
     /*
       Stop the application so the call is really in flight, then kill it: the
-      answer must name the tool and the view must return to app_spawn_*.
+      answer must name the tool and the session must recover.
     */
     const pid_t livePid = parsePidFile(fixture.appPidFile.path);
     CHECK(::kill(livePid, SIGSTOP) == 0);
@@ -984,8 +996,8 @@ void testAppPeerGone(const std::string &spawner, const std::string &fakeChild)
     CHECK(answer["result"]["isError"] == true);
     CHECK(resultText(answer).find("sdl_info") != std::string::npos);
 
-    const std::vector<std::string> recovered = awaitToolList(fixture.relay, hasSpawnTools);
-    CHECK(hasTool(recovered, "app_spawn_app"));
+    awaitSpawnerIdle(fixture.relay);
+    CHECK(fixture.relay.toolsList()["result"].dump() == stable["result"].dump());
     CHECK(processIsGone(livePid));
 }
 
@@ -1004,6 +1016,7 @@ void testExplicitListenBindFailure(const std::string &spawner, const std::string
     const std::string listenFlag = "--listen=127.0.0.1:" + std::to_string(blockedPort);
     fixture.start(spawner, listenFlag);
 
+    const nlohmann::json stable = fixture.relay.toolsList();
     const nlohmann::json failed = fixture.relay.callTool("app_spawn_app");
     ::close(blocker);
     CHECK(failed["result"]["isError"] == true);
@@ -1011,9 +1024,9 @@ void testExplicitListenBindFailure(const std::string &spawner, const std::string
     CHECK(text.find("--listen") != std::string::npos);
     CHECK(text.find(std::to_string(blockedPort)) != std::string::npos);
 
-    /* The failed spawn restores the idle view, again observed by listing. */
-    const std::vector<std::string> idle = awaitToolList(fixture.relay, hasSpawnTools);
-    CHECK(hasTool(idle, "app_spawn_app"));
+    /* A failed spawn changes nothing a client lists. */
+    CHECK(fixture.relay.toolsList()["result"].dump() == stable["result"].dump());
+    CHECK(fixture.relay.listChangedCount() == 0);
 }
 
 } // namespace

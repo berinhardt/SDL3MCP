@@ -2,52 +2,55 @@
   The MCP supervisor: one stable MCP endpoint in front of a restartable SDL app.
 
   It runs in one of three modes. With --target it speaks MCP on its own
-  stdin/stdout and keeps a child process behind it: while idle it advertises only
-  `spawn`, once the child is up it advertises the child's tools and forwards calls
-  to it. With --listen=HOST:PORT it instead binds a TCP listener and waits for an
-  application to dial in: before a session attaches it advertises only
-  `wait_session`, and once one is attached it advertises that app's tools and
-  forwards calls over the socket. With --connect=HOST:PORT --targets=FILE it dials
-  a relay and spawns the configured applications on demand: before a spawn it
-  advertises one `app_spawn_<alias>` per entry, and while one is attached it
-  advertises that application's tools. Either way one MCP connection survives an
-  app restart without the client seeing a closed pipe.
+  stdin/stdout and keeps a child process behind it. With --listen=HOST:PORT it
+  binds a TCP listener and waits for an application to dial in, forwarding calls
+  over the socket. With --connect=HOST:PORT --targets=FILE it dials a relay and
+  spawns the configured applications on demand. Either way one MCP connection
+  survives an app restart without the client seeing a closed pipe.
 
   Every protocol decision is ordinary code: the line loop uses the library's
-  Transport and json_rpc, a state enum decides the tools/list view, and the
-  session handshake is synchronous so there is never more than one application.
+  Transport and json_rpc, the mode decides the tools/list base, and the session
+  handshake is synchronous so there is never more than one application.
 
-  A relay may sit in front of another supervisor (the spawner), so a tool-list
-  change can arrive while no call is in flight or in the middle of one. The
-  supervisor never trusts a cached list across such an announcement: it reads
-  the peer's list again once the current response is written, and only then
-  republishes tools/list_changed upstream. That is what makes a spawn observed
-  through a relay show the application's tools instead of the spawner's.
+  The advertised tool list is a function of topology, never of whether an
+  application is attached: spawn mode advertises `spawn` plus the application's
+  four tools, relay mode `wait_session` plus those four, and spawner mode one
+  `app_spawn_<alias>` per target plus those four. The supervisor merges the
+  attached peer's own entries over that base by name, so a spawner behind a
+  relay contributes its `app_spawn_*` entries and a bare application is an
+  identity. A spawn therefore changes no list a client can observe: names that
+  never change cannot arrive late behind an asynchronous list_changed refresh.
+
+  A relay may sit in front of another supervisor (the spawner), so a genuine
+  tool-list change can arrive while no call is in flight or in the middle of
+  one. The supervisor never trusts a cached list across such an announcement: it
+  reads the peer's list again once the current response is written, and only
+  then republishes tools/list_changed upstream.
 
   A monitor thread owns the withdrawal half of a Running -> Idle transition: when
-  the child exits on its own it clears the committed tools, sends
-  notifications/tools/list_changed, and puts `spawn` back. In relay mode an
-  acceptor thread owns the attach handshake (private initialize + tools/list)
-  and closes a second concurrent connection instead of queueing it; the idle
-  poll and a failed forward both detach a session that went away and restore
-  `wait_session`. Responses and notifications share one writer mutex, so a
-  monitor notification can never interleave with a request's response.
+  the child exits on its own it clears the committed tools and puts `spawn` back;
+  the advertised list does not change. In relay mode an acceptor thread owns the
+  attach handshake (private initialize + tools/list) and closes a second
+  concurrent connection instead of queueing it; the idle poll and a failed
+  forward both detach a session that went away. Responses and notifications share
+  one writer mutex, so a monitor notification can never interleave with a
+  request's response.
 
   sdl_terminate is forwarded and then waited on for --terminate-timeout-ms; a
   child that ignores the quit request gets SIGTERM, a short grace, and SIGKILL.
-  Every exit path funnels through the same monitor thread, so Idle/spawn and the
-  single list_changed are published exactly once. Stdin EOF and SIGINT/SIGTERM
-  stop the child the same SIGTERM/grace/SIGKILL way. In relay mode the app owns
-  its own process, so sdl_terminate is an ordinary forwarded call and the
-  session ends when the socket closes.
+  Every exit path funnels through the same monitor thread, so Idle/spawn is
+  published exactly once. Stdin EOF and SIGINT/SIGTERM stop the child the same
+  SIGTERM/grace/SIGKILL way. In relay mode the app owns its own process, so
+  sdl_terminate is an ordinary forwarded call and the session ends when the
+  socket closes.
 
   sdl_capture is the one proxied call the supervisor does not pass through
   verbatim: the library answers with a raw RGBA header and payload, and the
   supervisor encodes that frame as PNG at exactly the dimensions it arrived
   with, then base64s it so the client-facing image block stays standard. That
-  holds for a child and for a relayed session alike. tools/list therefore
-  advertises the supervisor's own sdl_capture definition while an app is
-  attached. Captures are never resized, so image pixels map 1:1 to app pixels.
+  holds for a child and for a relayed session alike, so the application tool
+  block always carries the supervisor's own sdl_capture definition. Captures are
+  never resized, so image pixels map 1:1 to app pixels.
 
   The supervisor never calls SDL. It only writes JSON to the application and
   reads its lines and raw frames.
@@ -83,9 +86,9 @@ enum class SupervisorState
     Idle,
     Starting,
     Running,
-    /* Relay mode with no session attached: `wait_session` is the only tool. */
+    /* Relay mode with no session attached: `wait_session` waits for one. */
     WaitingSession,
-    /* Relay or spawner mode with a session attached: its tools are advertised. */
+    /* Relay or spawner mode with a session attached: calls are forwarded. */
     PeerAttached
 };
 
@@ -97,19 +100,29 @@ struct SupervisorToolResult
 };
 
 /*
-  The tools/list body for a state: `spawn` alone while idle, nothing while the
-  child starts, and the committed child tools while running. While running,
-  sdl_capture is replaced with the supervisor's own definition because PNG and
-  base64 presentation are supervisor policy; every other tool keeps the child's
-  entry verbatim. Exposed so the Starting view is testable without racing a live
-  spawn.
+  The tools/list base for a mode, before any attached peer is merged in: `spawn`
+  in child mode, `wait_session` in relay mode, one `app_spawn_<alias>` per target
+  in spawner mode, and always followed by the application's four tools. It never
+  depends on whether an application is attached. sdl_capture is the supervisor's
+  own definition because PNG and base64 presentation are supervisor policy.
 */
-nlohmann::json supervisorToolList(SupervisorState state, const nlohmann::json &childTools);
+nlohmann::json supervisorToolList(const SupervisorOptions &options);
 
-/* The spawn tool as advertised while idle. */
+/* The four tools an application provides, with sdl_capture already presented. */
+const nlohmann::json &applicationToolList();
+
+/*
+  Merges the attached peer's entries over `base` by name: the peer's definition
+  wins on a collision, except sdl_capture, which always keeps the base's PNG
+  definition. Base entries the peer does not advertise stay advertised, and peer
+  entries the base does not have are appended in the peer's order.
+*/
+nlohmann::json mergePeerTools(const nlohmann::json &base, const nlohmann::json &peerTools);
+
+/* The spawn tool as advertised in child mode. */
 nlohmann::json spawnToolDefinition();
 
-/* The relay's only tool before a session attaches. */
+/* The relay's own tool, advertised in relay mode. */
 nlohmann::json waitSessionToolDefinition();
 
 /*
@@ -118,10 +131,10 @@ nlohmann::json waitSessionToolDefinition();
 */
 nlohmann::json spawnerToolDefinition(const SpawnTarget &target);
 
-/* The tool view before any spawned application is attached: one tool per alias. */
+/* The spawner's own tools: one per alias. */
 nlohmann::json spawnerToolList(const SpawnTargets &targets);
 
-/* The sdl_capture the supervisor advertises while an app is attached: region and timeout_ms. */
+/* The sdl_capture the supervisor always advertises: region and timeout_ms. */
 nlohmann::json supervisorCaptureToolDefinition();
 
 class Supervisor
@@ -144,9 +157,8 @@ public:
     void stop();
 
     /*
-      The current view; main-thread and monitor-thread safe. The value is stable
-      by the time a relay client can observe it: attach and detach publish under
-      stateMutex_ before the matching tools/list_changed is written.
+      The current state; main-thread and monitor-thread safe. Attach and detach
+      publish it under stateMutex_ before `wait_session` is woken.
     */
     SupervisorState state() const;
 
@@ -216,6 +228,8 @@ private:
                      nlohmann::json &result,
                      Deadline deadline,
                      std::string &error);
+    /* True when the attached peer advertised `name` in its latest tools/list. */
+    bool peerAdvertises(const std::string &name);
     nlohmann::json forwardChildCall(const nlohmann::json &id,
                                     const std::string &name,
                                     const nlohmann::json &arguments);

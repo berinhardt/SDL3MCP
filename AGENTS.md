@@ -137,23 +137,31 @@ are in `src/`, and `examples/minimal` is a complete host.
   Child mode (`--target`) speaks MCP on its own stdio and runs one target child
   at a time. Relay mode (`--listen`) speaks MCP on its own stdio and waits for an
   application to dial in. Spawner mode (`--connect --targets`) speaks MCP to the
-  relay it dialed and starts the chosen application on demand. `Idle`
-  advertises only `spawn`, `Starting` advertises nothing, and `Running` mirrors
-  the committed child tools except `sdl_capture`, which the supervisor replaces
-  with its own definition (region, `timeout_ms`) because it owns presentation.
-  Relay mode starts in `WaitingSession` (`wait_session` only) and becomes
-  `PeerAttached` once a session attaches; spawner mode starts in `Idle` but
-  advertises one `app_spawn_<alias>` per targets entry instead of `spawn`, and
-  also uses `PeerAttached`. `spawn` is synchronous: fork/exec, initialize,
-  `tools/list`, then poll `sdl_info` until a window is bound or
-  `--startup-timeout-ms` expires. A second `spawn` while not idle is an error,
-  and the spawner starts one application at a time. Every transition that changes
-  the tool view sends one `notifications/tools/list_changed`; do not make it fire
-  twice or cache the tool list on the client side. A supervisor never treats a
-  peer's announcement as the list itself: on
+  relay it dialed and starts the chosen application on demand. The advertised
+  tool list is a function of the mode, never of whether an application is
+  attached: child mode advertises `spawn` plus the application's four tools,
+  relay mode `wait_session` plus those four, and spawner mode one
+  `app_spawn_<alias>` per targets entry plus those four. `sdl_capture` always
+  carries the supervisor's own definition (region, `timeout_ms`) because it owns
+  presentation. The supervisor merges the attached peer's entries over that base
+  by name: the peer wins on a collision except `sdl_capture`, and names only the
+  peer advertises are appended. A bare application is therefore an identity; a
+  spawner behind a relay contributes its `app_spawn_*` entries. A forwarded tool
+  the peer did not advertise is answered with
+  `the application does not provide <name>` instead of being sent. Relay mode
+  starts in `WaitingSession` and becomes `PeerAttached` once a session attaches;
+  spawner mode starts in `Idle` and also uses `PeerAttached`. `spawn` is
+  synchronous: fork/exec, initialize, `tools/list`, then poll `sdl_info` until a
+  window is bound or `--startup-timeout-ms` expires. A second `spawn` while not
+  idle is an error, and the spawner starts one application at a time. A spawn,
+  attach, or detach changes no advertised name, so it sends no
+  `notifications/tools/list_changed`; a client cannot be left with a stale list
+  after a spawn. A notification is sent only when the merged set really changes.
+  A supervisor never treats a peer's announcement as the list itself: on
   `notifications/tools/list_changed` from an attached peer — a spawner behind a
   relay, or an application behind a spawner — it asks that peer for `tools/list`
-  again and republishes the result, so a chained view is observed by listing.
+  again, re-merges it, and republishes the result, so a chained view is observed
+  by listing.
 - **The terminate watchdog is supervisor policy, not library policy.**
   `sdl_terminate` is forwarded like any other running tool, but its timer starts
   before the forward and the supervisor waits for the child to exit. Clean exit

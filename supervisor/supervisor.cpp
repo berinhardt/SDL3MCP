@@ -1,6 +1,7 @@
 #include "supervisor.hpp"
 
 #include "png.hpp"
+#include "tools.hpp"
 
 #include <SDL3MCP/SDL3MCP_version.h>
 
@@ -316,7 +317,7 @@ nlohmann::json spawnToolDefinition()
         {"name", "spawn"},
         {"description",
          "Start the application the supervisor was launched with and wait until it "
-         "has a window. While it runs its own tools replace this one; call spawn "
+         "has a window. Its tools are advertised alongside this one; call spawn "
          "again only after the application has exited."},
         {"inputSchema",
          nlohmann::json{
@@ -342,7 +343,8 @@ nlohmann::json waitSessionToolDefinition()
          "Wait for an application to connect to the relay's listening socket. "
          "Returns as soon as a session is attached; without timeout_ms it waits "
          "indefinitely and returns a normal tool error when timeout_ms expires. "
-         "While a session is attached its tools replace this one."},
+         "The application's tools are advertised alongside this one whether or not "
+         "it is attached."},
         {"inputSchema",
          nlohmann::json{
              {"type", "object"},
@@ -371,7 +373,7 @@ nlohmann::json spawnerToolDefinition(const SpawnTarget &target)
         {"description",
          "Start the application registered as \"" + target.alias +
              "\" and wait until it connects back and completes the MCP handshake. "
-             "Returns the child's process id; while it runs its own tools replace "
+             "Returns the child's process id; its tools are advertised alongside "
              "this one, and call app_spawn_<alias> again only after it has exited."},
         {"inputSchema",
          nlohmann::json{
@@ -456,44 +458,104 @@ nlohmann::json supervisorCaptureToolDefinition()
 }
 
 /*
-  The tool view while an application is attached, whether it is a spawned child
-  or a relayed session. sdl_capture is replaced because PNG and base64 are the
-  supervisor's presentation policy; every other app tool keeps its entry.
+  The application's four tools, built once from the library's catalog. sdl_capture
+  carries the supervisor's definition because PNG and base64 are the supervisor's
+  presentation policy; every other entry is the library's own schema, so merging
+  a bare application over this block is an identity.
 */
-nlohmann::json attachedToolList(const nlohmann::json &appTools)
+const nlohmann::json &applicationToolList()
 {
-    nlohmann::json tools = nlohmann::json::array();
-    if (appTools.is_array()) {
-        for (const nlohmann::json &tool : appTools) {
-            if (tool.is_object() && tool.value("name", std::string()) == "sdl_capture") {
-                tools.push_back(supervisorCaptureToolDefinition());
-            } else {
-                tools.push_back(tool);
+    static const nlohmann::json tools = [] {
+        nlohmann::json entries = nlohmann::json::array();
+        for (const ToolDefinition &tool : toolCatalog()) {
+            if (tool.name == "sdl_capture") {
+                entries.push_back(supervisorCaptureToolDefinition());
+                continue;
+            }
+            entries.push_back(nlohmann::json{
+                {"name", std::string(tool.name)},
+                {"description", std::string(tool.description)},
+                {"inputSchema", tool.inputSchema},
+                {"annotations", tool.annotations},
+            });
+        }
+        return entries;
+    }();
+    return tools;
+}
+
+nlohmann::json mergePeerTools(const nlohmann::json &base, const nlohmann::json &peerTools)
+{
+    nlohmann::json merged = nlohmann::json::array();
+    const nlohmann::json baseTools =
+        base.is_object() ? base.value("tools", nlohmann::json::array())
+                         : nlohmann::json::array();
+
+    const auto named = [](const nlohmann::json &tool) {
+        return tool.is_object() ? tool.value("name", std::string()) : std::string();
+    };
+    const auto findPeer = [&peerTools, &named](const std::string &name) -> const nlohmann::json * {
+        if (!peerTools.is_array()) {
+            return nullptr;
+        }
+        for (const nlohmann::json &tool : peerTools) {
+            if (named(tool) == name) {
+                return &tool;
+            }
+        }
+        return nullptr;
+    };
+
+    for (const nlohmann::json &tool : baseTools) {
+        const std::string name = named(tool);
+        /* Presentation is the supervisor's, whatever the peer calls its capture. */
+        if (name == "sdl_capture") {
+            merged.push_back(tool);
+            continue;
+        }
+        const nlohmann::json *peer = findPeer(name);
+        merged.push_back(peer != nullptr ? *peer : tool);
+    }
+
+    /* A peer the base does not model keeps its own entries, in its own order. */
+    if (peerTools.is_array()) {
+        for (const nlohmann::json &tool : peerTools) {
+            const std::string name = named(tool);
+            if (name.empty()) {
+                continue;
+            }
+            bool known = false;
+            for (const nlohmann::json &existing : merged) {
+                if (named(existing) == name) {
+                    known = true;
+                    break;
+                }
+            }
+            if (!known) {
+                merged.push_back(tool);
             }
         }
     }
-    return nlohmann::json{{"tools", std::move(tools)}};
+
+    return nlohmann::json{{"tools", std::move(merged)}};
 }
 
-nlohmann::json supervisorToolList(SupervisorState state, const nlohmann::json &childTools)
+nlohmann::json supervisorToolList(const SupervisorOptions &options)
 {
-    switch (state) {
-    case SupervisorState::Idle:
-        return nlohmann::json{
-            {"tools", nlohmann::json::array({spawnToolDefinition()})},
-        };
-    case SupervisorState::Starting:
-        return nlohmann::json{{"tools", nlohmann::json::array()}};
-    case SupervisorState::Running:
-        return attachedToolList(childTools);
-    case SupervisorState::WaitingSession:
-        return nlohmann::json{
-            {"tools", nlohmann::json::array({waitSessionToolDefinition()})},
-        };
-    case SupervisorState::PeerAttached:
-        return attachedToolList(childTools);
+    nlohmann::json tools = nlohmann::json::array();
+    if (options.relay()) {
+        tools.push_back(waitSessionToolDefinition());
+    } else if (options.spawner()) {
+        for (const SpawnTarget &target : options.targets) {
+            tools.push_back(spawnerToolDefinition(target));
+        }
+    } else {
+        tools.push_back(spawnToolDefinition());
     }
-    return nlohmann::json{{"tools", nlohmann::json::array()}};
+    for (const nlohmann::json &tool : applicationToolList()) {
+        tools.push_back(tool);
+    }
+    return nlohmann::json{{"tools", std::move(tools)}};
 }
 
 Supervisor::Supervisor(std::unique_ptr<Peer> client, SupervisorOptions options)
@@ -693,8 +755,6 @@ void Supervisor::monitorLoop()
         }
         /* Wake a terminate call waiting for the exit to be published. */
         monitorCondition_.notify_all();
-
-        sendToolsListChanged();
     }
 }
 
@@ -794,9 +854,8 @@ void Supervisor::attachPeer(int fd)
         return;
     }
 
-    /* Wake wait_session, then announce the new tool view once. */
+    /* Wake wait_session; the advertised list did not change. */
     monitorCondition_.notify_all();
-    sendToolsListChanged();
 }
 
 bool Supervisor::initializePeer(Peer *peer,
@@ -873,7 +932,6 @@ void Supervisor::detachPeer(Peer *peer)
             child_.reset();
         }
         monitorCondition_.notify_all();
-        sendToolsListChanged();
         return;
     }
 
@@ -889,9 +947,8 @@ void Supervisor::detachPeer(Peer *peer)
         state_ = SupervisorState::WaitingSession;
     }
 
-    /* `released` closes the socket; the waiter and the client hear about it once. */
+    /* `released` closes the socket; the waiter hears about it once. */
     monitorCondition_.notify_all();
-    sendToolsListChanged();
 }
 
 void Supervisor::pollRelayPeer()
@@ -1054,6 +1111,20 @@ Peer *Supervisor::dataPath()
 {
     const std::lock_guard<std::mutex> lock(stateMutex_);
     return peer_;
+}
+
+bool Supervisor::peerAdvertises(const std::string &name)
+{
+    const std::lock_guard<std::mutex> lock(stateMutex_);
+    if (!peerTools_.is_array()) {
+        return false;
+    }
+    for (const nlohmann::json &tool : peerTools_) {
+        if (tool.is_object() && tool.value("name", std::string()) == name) {
+            return true;
+        }
+    }
+    return false;
 }
 
 SupervisorToolResult Supervisor::waitSession(const nlohmann::json &arguments)
@@ -1223,20 +1294,14 @@ void Supervisor::handleToolsList(const nlohmann::json &id)
         return;
     }
 
-    SupervisorState current = SupervisorState::Idle;
-    nlohmann::json tools;
+    nlohmann::json peerTools;
     {
         const std::lock_guard<std::mutex> lock(stateMutex_);
-        current = state_;
-        tools = peerTools_;
+        peerTools = peerTools_;
     }
 
-    if (options_.spawner() && current == SupervisorState::Idle) {
-        writeJson(makeResult(id, spawnerToolList(options_.targets)));
-        return;
-    }
-
-    writeJson(makeResult(id, supervisorToolList(current, tools)));
+    /* The base depends only on the mode; the peer only contributes its own names. */
+    writeJson(makeResult(id, mergePeerTools(supervisorToolList(options_), peerTools)));
 }
 
 void Supervisor::handleToolsCall(const nlohmann::json &id, const nlohmann::json &params)
@@ -1283,6 +1348,11 @@ void Supervisor::handleToolsCall(const nlohmann::json &id, const nlohmann::json 
                 id, toolError("no application is attached; call one of the app_spawn_* tools"));
             return;
         }
+        if (!peerAdvertises(toolName)) {
+            writeToolResult(id,
+                            toolError("the application does not provide " + toolName));
+            return;
+        }
         if (toolName == "sdl_capture") {
             writeJson(forwardCapture(id, arguments));
             return;
@@ -1306,6 +1376,11 @@ void Supervisor::handleToolsCall(const nlohmann::json &id, const nlohmann::json 
                 id, toolError("no application session is attached; call wait_session first"));
             return;
         }
+        if (!peerAdvertises(toolName)) {
+            writeToolResult(id,
+                            toolError("the application does not provide " + toolName));
+            return;
+        }
         /* sdl_capture keeps the same PNG presentation the child path gives it. */
         if (toolName == "sdl_capture") {
             writeJson(forwardCapture(id, arguments));
@@ -1327,6 +1402,11 @@ void Supervisor::handleToolsCall(const nlohmann::json &id, const nlohmann::json 
 
     if (state() != SupervisorState::Running) {
         writeToolResult(id, toolError("the application is not running; call spawn first"));
+        return;
+    }
+
+    if (!peerAdvertises(toolName)) {
+        writeToolResult(id, toolError("the application does not provide " + toolName));
         return;
     }
 
@@ -1363,7 +1443,6 @@ SupervisorToolResult Supervisor::spawn()
         state_ = SupervisorState::Starting;
         peerTools_ = nlohmann::json::array();
     }
-    sendToolsListChanged();
 
     const Deadline deadline = std::chrono::steady_clock::now() +
                               std::chrono::milliseconds(options_.startupTimeoutMs);
@@ -1473,7 +1552,6 @@ bool Supervisor::startChild(Deadline deadline, nlohmann::json &window, std::stri
         state_ = SupervisorState::Running;
     }
     monitorCondition_.notify_all();
-    sendToolsListChanged();
     return true;
 }
 
@@ -1499,7 +1577,6 @@ SupervisorToolResult Supervisor::failSpawn(const std::string &reason)
         peerTools_ = nlohmann::json::array();
     }
     monitorCondition_.notify_all();
-    sendToolsListChanged();
 
     std::string text = "spawn failed: " + reason;
     if (stderrTail.empty()) {
@@ -1543,7 +1620,6 @@ SupervisorToolResult Supervisor::spawnerSpawn(const std::string &alias,
         state_ = SupervisorState::Starting;
         peerTools_ = nlohmann::json::array();
     }
-    sendToolsListChanged();
 
     const Deadline deadline = std::chrono::steady_clock::now() +
                               std::chrono::milliseconds(timeoutMs);
@@ -1681,7 +1757,6 @@ SupervisorToolResult Supervisor::spawnerSpawn(const std::string &alias,
     }
 
     monitorCondition_.notify_all();
-    sendToolsListChanged();
 
     /*
       The result promises a session that is usable now, so an application that
@@ -1705,15 +1780,12 @@ SupervisorToolResult Supervisor::failSpawnerSpawn(const std::string &alias,
                                                   const std::string &reason)
 {
     ChildPeer *child = nullptr;
-    bool changed = false;
     {
         const std::lock_guard<std::mutex> lock(stateMutex_);
         pendingPeer_ = nullptr;
         relayPeer_.reset();
         peer_ = nullptr;
         child = child_.get();
-        /* A session that already returned to idle must not be announced twice. */
-        changed = state_ != SupervisorState::Idle || !peerTools_.empty();
         state_ = SupervisorState::Idle;
         peerTools_ = nlohmann::json::array();
     }
@@ -1728,9 +1800,6 @@ SupervisorToolResult Supervisor::failSpawnerSpawn(const std::string &alias,
         child_.reset();
     }
     monitorCondition_.notify_all();
-    if (changed) {
-        sendToolsListChanged();
-    }
 
     return toolError("app_spawn_" + alias + " failed: " + reason);
 }

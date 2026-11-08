@@ -714,11 +714,21 @@ no window, renderer, or video driver of its own.
 
 ### States and `tools/list`
 
+The advertised tool list is a function of the mode, never of whether an
+application is attached:
+
 | State | `tools/list` | When |
 | --- | --- | --- |
-| `Idle` | `spawn` only | At startup, and again after the child exits for any reason. |
-| `Starting` | empty | Between accepting `spawn` and the child reporting a window. |
-| `Running` | the child's tools, with the supervisor's own `sdl_capture` | While the child is alive. |
+| `Idle` | `spawn`, `sdl_info`, `sdl_input`, `sdl_capture`, `sdl_terminate` | At startup, and again after the child exits for any reason. |
+| `Starting` | unchanged | Between accepting `spawn` and the child reporting a window. |
+| `Running` | unchanged | While the child is alive. |
+
+`sdl_capture` always carries the supervisor's definition because presentation
+belongs to the supervisor; see
+[Capture through the supervisor](#capture-through-the-supervisor). Because the
+set does not depend on the child, a spawn sends no
+`notifications/tools/list_changed`: a name the client has already listed cannot
+arrive late behind an asynchronous refresh.
 
 `spawn` is the supervisor's own tool and is never forwarded. It starts one child
 (synchronously, so there is never more than one), completes the MCP handshake,
@@ -726,25 +736,28 @@ and waits until `sdl_info` reports a bound window. On failure the result is an
 error that includes the child's recent stderr, and the supervisor returns to
 `Idle`.
 
-While `Running`, every other `tools/call` is forwarded to the child verbatim:
-the arguments go in unchanged, the child's content blocks and `isError` come
-back unchanged, and a JSON-RPC error from the child is returned unchanged.
-`sdl_capture` is the one exception, because presentation belongs to the
-supervisor; see [Capture through the supervisor](#capture-through-the-supervisor).
-`initialize`, `ping`, and `tools/list` are always answered by the supervisor.
-If the child exits or crashes on its own, the exit handler clears the committed
-tools, sends `notifications/tools/list_changed`, and puts `spawn` back. Each
-transition sends that notification exactly once, so a client should call
-`tools/list` on each notification rather than cache the tool set.
+While a child is running, every other `tools/call` whose name the child
+advertised is forwarded to it verbatim: the arguments go in unchanged, the
+child's content blocks and `isError` come back unchanged, and a JSON-RPC error
+from the child is returned unchanged. A name the child did not advertise is
+answered with `the application does not provide <name>` instead of being
+forwarded. `sdl_capture` is the one exception to the verbatim rule, because
+presentation belongs to the supervisor. `initialize`, `ping`, and `tools/list`
+are always answered by the supervisor.
+If the child exits or crashes on its own, the exit handler returns the
+supervisor to `Idle` and puts `spawn` back; the advertised set is unchanged, so
+nothing is announced. `notifications/tools/list_changed` is sent only when the
+advertised set itself changes, for example when an attached peer announces a
+list of its own that adds or removes names.
 
 ### Capture through the supervisor
 
 The library's `sdl_capture` returns raw pixels so the library never links an
-image encoder. The supervisor owns presentation: while `Running` it replaces the
-child's `sdl_capture` entry in `tools/list` with its own definition and keeps the
-client-facing `image/png` contract. The PNG carries the pixels at the app's
-native pixel size: captures are never resized, so a coordinate read in the image
-is the same coordinate in the app's pixel space.
+image encoder. The supervisor owns presentation: it advertises its own
+`sdl_capture` definition in every mode, alongside the application's other three
+tools, and keeps the client-facing `image/png` contract. The PNG carries the
+pixels at the app's native pixel size: captures are never resized, so a
+coordinate read in the image is the same coordinate in the app's pixel space.
 
 ```json
 {
@@ -807,8 +820,8 @@ forwards the call, then waits for the child to actually exit within
 `--terminate-timeout-ms`. If the child exits, the result is the text
 `terminated`. If the deadline passes, the supervisor sends SIGTERM, waits about
 two seconds, sends SIGKILL, and returns a text result that says termination was
-forced. Either way the exit handler restores `Idle`/`spawn` and sends one
-`notifications/tools/list_changed`.
+forced. Either way the exit handler restores `Idle`/`spawn`; the advertised set
+is unchanged, so it sends no `notifications/tools/list_changed`.
 
 The watchdog exists because `sdl_terminate` only pushes a quit event: an app
 that ignores `SDL_EVENT_QUIT`, hangs in a render loop, or never returns from
@@ -880,14 +893,15 @@ failure is a startup error and the relay exits non-zero.
 
 ### Before a session: `wait_session`
 
-`tools/list` advertises exactly one tool, `wait_session`, until an application
-connects, and every other `tools/call` fails with
-`no application session is attached; call wait_session first`.
+`tools/list` always advertises `wait_session` together with the application's
+four tools (`sdl_info`, `sdl_input`, `sdl_capture`, `sdl_terminate`), whether or
+not a session is attached. Before one attaches, every forwarded `tools/call`
+fails with `no application session is attached; call wait_session first`.
 
 ```json
 {
   "name": "wait_session",
-  "description": "Wait for an application to connect to the relay's listening socket. Returns as soon as a session is attached; without timeout_ms it waits indefinitely and returns a normal tool error when timeout_ms expires. While a session is attached its tools replace this one.",
+  "description": "Wait for an application to connect to the relay's listening socket. Returns as soon as a session is attached; without timeout_ms it waits indefinitely and returns a normal tool error when timeout_ms expires. The application's tools are advertised alongside this one whether or not it is attached.",
   "inputSchema": {
     "type": "object",
     "properties": {
@@ -913,25 +927,30 @@ connects, and every other `tools/call` fails with
 ### After a session attaches
 
 The relay completes a private MCP handshake with the application (the same
-protocol version and a `tools/list`), then swaps its own tool view for the
-application's `tools/list` result, replacing `sdl_capture` with the supervisor's
-PNG definition exactly as it does for a child. Each change sends one
-`notifications/tools/list_changed`: the attach, and later the detach. After the
-notification `tools/list` is the application's set; before it, `wait_session`.
+protocol version and a `tools/list`). It then merges the application's entries
+over its mode-derived list by name: the application's definition wins on a
+collision except `sdl_capture`, which always keeps the supervisor's PNG
+definition, and names the application does not advertise stay advertised.
+Attaching a bare application is therefore byte-identical to the list without it,
+and no `notifications/tools/list_changed` is sent on attach or detach.
+
+The one visible topology change is a spawner connecting: its `app_spawn_<alias>`
+entries are added to the relay's list. A spawner client necessarily connects
+before any spawn call, and a client that connects afterwards sees the new names
+in its first `tools/list`.
 
 A peer that announces a change of its own is followed rather than quoted: on
 `notifications/tools/list_changed` the relay asks that peer for `tools/list`
-again and republishes the result with its own `list_changed`. That is what makes
-a relay in front of a spawner show the spawned application's tools as soon as
-the spawn call answers, and the `app_spawn_*` set again once it exits.
+again, re-merges it, and republishes the result with its own `list_changed`.
+That keeps a chained peer's genuine additions and removals visible.
 
 Exactly one application session is accepted at a time. A second connection is
 closed as soon as it is accepted instead of queueing behind the first, and the
 listener never hands it to the proxy. When the attached application's socket
-closes — a clean exit, a crash, or a network drop — the relay clears the tool
-list, restores `wait_session`, sends one `list_changed`, and keeps the client's
-stdio endpoint open for the next application. The hang-up is probed on every
-loop pass, so an idle relay notices it while nothing is in flight.
+closes — a clean exit, a crash, or a network drop — the relay drops the peer's
+merged entries and keeps the client's stdio endpoint open for the next
+application. The hang-up is probed on every loop pass, so an idle relay notices
+it while nothing is in flight.
 
 A forwarded call is bounded as well: when the peer stops answering, the relay
 detaches it, returns a normal error content block naming the tool, and is back
@@ -1005,9 +1024,12 @@ client ──stdio──▶ relay (--listen) ◀──TCP── spawner (--conne
                                         app (--mcp=<spawner endpoint>)
 ```
 
-The relay sees the spawner as its one application session, so the client's tool
-view is the spawner's tools. Once an application is spawned, the spawner's
-`tools/list` becomes that application's tools and the relay forwards through.
+The relay sees the spawner as its one application session and merges the
+spawner's entries over its own list, so the client sees `wait_session`, the four
+application tools, and one `app_spawn_<alias>` per target. The spawner's list
+does not change when an application starts or exits; it always advertises the
+`app_spawn_*` set alongside the application block, and the relay forwards an
+application call through to the live child.
 
 ### Spawner command line
 
@@ -1119,12 +1141,12 @@ so mixing a generated file with a hand-written one is safe.
 
 ### Tool view and spawning
 
-Before the first spawn, `tools/list` is one `app_spawn_<alias>` per targets entry
-and nothing else; any other `tools/call` fails with
-`no application is attached; call one of the app_spawn_* tools`. A spawn passes
-through an empty `Starting` view, and an attached application again exposes its
-own tools with the supervisor's `sdl_capture`; every change sends one
-`notifications/tools/list_changed`.
+`tools/list` is one `app_spawn_<alias>` per targets entry plus the four
+application tools, in every state. The set does not change when an application
+is spawned or exits, so the spawner sends no
+`notifications/tools/list_changed` around a spawn. Before one is attached, an
+application `tools/call` fails with
+`no application is attached; call one of the app_spawn_* tools`.
 
 One application runs at a time. Calling another `app_spawn_<alias>` while one is
 attached fails with `an application is already attached; one spawn at a time`;
@@ -1133,7 +1155,7 @@ wait for the running application to exit first.
 ```json
 {
   "name": "app_spawn_demo",
-  "description": "Start the application registered as \"demo\" and wait until it connects back and completes the MCP handshake. Returns the child's process id; while it runs its own tools replace this one, and call app_spawn_<alias> again only after it has exited.",
+  "description": "Start the application registered as \"demo\" and wait until it connects back and completes the MCP handshake. Returns the child's process id; its tools are advertised alongside this one, and call app_spawn_<alias> again only after it has exited.",
   "inputSchema": {
     "type": "object",
     "properties": {
@@ -1156,10 +1178,11 @@ just the connection. `app_spawn_<alias>` has three outcomes:
 
 1. **Success.** The application connected and completed the handshake, and its
    session is still live when the answer is written. The result is
-   `spawned <alias> (pid N)`, and the tool list is now the application's.
+   `spawned <alias> (pid N)`; the tool list is unchanged and application calls
+   now forward through to the child.
 2. **The application died first.** It exited, or could not be executed, before it
    connected. The `isError` result names the exit status or `exec` failure and
-   the pid, and the tool view returns to the `app_spawn_*` set.
+   the pid; the tool list is unchanged.
 3. **Timeout.** `timeout_ms` expired before the handshake completed. The error
    names the timeout and the pid, and the spawner terminates the child (SIGTERM,
    about two seconds of grace, then SIGKILL) before returning, so a failed spawn
@@ -1174,10 +1197,10 @@ the error text. After any failure the spawner is idle again and a later
 `sdl_terminate` is forwarded like any other application tool; the spawner does
 not wait for the exit or force it, and the application decides what the request
 means. When the application exits, whether from a clean request or on its own,
-its tools are replaced by the `app_spawn_*` set and one `list_changed` is sent.
-A forwarded call to an application that stopped answering is bounded the same
-way as the relay's: it returns an error naming the tool and restores the
-`app_spawn_*` view.
+the spawner returns to Idle with the same list it always advertised, so nothing
+is announced. A forwarded call to an application that stopped answering is
+bounded the same way as the relay's: it returns an error naming the tool and
+recovers the session.
 
 ### Stopping the spawner
 

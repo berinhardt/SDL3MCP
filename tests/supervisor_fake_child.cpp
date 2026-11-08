@@ -31,6 +31,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "tools.hpp"
+
 #include <netdb.h>
 #include <poll.h>
 #include <signal.h>
@@ -301,15 +303,20 @@ void writeCaptureFrame(const nlohmann::json &id, int width, int height, bool mis
     std::fflush(g_output);
 }
 
+/*
+  The library's own catalog, so the fake child looks like a real application: the
+  supervisor's merge over its base is then an identity, which is what the spawn
+  view tests assert.
+*/
 nlohmann::json toolsResult()
 {
     nlohmann::json tools = nlohmann::json::array();
-    for (const std::string_view name :
-         {"sdl_info", "sdl_input", "sdl_capture", "sdl_terminate"}) {
+    for (const sdl3mcp::ToolDefinition &tool : sdl3mcp::toolCatalog()) {
         tools.push_back(nlohmann::json{
-            {"name", std::string(name)},
-            {"description", "fake child tool"},
-            {"inputSchema", nlohmann::json{{"type", "object"}}},
+            {"name", std::string(tool.name)},
+            {"description", std::string(tool.description)},
+            {"inputSchema", tool.inputSchema},
+            {"annotations", tool.annotations},
         });
     }
     return nlohmann::json{{"tools", std::move(tools)}};

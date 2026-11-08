@@ -940,6 +940,55 @@ void testRelayLoopback(const std::string &sdl3mcp, const std::string &fakeChild)
     CHECK(spawner.waitForExit(kLineTimeoutMs));
 }
 
+/*
+  The application-side peer: the same recovery as the relay's, observed through
+  the spawner. A dead application returns the app_spawn_* view, and a forwarded
+  call that was in flight when it died answers instead of holding the slot.
+*/
+void testAppPeerGone(const std::string &spawner, const std::string &fakeChild)
+{
+    SpawnerFixture fixture;
+    fixture.writeTargets(fakeChild);
+    fixture.start(spawner);
+
+    const nlohmann::json spawned = fixture.relay.callTool("app_spawn_app");
+    CHECK(spawned["result"]["isError"] == false);
+    const pid_t appPid = parsePidFile(fixture.appPidFile.path);
+    awaitToolList(fixture.relay, hasAttachedTools);
+
+    /* The application dies while the spawner is idle. */
+    CHECK(::kill(appPid, SIGKILL) == 0);
+    const std::vector<std::string> idle = awaitToolList(fixture.relay, hasSpawnTools);
+    CHECK(hasTool(idle, "app_spawn_app"));
+    CHECK(processIsGone(appPid));
+
+    /* The session recovered, so the same alias spawns again. */
+    const nlohmann::json again = fixture.relay.callTool("app_spawn_app");
+    CHECK(again["result"]["isError"] == false);
+    awaitToolList(fixture.relay, hasAttachedTools);
+
+    /*
+      Stop the application so the call is really in flight, then kill it: the
+      answer must name the tool and the view must return to app_spawn_*.
+    */
+    const pid_t livePid = parsePidFile(fixture.appPidFile.path);
+    CHECK(::kill(livePid, SIGSTOP) == 0);
+    const int callId = fixture.relay.send("tools/call", nlohmann::json{
+                                                           {"name", "sdl_info"},
+                                                           {"arguments", nlohmann::json::object()},
+                                                       });
+    std::this_thread::sleep_for(100ms);
+    CHECK(::kill(livePid, SIGKILL) == 0);
+
+    const nlohmann::json answer = fixture.relay.readResponse(callId);
+    CHECK(answer["result"]["isError"] == true);
+    CHECK(resultText(answer).find("sdl_info") != std::string::npos);
+
+    const std::vector<std::string> recovered = awaitToolList(fixture.relay, hasSpawnTools);
+    CHECK(hasTool(recovered, "app_spawn_app"));
+    CHECK(processIsGone(livePid));
+}
+
 void testExplicitListenBindFailure(const std::string &spawner, const std::string &fakeChild)
 {
     SpawnerFixture fixture;
@@ -980,6 +1029,7 @@ int main(int argc, char **argv)
     testTargetsSources();
     testSpawnerRoundTrip(spawner, fakeChild);
     testRelayLoopback(spawner, fakeChild);
+    testAppPeerGone(spawner, fakeChild);
     testExplicitListenBindFailure(spawner, fakeChild);
 
     std::printf("spawner_tests: all checks passed\n");

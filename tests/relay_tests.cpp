@@ -324,7 +324,10 @@ struct FakePeer
     int fd = -1;
     std::unique_ptr<Transport> transport;
 
-    ~FakePeer()
+    ~FakePeer() { close(); }
+
+    /* The application side of a session going away, cleanly or by a crash. */
+    void close()
     {
         if (transport) {
             transport->stop();
@@ -332,6 +335,7 @@ struct FakePeer
         }
         if (fd >= 0) {
             ::close(fd);
+            fd = -1;
         }
     }
 
@@ -508,6 +512,43 @@ std::vector<std::string> toolNames(const nlohmann::json &listResponse)
         names.push_back(tool.value("name", std::string()));
     }
     return names;
+}
+
+std::string resultText(const nlohmann::json &response)
+{
+    CHECK(response.contains("result"));
+    CHECK(response["result"]["content"].is_array());
+    CHECK(!response["result"]["content"].empty());
+    return response["result"]["content"][0].value("text", std::string());
+}
+
+/*
+  Polls tools/list until the view is the expected one. A detach is observed at
+  the endpoint the client actually talks to, not inferred from a notification,
+  and the wait is bounded so a relay that never notices cannot hang the test.
+*/
+std::vector<std::string> awaitToolNames(RelayClient &client,
+                                        const std::vector<std::string> &expected,
+                                        int timeoutMs = 3000)
+{
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(timeoutMs);
+    for (;;) {
+        std::vector<std::string> names = toolNames(client.toolsList());
+        if (names == expected) {
+            return names;
+        }
+        if (std::chrono::steady_clock::now() >= deadline) {
+            std::string seen;
+            for (const std::string &name : names) {
+                seen += (seen.empty() ? "" : ", ") + name;
+            }
+            std::fprintf(stderr, "tools/list never matched; last view: %s\n", seen.c_str());
+            CHECK(false);
+            return names;
+        }
+        std::this_thread::sleep_for(20ms);
+    }
 }
 
 /* True when a fresh connection to an attached relay is closed instead of served. */
@@ -715,6 +756,125 @@ void testRelayRoundTrip(const std::string &supervisor)
     CHECK(client.process.waitForExit(kLineTimeoutMs));
 }
 
+/*
+  An idle relay must notice a hang-up on its own poll. Nothing is in flight, so
+  only the closed peer socket can tell it the session ended; the next tools/list
+  must show wait_session rather than stale application tools or an empty view.
+*/
+void testIdlePeerDisconnect(const std::string &supervisor)
+{
+    std::uint16_t port = 0;
+    RelayClient client;
+    client.start(supervisor, port);
+    CHECK(!client.initialize().contains("error"));
+
+    FakePeer peer;
+    CHECK(peer.connect(port));
+    peer.handshake(peerToolList());
+    client.waitForListChanged(1);
+    CHECK((toolNames(client.toolsList()) ==
+           std::vector<std::string>{"app_info", "sdl_capture"}));
+
+    peer.close();
+
+    CHECK((awaitToolNames(client, {"wait_session"}) ==
+           std::vector<std::string>{"wait_session"}));
+
+    /* wait_session is usable again and answers with its ordinary timeout error. */
+    const nlohmann::json waited =
+        client.callTool("wait_session", nlohmann::json{{"timeout_ms", 200}});
+    CHECK(!waited.contains("error"));
+    CHECK(waited["result"]["isError"] == true);
+    CHECK(resultText(waited).find("200 ms") != std::string::npos);
+
+    client.process.closeStdin();
+    CHECK(client.process.waitForExit(kLineTimeoutMs));
+}
+
+/*
+  A forwarded call whose peer goes away must return promptly, not hold the one
+  request slot for the rest of the session.
+*/
+void testPeerDisconnectDuringCall(const std::string &supervisor)
+{
+    std::uint16_t port = 0;
+    RelayClient client;
+    client.start(supervisor, port);
+    CHECK(!client.initialize().contains("error"));
+
+    FakePeer peer;
+    CHECK(peer.connect(port));
+    peer.handshake(peerToolList());
+    client.waitForListChanged(1);
+
+    const int callId = client.send("tools/call", nlohmann::json{
+                                                      {"name", "app_info"},
+                                                      {"arguments", nlohmann::json::object()},
+                                                  });
+    const nlohmann::json call = peer.readMessage();
+    CHECK(call["method"] == "tools/call");
+    CHECK(call["params"]["name"] == "app_info");
+
+    peer.close();
+
+    const nlohmann::json answer = client.readResponse(callId);
+    CHECK(answer["result"]["isError"] == true);
+    CHECK(resultText(answer).find("app_info") != std::string::npos);
+
+    CHECK((awaitToolNames(client, {"wait_session"}) ==
+           std::vector<std::string>{"wait_session"}));
+    const nlohmann::json waited =
+        client.callTool("wait_session", nlohmann::json{{"timeout_ms", 200}});
+    CHECK(waited["result"]["isError"] == true);
+
+    client.process.closeStdin();
+    CHECK(client.process.waitForExit(kLineTimeoutMs));
+}
+
+/*
+  The peer keeps its socket open but never answers: only the proxy's own bound
+  can end the wait, and it must detach and name the tool it could not complete.
+*/
+void testPeerStopsAnswering(const std::string &supervisor)
+{
+    std::uint16_t port = 0;
+    RelayClient client;
+    client.start(supervisor, port);
+    CHECK(!client.initialize().contains("error"));
+
+    FakePeer peer;
+    CHECK(peer.connect(port));
+    peer.handshake(peerToolList());
+    client.waitForListChanged(1);
+
+    const int callId = client.send("tools/call", nlohmann::json{
+                                                      {"name", "app_info"},
+                                                      {"arguments", nlohmann::json::object()},
+                                                  });
+    const nlohmann::json call = peer.readMessage();
+    CHECK(call["method"] == "tools/call");
+
+    const auto started = std::chrono::steady_clock::now();
+    const nlohmann::json answer = client.readResponse(callId);
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - started)
+                             .count();
+    CHECK(elapsed < kLineTimeoutMs);
+    CHECK(answer["result"]["isError"] == true);
+    CHECK(resultText(answer).find("app_info") != std::string::npos);
+
+    CHECK((awaitToolNames(client, {"wait_session"}) ==
+           std::vector<std::string>{"wait_session"}));
+    const nlohmann::json waited =
+        client.callTool("wait_session", nlohmann::json{{"timeout_ms", 200}});
+    CHECK(waited["result"]["isError"] == true);
+    CHECK(resultText(waited).find("200 ms") != std::string::npos);
+
+    peer.close();
+    client.process.closeStdin();
+    CHECK(client.process.waitForExit(kLineTimeoutMs));
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -725,6 +885,9 @@ int main(int argc, char **argv)
     testCommandLineRelay();
     testWaitSessionTimeout(supervisor);
     testRelayRoundTrip(supervisor);
+    testIdlePeerDisconnect(supervisor);
+    testPeerDisconnectDuringCall(supervisor);
+    testPeerStopsAnswering(supervisor);
 
     std::printf("relay_tests: all checks passed\n");
     return 0;

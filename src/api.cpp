@@ -916,6 +916,13 @@ extern "C" SDL_DECLSPEC bool SDLCALL SDL3MCP_FrameRequested(void)
         if (!g_state || g_state->window == nullptr || !g_state->server) {
             return false;
         }
+        /*
+          Decline the poll before the app has completed a frame worth answering:
+          the request stays pending, so the next servable frame answers it.
+        */
+        if (!sdl3mcp::servableFrame(g_state->frameCounter)) {
+            return false;
+        }
         return g_state->capture.pending();
     } catch (...) {
         return false;

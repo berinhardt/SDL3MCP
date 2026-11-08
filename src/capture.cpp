@@ -5,6 +5,11 @@
 namespace sdl3mcp
 {
 
+bool servableFrame(uint64_t completedFrames)
+{
+    return completedFrames >= kFirstServableFrame;
+}
+
 bool CaptureState::begin(std::string &error)
 {
     const std::lock_guard<std::mutex> lock(mutex_);

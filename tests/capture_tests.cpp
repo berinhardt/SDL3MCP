@@ -207,6 +207,50 @@ void testPendingTransitions()
 }
 
 /*
+  A capture requested before the app has completed its first frame must wait:
+  the first rendered frame carries no ImGui draw data, so serving it would hand
+  back an untouched scene. The boundary is pinned here because the app-facing
+  gate (SDL3MCP_FrameRequested) needs a window and a server to observe.
+*/
+void testServableFrameBoundary()
+{
+    CHECK(sdl3mcp::kFirstServableFrame == 1);
+    CHECK(!sdl3mcp::servableFrame(0));
+    CHECK(sdl3mcp::servableFrame(1));
+    CHECK(sdl3mcp::servableFrame(2));
+}
+
+/*
+  A declined poll is not a dropped request: CaptureState knows nothing of the
+  gate, so the request has to survive it and be answered by the first frame the
+  predicate allows.
+*/
+void testDeclinedPollKeepsRequestPending()
+{
+    CaptureState capture;
+    std::string error;
+    CHECK(capture.begin(error));
+
+    /* The app polls at frame 0: the gate declines, the request stays open. */
+    CHECK(!sdl3mcp::servableFrame(0));
+    CHECK(capture.pending());
+    CHECK(capture.stats().dropped == 0);
+
+    /* The next frame is servable, so the app answers the same request. */
+    CHECK(sdl3mcp::servableFrame(1));
+    CHECK(capture.pending());
+    capture.submit(solidFrame(2, 2, 3));
+    CHECK(!capture.pending());
+
+    Frame received;
+    std::string failure;
+    CHECK(capture.wait(50ms, received, failure));
+    CHECK(received.width == 2);
+    CHECK(received.height == 2);
+    CHECK(failure.empty());
+}
+
+/*
   The frame stamp is app state carried by value, so a crop must copy it. The
   library stamps at WriteFrame and crops on the server thread; losing the index
   there would make every cropped answer anonymous.
@@ -255,6 +299,8 @@ int main()
     testCancelWakesWaiter();
     testStatsUpdateOnlyOnSuccess();
     testPendingTransitions();
+    testServableFrameBoundary();
+    testDeclinedPollKeepsRequestPending();
     testCropPreservesFrameStamp();
     testFrameOrderHelper();
 

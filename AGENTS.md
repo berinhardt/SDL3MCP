@@ -37,7 +37,7 @@ are in `src/`, and `examples/minimal` is a complete host.
   supervisor: it speaks MCP on its own stdio and runs one target child at a time
   over private pipes. `--listen=HOST:PORT` is a relay: it speaks MCP on its own
   stdio and proxies to whichever application dials in, one session at a time.
-  `--connect=HOST:PORT --targets=FILE [--listen=HOST:PORT]` is a spawner: it
+  `--connect=HOST:PORT --targets=PATH [--listen=HOST:PORT]` is a spawner: it
   dials a relay, advertises one `app_spawn_<alias>` per targets entry, and starts
   the chosen application with `--mcp=HOST:PORT` so it dials back to a listener
   the spawner owns. The modes vary only how the data-path `Peer`

@@ -81,7 +81,7 @@ CliParseResult parseCommandLine(const std::vector<std::string> &arguments)
                 result.error = "--listen and --target cannot be combined";
                 return result;
             }
-            if (result.options.spawner() || !result.options.targetsPath.empty()) {
+            if (result.options.spawner() || !result.options.targetsPaths.empty()) {
                 result.error = "--connect and --target cannot be combined";
                 return result;
             }
@@ -150,24 +150,20 @@ CliParseResult parseCommandLine(const std::vector<std::string> &arguments)
         }
 
         if (argument == kTargetsOption) {
-            result.error = "--targets requires a file written as --targets=FILE";
+            result.error = "--targets requires a file or directory written as --targets=PATH";
             return result;
         }
 
         if (argument.rfind(kTargetsPrefix, 0) == 0) {
-            if (!result.options.targetsPath.empty()) {
-                result.error = "--targets may be given only once";
-                return result;
-            }
-
             const std::size_t valueStart = kTargetsOption.size() + 1;
             const std::string_view value(argument.data() + valueStart,
                                          argument.size() - valueStart);
             if (value.empty()) {
-                result.error = "--targets requires a file written as --targets=FILE";
+                result.error =
+                    "--targets requires a file or directory written as --targets=PATH";
                 return result;
             }
-            result.options.targetsPath.assign(value.data(), value.size());
+            result.options.targetsPaths.emplace_back(value);
             index += 1;
             continue;
         }
@@ -176,17 +172,17 @@ CliParseResult parseCommandLine(const std::vector<std::string> &arguments)
         return result;
     }
 
-    if (!result.options.targetsPath.empty() && result.options.connectHost.empty()) {
+    if (!result.options.targetsPaths.empty() && result.options.connectHost.empty()) {
         result.error = "--targets requires --connect=HOST:PORT";
         return result;
     }
-    if (!result.options.connectHost.empty() && result.options.targetsPath.empty()) {
-        result.error = "--connect requires --targets=FILE";
+    if (!result.options.connectHost.empty() && result.options.targetsPaths.empty()) {
+        result.error = "--connect requires --targets=PATH";
         return result;
     }
 
     if (result.options.spawner()) {
-        if (!loadSpawnTargets(result.options.targetsPath, result.options.targets,
+        if (!loadSpawnTargets(result.options.targetsPaths, result.options.targets,
                               result.error)) {
             return result;
         }
@@ -200,7 +196,7 @@ CliParseResult parseCommandLine(const std::vector<std::string> &arguments)
     }
 
     result.error = "missing --target <executable>, --listen=HOST:PORT or "
-                   "--connect=HOST:PORT --targets=FILE";
+                   "--connect=HOST:PORT --targets=PATH";
     return result;
 }
 
@@ -208,7 +204,8 @@ std::string usageLine()
 {
     return "usage: sdl3mcp [--startup-timeout-ms N] [--terminate-timeout-ms N] "
            "(--target <executable> [app args...] | --listen=HOST:PORT | "
-           "--connect=HOST:PORT --targets=FILE [--listen=HOST:PORT])";
+           "--connect=HOST:PORT --targets=PATH [--targets=PATH ...] "
+           "[--listen=HOST:PORT])";
 }
 
 } // namespace sdl3mcp

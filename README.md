@@ -675,7 +675,7 @@ application peer comes from:
   (this section);
 - `--listen=HOST:PORT` relays the client's stdio to whichever app dials in
   ([Relay](#relay));
-- `--connect=HOST:PORT --targets=FILE` spawns a configured app behind a relay
+- `--connect=HOST:PORT --targets=PATH` spawns a configured app behind a relay
   ([Spawner](#spawner)).
 
 In every mode the client keeps the same endpoint; only the tools change when the
@@ -989,7 +989,7 @@ application is started separately with the relay's address:
 
 A relay waits for an application that somebody else started. The **spawner**
 closes that gap on the application's side: `sdl3mcp --connect=HOST:PORT
---targets=FILE` dials a relay, offers one spawn tool per configured application,
+--targets=PATH` dials a relay, offers one spawn tool per configured application,
 and starts the chosen one on demand, handing it a listener of its own to dial
 back to.
 
@@ -1007,25 +1007,48 @@ view is the spawner's tools. Once an application is spawned, the spawner's
 ### Spawner command line
 
 ```text
-sdl3mcp --connect=HOST:PORT --targets=FILE [--listen=HOST:PORT]
+sdl3mcp --connect=HOST:PORT --targets=PATH [--targets=PATH ...] [--listen=HOST:PORT]
 ```
 
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `--connect=HOST:PORT` | *(required)* | Relay to dial. A failed dial is fatal: the spawner prints `--connect:` with the endpoint and exits non-zero. |
-| `--targets=FILE` | *(required)* | JSON file listing the applications the spawner may start. |
+| `--targets=PATH` | *(required)* | A JSON file or a directory of `*.json` files listing the applications the spawner may start. Repeatable; every source contributes entries to one alias map. |
 | `--listen=HOST:PORT` | `127.0.0.1:0` | The address and port a spawned application dials back to. `[V6]:PORT` is accepted. |
 
-`--connect` and `--targets` must be given together, each at most once, and
+`--connect` must be given once, and `--targets` at least once (it may repeat);
 neither can be combined with `--target`. Without `--listen` the spawner binds
 `127.0.0.1:0`, so the kernel picks a port and only that machine can reach it.
 With an explicit `--listen` a bind failure fails the spawn; it never silently
 falls back to an ephemeral port.
 
-### Targets file
+### Targets sources
 
-The file is a JSON object. Each key is an alias and each value is the
-application's argument vector, executable first, arguments after it:
+Each source is either a file or a directory:
+
+- a regular file is a JSON object, read as one source;
+- a directory contributes every `*.json` regular file at its top level, read in
+  sorted filename order so the resulting menu is deterministic. Other files are
+  ignored, and a directory without any `*.json` file is an error.
+
+All sources accumulate into one map. That is what makes generated files usable:
+each build tree writes its own targets file, so two trees are combined by
+repeating the flag:
+
+```sh
+sdl3mcp --connect=HOST:PORT \
+  --targets=build/vulkan/sdl3mcp-targets.json \
+  --targets=build/opengl/sdl3mcp-targets.json \
+  --targets=./extra-targets
+```
+
+An alias may be defined by only one source. Seeing the same alias in two files
+is a startup error that names both paths; the later one never replaces the
+earlier one, because that would silently make one of the two binaries
+unreachable.
+
+In a file, each key is an alias and each value is the application's argument
+vector, executable first, arguments after it:
 
 ```json
 {
@@ -1038,14 +1061,17 @@ The spawner appends `--mcp=HOST:PORT` as the last argument, naming the listener 
 just bound, so an entry must not already carry an MCP argument.
 
 Validation happens at startup and a failure is fatal before any socket or child
-exists; the error names the file or entry:
+exists; the error names the offending path, file, or entry:
 
-- the file must open and parse as JSON;
-- the top level must be a non-empty JSON object;
+- every path must exist and every file must open, inside a directory included;
+- each file must parse as JSON;
+- each file's top level must be a non-empty JSON object;
 - every key must match `[a-z0-9_]+` and must not begin with the reserved
   `app_spawn_` prefix;
 - every value must be a non-empty array of strings;
-- no element may contain `--mcp` anywhere, because the spawner supplies it.
+- no element may contain `--mcp` anywhere, because the spawner supplies it;
+- the accumulated map must not be empty;
+- an alias may not appear in two sources.
 
 ### Generating the targets file
 
@@ -1080,6 +1106,11 @@ sdl3mcp_app(probe probe ARGS --fast --no-audio)
 The submodule's own `examples/CMakeLists.txt` registers the `minimal` example
 this way, so configuring with `SDL3MCP_BUILD_EXAMPLES=ON` and building the
 example produces `build/sdl3mcp-targets.json` with a single `minimal` entry.
+
+Each configure writes its own file, so a spawner that should offer applications
+from several build trees passes them as repeated `--targets` values, or points
+`--targets` at a directory holding them. Generated entries carry absolute paths,
+so mixing a generated file with a hand-written one is safe.
 
 ### Tool view and spawning
 

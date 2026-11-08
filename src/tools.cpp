@@ -197,7 +197,12 @@ constexpr std::string_view kCaptureDescription =
     "top-left origin and must fit inside capture.lastWidth x capture.lastHeight "
     "from sdl_info. sdl_input coordinates are window points, not frame pixels: "
     "sdl_info reports pixelWidth, pixelHeight and pixelDensity so a caller can "
-    "convert between the two. Example: "
+    "convert between the two. A capture requested before the application has "
+    "rendered is answered by the first frame the library trusts, not by the first "
+    "frame, and the request waits rather than failing: the first rendered frame "
+    "carries no draw data and would show only the clear colour, and "
+    "kFirstServableFrame (src/capture.hpp, applied by servableFrame in "
+    "src/capture.cpp) is the single place that decides that bound. Example: "
     "{\"region\":{\"x\":0,\"y\":0,\"width\":640,\"height\":360},"
     "\"timeout_ms\":2000}";
 

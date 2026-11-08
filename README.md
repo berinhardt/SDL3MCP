@@ -1462,6 +1462,14 @@ Rules that fall out of this design:
 
 - The returned frame is one written **after** the request arrived; stale frames
   are never served.
+- A capture requested before the application has rendered its first frames is
+  not answered by the first rendered frame. It stays pending, and the first frame
+  the library is willing to serve answers it: the request waits rather than
+  failing, and it is never cancelled or rejected for arriving early. The first
+  rendered frame carries no draw data, so a frame taken from it would show only
+  the clear colour. `kFirstServableFrame` in `src/capture.hpp`, applied by
+  `servableFrame()` in `src/capture.cpp`, is the single place that decides that
+  bound; this document deliberately does not restate its value.
 - Only one capture is pending at a time. Tool calls are serialized on the server
   thread, so a slow capture delays the next tool call until it completes or
   times out. `sdl_input` uses the same pipeline for the frame it returns, so an
@@ -1884,7 +1892,7 @@ The library's own schema returns raw pixels and advertises only `region` and
 ```json
 {
   "name": "sdl_capture",
-  "description": "Ask the application for a fresh frame through SDL3MCP_FrameRequested() and return its raw pixels. Arguments: optional timeout_ms (1-60000, default frame_timeout_ms) and optional region. The result is one JSON-RPC line {\"format\":\"rgba8888\",\"width\":W,\"height\":H,\"byteLength\":B,\"frame\":F}, immediately followed by exactly B tightly packed RGBA bytes with no newline and no base64. F is the app frame whose pixels these are; the supervisor names it in the image summary. region is a crop rectangle in pixels of the full frame with a top-left origin and must fit inside capture.lastWidth x capture.lastHeight from sdl_info. sdl_input coordinates are window points, not frame pixels: sdl_info reports pixelWidth, pixelHeight and pixelDensity so a caller can convert between the two. Example: {\"region\":{\"x\":0,\"y\":0,\"width\":640,\"height\":360},\"timeout_ms\":2000}",
+  "description": "Ask the application for a fresh frame through SDL3MCP_FrameRequested() and return its raw pixels. Arguments: optional timeout_ms (1-60000, default frame_timeout_ms) and optional region. The result is one JSON-RPC line {\"format\":\"rgba8888\",\"width\":W,\"height\":H,\"byteLength\":B,\"frame\":F}, immediately followed by exactly B tightly packed RGBA bytes with no newline and no base64. F is the app frame whose pixels these are; the supervisor names it in the image summary. region is a crop rectangle in pixels of the full frame with a top-left origin and must fit inside capture.lastWidth x capture.lastHeight from sdl_info. sdl_input coordinates are window points, not frame pixels: sdl_info reports pixelWidth, pixelHeight and pixelDensity so a caller can convert between the two. A capture requested before the application has rendered is answered by the first frame the library trusts, not by the first frame, and the request waits rather than failing: the first rendered frame carries no draw data and would show only the clear colour, and kFirstServableFrame (src/capture.hpp, applied by servableFrame in src/capture.cpp) is the single place that decides that bound. Example: {\"region\":{\"x\":0,\"y\":0,\"width\":640,\"height\":360},\"timeout_ms\":2000}",
   "inputSchema": {
     "type": "object",
     "properties": {

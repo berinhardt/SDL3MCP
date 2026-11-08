@@ -16,6 +16,8 @@ the loop order is a bug. The checks are deliberately mechanical:
 - the region prose names the captured frame's dimensions, not the window's;
 - the frame attribution prose says the attached frame follows the actions and
   that an unchanged frame means they had no effect;
+- the first servable frame rule says an early capture waits for the first frame
+  the library trusts, and names ``kFirstServableFrame``;
 - the public ``SDL3MCP_WriteFrame`` signature takes explicit width and height;
 - the ``sdl_terminate`` schema is the empty object with all four hints;
 - the quick start matches ``examples/minimal/main.c`` and contains R/G/B;
@@ -324,6 +326,10 @@ def check_capture_schemas(documents: list[object], failures: list[str]) -> None:
             failures.append(
                 "library sdl_capture description must document the raw "
                 "format/byteLength framing")
+        if "kFirstServableFrame" not in description:
+            failures.append(
+                "library sdl_capture description must name kFirstServableFrame "
+                "for the first servable frame rule")
 
     if supervisor is None:
         failures.append("no supervisor sdl_capture schema promising a PNG")
@@ -392,6 +398,45 @@ def check_frame_attribution_prose(readme: str, failures: list[str]) -> None:
     if "had no effect" not in lowered:
         failures.append(
             "README must say that an unchanged frame means the actions had no effect")
+
+
+def check_first_frame_prose(readme: str, failures: list[str]) -> None:
+    """An early capture waits for a trustworthy frame; the README must say so."""
+    lowered = readme.lower()
+    for required in (
+        "before the application has rendered its first frames",
+        "request waits rather than failing",
+        "never cancelled",
+        "no draw data",
+        "clear colour",
+        "kfirstservableframe",
+        "servableframe",
+    ):
+        if required not in lowered:
+            failures.append(
+                "README does not document the first servable frame rule phrase "
+                f"{required!r}")
+
+
+def check_catalog_first_frame(catalog: list[object], failures: list[str]) -> None:
+    """The library description shipped on the wire carries the same rule."""
+    for document in catalog:
+        if not (isinstance(document, dict)
+                and document.get("name") == "sdl_capture"
+                and isinstance(document.get("description"), str)):
+            continue
+        description = document["description"]
+        if "rgba8888" not in description:
+            continue
+        if "kFirstServableFrame" not in description:
+            failures.append(
+                "library sdl_capture description must name kFirstServableFrame "
+                "for the first servable frame rule")
+        if "waits rather than failing" not in description:
+            failures.append(
+                "library sdl_capture description must state that an early "
+                "capture waits rather than failing")
+        return
 
 
 def check_write_frame_signature(readme: str, failures: list[str]) -> None:
@@ -524,11 +569,14 @@ def main(argv: list[str] | None = None) -> int:
             failures.append(f"tool catalog helper {helper} does not exist")
     else:
         helper = find_tool_helper(arguments.build)
-    check_tool_descriptions(load_tool_catalog(helper, failures), "catalog", failures)
+    catalog = load_tool_catalog(helper, failures)
+    check_tool_descriptions(catalog, "catalog", failures)
+    check_catalog_first_frame(catalog, failures)
     check_input_schema(documents, failures)
     check_capture_schemas(documents, failures)
     check_capture_framing_prose(readme, failures)
     check_frame_attribution_prose(readme, failures)
+    check_first_frame_prose(readme, failures)
     check_write_frame_signature(readme, failures)
     check_terminate_schema(documents, failures)
     check_example_command(readme, failures)

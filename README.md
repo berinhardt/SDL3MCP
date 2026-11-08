@@ -164,7 +164,7 @@ Targets and options:
 | --- | --- | --- |
 | `SDL3MCP_BUILD_SHARED` | `OFF` | Build a shared library instead of a static one. |
 | `SDL3MCP_BUILD_EXAMPLES` | `OFF` | Build the `minimal` executable from `examples/minimal/main.c`. |
-| `SDL3MCP_BUILD_SUPERVISOR` | `OFF` | Build the `sdl3mcp` executable: child supervisor, relay, and spawner. |
+| `SDL3MCP_BUILD_CLI` | `OFF` | Build the `sdl3mcp` executable: child supervisor, relay, and spawner. |
 | `SDL3MCP_BUILD_TESTS` | `ON` if top-level | Build the unit tests and register them with CTest. |
 | `SDL3MCP_USE_SYSTEM_JSON` | `ON` | Try `find_package(nlohmann_json CONFIG QUIET)` before using the vendored header. |
 
@@ -212,7 +212,7 @@ ctest --preset debug
 ```
 
 The `shared` preset is the same sequence with `--preset shared`. All four
-presets also set `SDL3MCP_BUILD_SUPERVISOR=ON`, so the supervisor binary and its
+presets also set `SDL3MCP_BUILD_CLI=ON`, so the supervisor binary and its
 tests are built in every configuration. The `asan` preset compiles with
 `-fsanitize=address,undefined` and runs the full suite with leak detection on,
 including the supervisor tests; only the SDL dummy-video-driver integration
@@ -675,7 +675,7 @@ application peer comes from:
   (this section);
 - `--listen=HOST:PORT` relays the client's stdio to whichever app dials in
   ([Relay](#relay));
-- `--connect=HOST:PORT --targets=FILE` spawns a configured app behind a relay
+- `--connect=HOST:PORT --targets=PATH` spawns a configured app behind a relay
   ([Spawner](#spawner)).
 
 In every mode the client keeps the same endpoint; only the tools change when the
@@ -684,11 +684,11 @@ application comes and goes.
 Build it alongside the example:
 
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DSDL3MCP_BUILD_EXAMPLES=ON -DSDL3MCP_BUILD_SUPERVISOR=ON
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DSDL3MCP_BUILD_EXAMPLES=ON -DSDL3MCP_BUILD_CLI=ON
 cmake --build build --parallel
 ```
 
-`SDL3MCP_BUILD_SUPERVISOR` stays `OFF` by default, so the plain
+`SDL3MCP_BUILD_CLI` stays `OFF` by default, so the plain
 `cmake -S . -B build` flow does not build it. The `debug`, `shared`, `asan` and
 `tsan` presets set it to `ON`: each one builds `sdl3mcp` and registers
 `supervisor_tests` and `supervisor_real_app`. The `asan` preset runs both with
@@ -989,7 +989,7 @@ application is started separately with the relay's address:
 
 A relay waits for an application that somebody else started. The **spawner**
 closes that gap on the application's side: `sdl3mcp --connect=HOST:PORT
---targets=FILE` dials a relay, offers one spawn tool per configured application,
+--targets=PATH` dials a relay, offers one spawn tool per configured application,
 and starts the chosen one on demand, handing it a listener of its own to dial
 back to.
 
@@ -1007,25 +1007,48 @@ view is the spawner's tools. Once an application is spawned, the spawner's
 ### Spawner command line
 
 ```text
-sdl3mcp --connect=HOST:PORT --targets=FILE [--listen=HOST:PORT]
+sdl3mcp --connect=HOST:PORT --targets=PATH [--targets=PATH ...] [--listen=HOST:PORT]
 ```
 
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `--connect=HOST:PORT` | *(required)* | Relay to dial. A failed dial is fatal: the spawner prints `--connect:` with the endpoint and exits non-zero. |
-| `--targets=FILE` | *(required)* | JSON file listing the applications the spawner may start. |
+| `--targets=PATH` | *(required)* | A JSON file or a directory of `*.json` files listing the applications the spawner may start. Repeatable; every source contributes entries to one alias map. |
 | `--listen=HOST:PORT` | `127.0.0.1:0` | The address and port a spawned application dials back to. `[V6]:PORT` is accepted. |
 
-`--connect` and `--targets` must be given together, each at most once, and
+`--connect` must be given once, and `--targets` at least once (it may repeat);
 neither can be combined with `--target`. Without `--listen` the spawner binds
 `127.0.0.1:0`, so the kernel picks a port and only that machine can reach it.
 With an explicit `--listen` a bind failure fails the spawn; it never silently
 falls back to an ephemeral port.
 
-### Targets file
+### Targets sources
 
-The file is a JSON object. Each key is an alias and each value is the
-application's argument vector, executable first, arguments after it:
+Each source is either a file or a directory:
+
+- a regular file is a JSON object, read as one source;
+- a directory contributes every `*.json` regular file at its top level, read in
+  sorted filename order so the resulting menu is deterministic. Other files are
+  ignored, and a directory without any `*.json` file is an error.
+
+All sources accumulate into one map. That is what makes generated files usable:
+each build tree writes its own targets file, so two trees are combined by
+repeating the flag:
+
+```sh
+sdl3mcp --connect=HOST:PORT \
+  --targets=build/vulkan/sdl3mcp-targets.json \
+  --targets=build/opengl/sdl3mcp-targets.json \
+  --targets=./extra-targets
+```
+
+An alias may be defined by only one source. Seeing the same alias in two files
+is a startup error that names both paths; the later one never replaces the
+earlier one, because that would silently make one of the two binaries
+unreachable.
+
+In a file, each key is an alias and each value is the application's argument
+vector, executable first, arguments after it:
 
 ```json
 {
@@ -1038,14 +1061,56 @@ The spawner appends `--mcp=HOST:PORT` as the last argument, naming the listener 
 just bound, so an entry must not already carry an MCP argument.
 
 Validation happens at startup and a failure is fatal before any socket or child
-exists; the error names the file or entry:
+exists; the error names the offending path, file, or entry:
 
-- the file must open and parse as JSON;
-- the top level must be a non-empty JSON object;
+- every path must exist and every file must open, inside a directory included;
+- each file must parse as JSON;
+- each file's top level must be a non-empty JSON object;
 - every key must match `[a-z0-9_]+` and must not begin with the reserved
   `app_spawn_` prefix;
 - every value must be a non-empty array of strings;
-- no element may contain `--mcp` anywhere, because the spawner supplies it.
+- no element may contain `--mcp` anywhere, because the spawner supplies it;
+- the accumulated map must not be empty;
+- an alias may not appear in two sources.
+
+### Generating the targets file
+
+A project that builds its applications against SDL3MCP can register them in
+CMake instead of hand-writing the file. `sdl3mcp_app(<alias> <target> [ARGS
+<arg>...])` records an executable target and writes the targets file at generate
+time:
+
+```cmake
+add_executable(minimal minimal/main.c)
+target_link_libraries(minimal PRIVATE SDL3MCP::SDL3MCP SDL3::SDL3)
+sdl3mcp_app(minimal minimal)
+sdl3mcp_app(probe probe ARGS --fast --no-audio)
+```
+
+- The alias is required and must match `[a-z0-9_]+`; the reserved `app_spawn_`
+  prefix is rejected, because the spawner derives the tool name from it.
+- The target must exist, and an alias may be registered once per configure: a
+  duplicate fails at configure time with a message naming both targets.
+- The entry's first element is `$<TARGET_FILE:<target>>`, so the generated file
+  carries absolute paths resolved by the generator.
+- The file lands at `${CMAKE_BINARY_DIR}/sdl3mcp-targets.json`, the top-level
+  build directory of the configure.
+- Registration only appends to a global property. The write is deferred to the
+  end of the top-level directory, so applications registered from different
+  subdirectories all end up in one file and no CMakeLists calls the writer
+  itself. With no registration the file is never written.
+- Extra `ARGS` elements become the entry's trailing arguments; quotes and
+  backslashes are escaped for JSON. The `--mcp` rule above still applies, and
+  the spawner rejects such an entry at startup.
+
+The submodule's own `examples/CMakeLists.txt` registers the `minimal` example
+this way, so configuring with `SDL3MCP_BUILD_EXAMPLES=ON` and building the
+example produces `build/sdl3mcp-targets.json` with a single `minimal` entry.
+
+Each configure writes its own file, so a spawner that should offer applications
+from several build trees passes them as repeated `--targets` values, or points
+`--targets` at a directory holding them. Generated entries carry absolute paths,
+so mixing a generated file with a hand-written one is safe.
 
 ### Tool view and spawning
 
@@ -2002,7 +2067,7 @@ Test suite (all registered with CTest): `header_c`, `header_cpp`,
 `replay_tests`, `mouse_tests`, `queue_tests`, `app_input_tests`,
 `input_tool_tests`, `capture_tests`, `capture_tool_tests`, `terminate_tests`,
 `json_rpc_tests`, `session_tests`, `frame_tests`, `info_tests`, `server_tests`,
-and six `lifecycle_*` scenarios. With `SDL3MCP_BUILD_SUPERVISOR=ON` it also adds
+and six `lifecycle_*` scenarios. With `SDL3MCP_BUILD_CLI=ON` it also adds
 `supervisor_png_tests` for the moved presentation code, `supervisor_tests`,
 which drives the real supervisor binary against a fake MCP child, `relay_tests`,
 which drives `--listen` against a fake application over TCP, `spawner_tests`,

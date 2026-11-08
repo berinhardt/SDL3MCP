@@ -4,16 +4,18 @@
   Three modes:
     --target <executable> [app args...]   manage a child app over stdio
     --listen=HOST:PORT                    act as a relay for a dialing app
-    --connect=HOST:PORT --targets=FILE    spawn apps for a relay, one at a time
+    --connect=HOST:PORT --targets=PATH    spawn apps for a relay, one at a time
 
-  --listen also serves as the bind address for the spawner's per-spawn listener;
-  without it the spawner binds 127.0.0.1:0.
+  --targets may be repeated; each PATH is a JSON file or a directory of *.json
+  files, and all of them accumulate into one alias map. --listen also serves as
+  the bind address for the spawner's per-spawn listener; without it the spawner
+  binds 127.0.0.1:0.
 
   Splitting the parse from argv keeps the grammar testable without a process:
   parseCommandLine() takes the plain argument list and returns a value. Everything
   after the --target executable belongs to the child verbatim, so a child flag
   that happens to look like a supervisor option is never consumed here. The
-  targets file is read here too, so a bad file is a single startup error.
+  targets sources are read here too, so a bad source is a single startup error.
 */
 
 #ifndef SDL3MCP_SUPERVISOR_CLI_HPP
@@ -45,8 +47,8 @@ struct SupervisorOptions
     /* The relay to dial; empty unless --connect=HOST:PORT was given. */
     std::string connectHost;
     std::uint16_t connectPort = 0;
-    /* --targets=FILE as written, plus its validated contents. */
-    std::string targetsPath;
+    /* --targets=PATH as written, one entry per flag. */
+    std::vector<std::string> targetsPaths;
     SpawnTargets targets;
 
     /* Spawner mode: dial a relay and spawn the targets on demand. */
@@ -65,7 +67,7 @@ struct CliParseResult
 /*
   Parses argv without argv[0]. Returns ok=false with a one-line explanation when
   an option is unknown, missing its value, the modes conflict, both --connect and
-  --targets are not supplied together, or the targets file fails validation.
+  --targets are not supplied together, or a targets source fails validation.
 */
 CliParseResult parseCommandLine(const std::vector<std::string> &arguments);
 

@@ -17,7 +17,7 @@ are in `src/`, and `examples/minimal` is a complete host.
   `ctest --test-dir build --output-on-failure`. For the shared configuration use
   a separate directory with `-DSDL3MCP_BUILD_SHARED=ON`. `CMakePresets.json`
   wraps the same configurations as `debug`, `shared`, `asan`, and `tsan`
-  presets. All four pass `-DSDL3MCP_BUILD_SUPERVISOR=ON`, so every preset builds
+  presets. All four pass `-DSDL3MCP_BUILD_CLI=ON`, so every preset builds
   `sdl3mcp` and registers the supervisor tests; the `asan` suite runs
   with leak detection on (the real-example supervisor test scopes it off for
   itself and its SDL child) and `tsan` filters to `queue_tests`, `server_tests`,
@@ -32,12 +32,12 @@ are in `src/`, and `examples/minimal` is a complete host.
   prose, the region's captured-frame dimensions, the four-argument
   `SDL3MCP_WriteFrame` signature, the run command, the supervisor states, and
   the loop order. CTest registers it as `readme_check` when Python 3 is found.
-- `SDL3MCP_BUILD_SUPERVISOR=ON` builds `build/sdl3mcp`, one executable with
+- `SDL3MCP_BUILD_CLI=ON` builds `build/sdl3mcp`, one executable with
   three modes over one peer seam. `--target <executable>` is the child
   supervisor: it speaks MCP on its own stdio and runs one target child at a time
   over private pipes. `--listen=HOST:PORT` is a relay: it speaks MCP on its own
   stdio and proxies to whichever application dials in, one session at a time.
-  `--connect=HOST:PORT --targets=FILE [--listen=HOST:PORT]` is a spawner: it
+  `--connect=HOST:PORT --targets=PATH [--listen=HOST:PORT]` is a spawner: it
   dials a relay, advertises one `app_spawn_<alias>` per targets entry, and starts
   the chosen application with `--mcp=HOST:PORT` so it dials back to a listener
   the spawner owns. The modes vary only how the data-path `Peer`

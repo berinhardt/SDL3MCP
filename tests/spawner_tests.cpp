@@ -24,6 +24,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <dirent.h>
 #include <poll.h>
 #include <signal.h>
 #include <sys/socket.h>
@@ -97,6 +98,42 @@ struct TempPath
     }
     TempPath(const TempPath &) = delete;
     TempPath &operator=(const TempPath &) = delete;
+};
+
+/* A private directory emptied and removed on destruction. */
+struct TempDir
+{
+    std::string path;
+
+    TempDir()
+    {
+        char buffer[] = "/tmp/sdl3mcp-targets-XXXXXX";
+        const char *created = ::mkdtemp(buffer);
+        CHECK(created != nullptr);
+        path = created;
+    }
+
+    ~TempDir()
+    {
+        if (path.empty()) {
+            return;
+        }
+        if (DIR *directory = ::opendir(path.c_str())) {
+            while (const dirent *entry = ::readdir(directory)) {
+                const std::string name = entry->d_name;
+                if (name != "." && name != "..") {
+                    ::unlink((path + "/" + name).c_str());
+                }
+            }
+            ::closedir(directory);
+        }
+        ::rmdir(path.c_str());
+    }
+
+    TempDir(const TempDir &) = delete;
+    TempDir &operator=(const TempDir &) = delete;
+
+    std::string file(const std::string &name) const { return path + "/" + name; }
 };
 
 /* A forked process with stdin/stdout/stderr pipes, killed and reaped on destruction. */
@@ -597,6 +634,67 @@ void testCommandLineAndToolList()
     CHECK(timeout["minimum"] == 1);
 }
 
+/* ---- multiple --targets sources ---------------------------------------- */
+
+void testTargetsSources()
+{
+    /* A directory contributes every top-level *.json in sorted filename order. */
+    TempDir directory;
+    writeFile(directory.file("10-vulkan.json"), R"({"alpha":["./alpha"]})");
+    writeFile(directory.file("20-opengl.json"), R"({"beta":["/bin/beta"]})");
+    writeFile(directory.file("notes.txt"), "ignored");
+
+    sdl3mcp::SpawnTargets targets;
+    std::string error;
+    CHECK(sdl3mcp::loadSpawnTargets(directory.path, targets, error));
+    CHECK(targets.size() == 2);
+    CHECK(targets[0].alias == "alpha");
+    CHECK(targets[1].alias == "beta");
+
+    /* Repeating --targets unions a directory and a hand-written file. */
+    TempDir extra;
+    writeFile(extra.file("extra.json"), R"({"gamma":["./gamma"]})");
+    const sdl3mcp::CliParseResult repeated =
+        sdl3mcp::parseCommandLine({"--connect=127.0.0.1:1234",
+                                   "--targets=" + directory.path,
+                                   "--targets=" + extra.file("extra.json")});
+    CHECK(repeated.ok);
+    CHECK(repeated.options.targetsPaths.size() == 2);
+    CHECK((toolNames(nlohmann::json{{"result", sdl3mcp::spawnerToolList(
+                                                        repeated.options.targets)}}) ==
+           std::vector<std::string>{"app_spawn_alpha", "app_spawn_beta",
+                                    "app_spawn_gamma"}));
+
+    /* A duplicate alias across two files names both and replaces neither. */
+    TempDir duplicates;
+    writeFile(duplicates.file("a.json"), R"({"alpha":["/a"]})");
+    writeFile(duplicates.file("b.json"), R"({"alpha":["/b"]})");
+    CHECK(!sdl3mcp::loadSpawnTargets(duplicates.path, targets, error));
+    CHECK(targets.empty());
+    CHECK(error.find(duplicates.file("a.json")) != std::string::npos);
+    CHECK(error.find(duplicates.file("b.json")) != std::string::npos);
+
+    /* Malformed JSON inside a directory names the offending file. */
+    TempDir broken;
+    writeFile(broken.file("good.json"), R"({"good":["/good"]})");
+    writeFile(broken.file("zz-broken.json"), "{");
+    CHECK(!sdl3mcp::loadSpawnTargets(broken.path, targets, error));
+    CHECK(error.find(broken.file("zz-broken.json")) != std::string::npos);
+
+    /* A non-object top level inside a directory names its file too. */
+    TempDir arrayTop;
+    writeFile(arrayTop.file("list.json"), "[]");
+    CHECK(!sdl3mcp::loadSpawnTargets(arrayTop.path, targets, error));
+    CHECK(error.find(arrayTop.file("list.json")) != std::string::npos);
+    CHECK(error.find("JSON object") != std::string::npos);
+
+    /* A directory with no *.json files is an error naming the directory. */
+    TempDir empty;
+    CHECK(!sdl3mcp::loadSpawnTargets(empty.path, targets, error));
+    CHECK(error.find(empty.path) != std::string::npos);
+    CHECK(error.find("*.json") != std::string::npos);
+}
+
 /* ---- the spawner against a relay the test owns ------------------------- */
 
 struct SpawnerFixture
@@ -879,6 +977,7 @@ int main(int argc, char **argv)
 
     testTargetsValidation();
     testCommandLineAndToolList();
+    testTargetsSources();
     testSpawnerRoundTrip(spawner, fakeChild);
     testRelayLoopback(spawner, fakeChild);
     testExplicitListenBindFailure(spawner, fakeChild);

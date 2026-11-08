@@ -17,6 +17,7 @@
 
 #include "cli.hpp"
 #include "supervisor.hpp"
+#include "tools.hpp"
 #include "transport.hpp"
 
 #include "test_util.hpp"
@@ -48,7 +49,6 @@ namespace
 
 using namespace std::chrono_literals;
 using sdl3mcp::ReadStatus;
-using sdl3mcp::SupervisorState;
 using sdl3mcp::Transport;
 
 constexpr int kLineTimeoutMs = 5000;
@@ -252,6 +252,12 @@ std::vector<std::string> toolNames(const nlohmann::json &listResponse)
         names.push_back(tool.value("name", std::string()));
     }
     return names;
+}
+
+/* Child mode advertises the same set in Idle, Starting and Running. */
+std::vector<std::string> childToolNames()
+{
+    return {"spawn", "sdl_info", "sdl_input", "sdl_capture", "sdl_terminate"};
 }
 
 std::string spawnText(const nlohmann::json &spawnResponse)
@@ -460,52 +466,83 @@ void testCommandLine()
 
 void testToolListViews()
 {
-    const nlohmann::json idle =
-        sdl3mcp::supervisorToolList(SupervisorState::Idle, nlohmann::json::array());
-    CHECK(idle["tools"].is_array());
-    CHECK(idle["tools"].size() == 1);
-    CHECK(idle["tools"][0]["name"] == "spawn");
-    CHECK(idle["tools"][0]["inputSchema"]["type"] == "object");
+    /* Child mode: `spawn` plus the application's four tools, in every state. */
+    sdl3mcp::SupervisorOptions childOptions;
+    const nlohmann::json childBase = sdl3mcp::supervisorToolList(childOptions);
+    CHECK((toolNames(nlohmann::json{{"result", childBase}}) ==
+           std::vector<std::string>{"spawn", "sdl_info", "sdl_input", "sdl_capture",
+                                    "sdl_terminate"}));
 
-    const nlohmann::json starting =
-        sdl3mcp::supervisorToolList(SupervisorState::Starting, nlohmann::json::array());
-    CHECK(starting["tools"].is_array());
-    CHECK(starting["tools"].empty());
+    /* The view is a function of the mode only: nothing else can change it. */
+    CHECK(sdl3mcp::supervisorToolList(childOptions) == childBase);
 
-    const nlohmann::json childTools = nlohmann::json::array({
-        nlohmann::json{{"name", "sdl_info"}},
-        nlohmann::json{{"name", "sdl_input"}},
-    });
-    const nlohmann::json running =
-        sdl3mcp::supervisorToolList(SupervisorState::Running, childTools);
-    CHECK(running["tools"] == childTools);
+    /* Relay mode: `wait_session` plus those same four, before any peer exists. */
+    sdl3mcp::SupervisorOptions relayOptions;
+    relayOptions.listenHost = "127.0.0.1";
+    const nlohmann::json relayBase = sdl3mcp::supervisorToolList(relayOptions);
+    const nlohmann::json relayResponse{{"result", relayBase}};
+    CHECK((toolNames(relayResponse) ==
+           std::vector<std::string>{"wait_session", "sdl_info", "sdl_input", "sdl_capture",
+                                    "sdl_terminate"}));
 
-    /* The child's sdl_capture has no presentation: the supervisor's replaces it. */
-    const nlohmann::json childWithCapture = nlohmann::json::array({
-        nlohmann::json{{"name", "sdl_info"}},
-        nlohmann::json{{"name", "sdl_capture"},
-                       {"description", "child capture"},
-                       {"inputSchema", nlohmann::json{{"type", "object"}}}},
-        nlohmann::json{{"name", "sdl_terminate"}},
-    });
-    const nlohmann::json replaced =
-        sdl3mcp::supervisorToolList(SupervisorState::Running, childWithCapture);
-    CHECK(replaced["tools"].size() == 3);
-    CHECK(replaced["tools"][0] == childWithCapture[0]);
-    CHECK(replaced["tools"][2] == childWithCapture[2]);
-    CHECK(replaced["tools"][1]["description"] != "child capture");
+    /* Spawner mode: one app_spawn_<alias> per target, then the same four. */
+    sdl3mcp::SupervisorOptions spawnerOptions;
+    spawnerOptions.connectHost = "127.0.0.1";
+    spawnerOptions.connectPort = 1234;
+    sdl3mcp::SpawnTarget target;
+    target.alias = "alpha";
+    target.argv = {"./alpha"};
+    spawnerOptions.targets.push_back(target);
+    CHECK((toolNames(nlohmann::json{{"result",
+                                     sdl3mcp::supervisorToolList(spawnerOptions)}}) ==
+           std::vector<std::string>{"app_spawn_alpha", "sdl_info", "sdl_input",
+                                    "sdl_capture", "sdl_terminate"}));
 
-    const nlohmann::json &schema = replaced["tools"][1]["inputSchema"];
-    const nlohmann::json &properties = schema["properties"];
+    /* sdl_capture always carries the supervisor's PNG presentation. */
+    const nlohmann::json *capture = findTool(relayResponse, "sdl_capture");
+    CHECK(capture != nullptr);
+    CHECK(capture->at("description").get<std::string>().find("PNG") != std::string::npos);
+    const nlohmann::json &properties = capture->at("inputSchema").at("properties");
     CHECK(properties.size() == 2);
     CHECK(properties.contains("region"));
     CHECK(properties.contains("timeout_ms"));
     CHECK(properties["timeout_ms"]["minimum"] == 1);
     CHECK(properties["timeout_ms"]["maximum"] == 60000);
-    CHECK(!childWithCapture[1]["inputSchema"].contains("properties"));
+
+    /* Merging a bare application over the base is an identity. */
+    CHECK(sdl3mcp::mergePeerTools(relayBase, sdl3mcp::applicationToolList()) == relayBase);
+
+    /* The peer's own entries win by name, except for the supervisor's capture. */
+    nlohmann::json peerTools = sdl3mcp::applicationToolList();
+    for (nlohmann::json &tool : peerTools) {
+        const std::string name = tool.value("name", std::string());
+        if (name == "sdl_info") {
+            tool["description"] = "peer info";
+        } else if (name == "sdl_capture") {
+            tool["description"] = "peer capture";
+            tool["inputSchema"] = nlohmann::json{{"type", "object"}};
+        }
+    }
+    peerTools.push_back(nlohmann::json{{"name", "app_extra"},
+                                       {"description", "peer extra"},
+                                       {"inputSchema", nlohmann::json{{"type", "object"}}}});
+
+    const nlohmann::json merged = sdl3mcp::mergePeerTools(relayBase, peerTools);
+    const nlohmann::json mergedResponse{{"result", merged}};
+    CHECK((toolNames(mergedResponse) ==
+           std::vector<std::string>{"wait_session", "sdl_info", "sdl_input", "sdl_capture",
+                                    "sdl_terminate", "app_extra"}));
+    const nlohmann::json *mergedInfo = findTool(mergedResponse, "sdl_info");
+    CHECK(mergedInfo != nullptr);
+    CHECK((*mergedInfo)["description"] == "peer info");
+    const nlohmann::json *mergedCapture = findTool(mergedResponse, "sdl_capture");
+    CHECK(mergedCapture != nullptr);
+    CHECK((*mergedCapture)["description"] != "peer capture");
+    CHECK(mergedCapture->at("inputSchema").at("properties").contains("region"));
 }
 
-void testIdleListsOnlySpawn(const std::string &supervisor, const std::string &fakeChild)
+void testIdleAdvertisesSpawnAndAppTools(const std::string &supervisor,
+                                        const std::string &fakeChild)
 {
     SupervisorClient client;
     client.start(supervisor, {"--target", fakeChild});
@@ -517,8 +554,13 @@ void testIdleListsOnlySpawn(const std::string &supervisor, const std::string &fa
     CHECK(initialize["result"]["serverInfo"]["name"] == "sdl3mcp");
     CHECK(initialize["result"]["serverInfo"]["version"].is_string());
 
+    /*
+      Idle already advertises the application tools: the list depends on the
+      mode, not on whether a child is attached, so a spawn cannot move it.
+    */
     const std::vector<std::string> names = toolNames(client.toolsList());
-    CHECK((names == std::vector<std::string>{"spawn"}));
+    CHECK((names == std::vector<std::string>{"spawn", "sdl_info", "sdl_input",
+                                            "sdl_capture", "sdl_terminate"}));
     CHECK(client.listChangedCount() == 0);
 
     const nlohmann::json ping = client.request("ping");
@@ -541,6 +583,8 @@ void testSpawnAndProxy(const std::string &supervisor,
                               "--pid-file", pidFile});
     CHECK(!client.initialize().contains("error"));
 
+    const nlohmann::json idleList = client.toolsList();
+
     const nlohmann::json spawn = client.spawn();
     CHECK(!spawn.contains("error"));
     CHECK(spawn["result"]["isError"] == false);
@@ -550,13 +594,13 @@ void testSpawnAndProxy(const std::string &supervisor,
     CHECK(text.find("640") != std::string::npos);
     CHECK(text.find("480") != std::string::npos);
 
-    /* Starting and Running each sent one list-changed notification. */
-    CHECK(client.listChangedCount() >= 2);
+    /* A spawn changes no tool list, so it announces no change either. */
+    CHECK(client.listChangedCount() == 0);
+    CHECK(client.toolsList()["result"].dump() == idleList["result"].dump());
 
     const std::vector<std::string> names = toolNames(client.toolsList());
-    CHECK((names ==
-           std::vector<std::string>{"sdl_info", "sdl_input", "sdl_capture",
-                                    "sdl_terminate"}));
+    CHECK((names == std::vector<std::string>{"spawn", "sdl_info", "sdl_input",
+                                            "sdl_capture", "sdl_terminate"}));
 
     /* Proxied sdl_info keeps the child's payload. */
     const nlohmann::json info = client.callTool("sdl_info");
@@ -578,11 +622,6 @@ void testSpawnAndProxy(const std::string &supervisor,
     const std::string captureDescription = (*captureTool)["description"].get<std::string>();
     CHECK(captureDescription.find("PNG") != std::string::npos);
     CHECK(captureDescription.find("native pixel size") != std::string::npos);
-    const nlohmann::json *infoTool = findTool(list, "sdl_info");
-    CHECK(infoTool != nullptr);
-    CHECK((*infoTool)["description"] == "fake child tool");
-    const nlohmann::json childSchema{{"type", "object"}};
-    CHECK((*infoTool)["inputSchema"] == childSchema);
 
     /* Proxied sdl_input keeps the child's content unchanged. */
     const nlohmann::json input =
@@ -593,11 +632,14 @@ void testSpawnAndProxy(const std::string &supervisor,
               nlohmann::json{{"type", "text"}, {"text", "fake sdl_input ok"}},
           }));
 
-    /* A child JSON-RPC error travels back unchanged. */
+    /*
+      A name the child does not advertise is refused by the supervisor instead
+      of being forwarded, so it answers at once with the name in the message.
+    */
     const nlohmann::json unknown = client.callTool("nope");
-    CHECK(unknown.contains("error"));
-    CHECK(unknown["error"]["code"] == -32602);
-    CHECK(unknown["error"]["message"] == "Unknown tool: nope");
+    CHECK(!unknown.contains("error"));
+    CHECK(unknown["result"]["isError"] == true);
+    CHECK(spawnText(unknown) == "the application does not provide nope");
 
     /* A second spawn is refused while the child owns the tools. */
     const nlohmann::json second = client.spawn();
@@ -638,6 +680,7 @@ void testCaptureStaysNativeSize(const std::string &supervisor,
     const std::string text = content[0]["text"].get<std::string>();
     CHECK(text.rfind("64x32 PNG", 0) == 0);
     CHECK(text.find(" bytes") != std::string::npos);
+    CHECK(text.find("frame 11 attached") != std::string::npos);
     CHECK(pngHasSize(decodeBase64(content[1]["data"].get<std::string>()), 64, 32));
 
     client.process.closeStdin();
@@ -663,6 +706,7 @@ void testCaptureRegion(const std::string &supervisor, const std::string &fakeChi
     CHECK(content.size() == 2);
     const std::string text = content[0]["text"].get<std::string>();
     CHECK(text.rfind("16x8 PNG at 0,0", 0) == 0);
+    CHECK(text.find("frame 11 attached") != std::string::npos);
     CHECK(pngHasSize(decodeBase64(content[1]["data"].get<std::string>()), 16, 8));
 
     client.process.closeStdin();
@@ -750,6 +794,81 @@ void testCaptureLargeFrame(const std::string &supervisor, const std::string &fak
     CHECK(client.process.waitForExit(kLineTimeoutMs));
 }
 
+/*
+  sdl_input now answers with the frame that follows its batch. The fake child
+  sends the raw framing plus the text naming the applied frame, and the proxy
+  must turn that into exactly the same text-plus-image result it builds for
+  sdl_capture, then stay in step for the next call.
+*/
+void testInputFrameThroughProxy(const std::string &supervisor,
+                                const std::string &fakeChild)
+{
+    SupervisorClient client;
+    client.start(supervisor, {"--target", fakeChild, "--input-frame",
+                              "--capture-width", "32", "--capture-height", "16"});
+    CHECK(!client.initialize().contains("error"));
+    CHECK(!client.spawn().contains("error"));
+
+    const nlohmann::json input =
+        client.callTool("sdl_input", nlohmann::json{{"actions", nlohmann::json::array()}});
+    CHECK(!input.contains("error"));
+    CHECK(input["result"]["isError"] == false);
+
+    const nlohmann::json &content = input["result"]["content"];
+    CHECK(content.is_array());
+    CHECK(content.size() == 2);
+    CHECK(content[0]["type"] == "text");
+    const std::string inputText = content[0]["text"].get<std::string>();
+    CHECK(inputText.find("applied at frame 7") != std::string::npos);
+    CHECK(inputText.find("frame 9 attached") != std::string::npos);
+    CHECK(inputText.find("rendered after the actions were delivered") !=
+          std::string::npos);
+    CHECK(content[1]["type"] == "image");
+    CHECK(content[1]["mimeType"] == "image/png");
+    CHECK(pngHasSize(decodeBase64(content[1]["data"].get<std::string>()), 32, 16));
+
+    /* The payload was consumed whole: the next call's line parses normally. */
+    const nlohmann::json info = client.callTool("sdl_info");
+    CHECK(info["result"]["isError"] == false);
+    const nlohmann::json payload = nlohmann::json::parse(spawnText(info));
+    CHECK(payload["window"]["title"] == "Fake Child Window");
+
+    client.process.closeStdin();
+    CHECK(client.process.waitForExit(kLineTimeoutMs));
+}
+
+/*
+  sdl_input waits for the apply and then for the frame, so the proxy's default
+  deadline must be longer than one frame timeout. A child that answers after
+  2.5 s would have been detached by the old 2 s default.
+*/
+void testInputForwardDeadline(const std::string &supervisor,
+                              const std::string &fakeChild)
+{
+    SupervisorClient client;
+    client.start(supervisor, {"--target", fakeChild, "--input-delay-ms", "2500"});
+    CHECK(!client.initialize().contains("error"));
+    CHECK(!client.spawn().contains("error"));
+
+    const auto started = std::chrono::steady_clock::now();
+    const nlohmann::json input = client.callTool(
+        "sdl_input", nlohmann::json{{"actions", nlohmann::json::array()}}, 10000);
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - started)
+                             .count();
+
+    CHECK(!input.contains("error"));
+    CHECK(input["result"]["isError"] == false);
+    CHECK(elapsed >= 2500);
+    CHECK(elapsed < 9000);
+
+    /* The session survived the slow answer. */
+    CHECK(client.callTool("sdl_info")["result"]["isError"] == false);
+
+    client.process.closeStdin();
+    CHECK(client.process.waitForExit(kLineTimeoutMs));
+}
+
 void testChildExitWhileRunning(const std::string &supervisor, const std::string &fakeChild)
 {
     SupervisorClient client;
@@ -760,12 +879,14 @@ void testChildExitWhileRunning(const std::string &supervisor, const std::string 
     CHECK(!spawn.contains("error"));
     CHECK(spawn["result"]["isError"] == false);
 
-    /* The only message after the spawn response is the withdrawal notice. */
-    const nlohmann::json notification = client.readMessage();
-    CHECK(notification["method"] == "notifications/tools/list_changed");
-
-    const std::vector<std::string> names = toolNames(client.toolsList());
-    CHECK((names == std::vector<std::string>{"spawn"}));
+    /* The exit is silent: the advertised list never included the child's state. */
+    const std::string runningList = client.toolsList()["result"].dump();
+    std::this_thread::sleep_for(std::chrono::milliseconds(700));
+    CHECK(client.notifications.empty());
+    CHECK(client.toolsList()["result"].dump() == runningList);
+    CHECK((toolNames(client.toolsList()) ==
+           std::vector<std::string>{"spawn", "sdl_info", "sdl_input", "sdl_capture",
+                                    "sdl_terminate"}));
 
     client.process.closeStdin();
     CHECK(client.process.waitForExit(kLineTimeoutMs));
@@ -782,11 +903,11 @@ void testChildExitDuringStartup(const std::string &supervisor, const std::string
     CHECK(spawn["result"]["isError"] == true);
     CHECK(spawnText(spawn).find("fake-child:") != std::string::npos);
 
-    /* Starting and the failed return to Idle are both announced. */
-    CHECK(client.listChangedCount() >= 2);
+    /* The failed startup changes nothing a client can list. */
+    CHECK(client.listChangedCount() == 0);
 
     const std::vector<std::string> names = toolNames(client.toolsList());
-    CHECK((names == std::vector<std::string>{"spawn"}));
+    CHECK((names == childToolNames()));
 
     client.process.closeStdin();
     CHECK(client.process.waitForExit(kLineTimeoutMs));
@@ -804,7 +925,7 @@ void testInitializeFailure(const std::string &supervisor, const std::string &fak
     CHECK(spawnText(spawn).find("cannot initialize") != std::string::npos);
 
     const std::vector<std::string> names = toolNames(client.toolsList());
-    CHECK((names == std::vector<std::string>{"spawn"}));
+    CHECK((names == childToolNames()));
 
     client.process.closeStdin();
     CHECK(client.process.waitForExit(kLineTimeoutMs));
@@ -824,7 +945,7 @@ void testNonexistentTarget(const std::string &supervisor)
     CHECK(text.find("cannot execute") != std::string::npos);
 
     const std::vector<std::string> names = toolNames(client.toolsList());
-    CHECK((names == std::vector<std::string>{"spawn"}));
+    CHECK((names == childToolNames()));
 
     client.process.closeStdin();
     CHECK(client.process.waitForExit(kLineTimeoutMs));
@@ -849,7 +970,7 @@ void testWindowTimeout(const std::string &supervisor, const std::string &fakeChi
     CHECK(elapsed < 5000);
 
     const std::vector<std::string> names = toolNames(client.toolsList());
-    CHECK((names == std::vector<std::string>{"spawn"}));
+    CHECK((names == childToolNames()));
 
     client.process.closeStdin();
     CHECK(client.process.waitForExit(kLineTimeoutMs));
@@ -877,9 +998,9 @@ void testTerminateNormal(const std::string &supervisor,
     CHECK(spawnText(terminated) == "terminated");
 
     const std::vector<std::string> names = toolNames(client.toolsList());
-    CHECK((names == std::vector<std::string>{"spawn"}));
-    /* Starting, Running, and the exit: one announcement each, no duplicate. */
-    CHECK(client.listChangedCount() == 3);
+    CHECK((names == childToolNames()));
+    /* Neither the spawn nor the exit changed the list, so nothing was announced. */
+    CHECK(client.listChangedCount() == 0);
     CHECK(!processIsAlive(childPid));
 
     client.process.closeStdin();
@@ -916,8 +1037,8 @@ void testTerminateWatchdog(const std::string &supervisor,
     CHECK(elapsed < 10000);
 
     const std::vector<std::string> names = toolNames(client.toolsList());
-    CHECK((names == std::vector<std::string>{"spawn"}));
-    CHECK(client.listChangedCount() == 3);
+    CHECK((names == childToolNames()));
+    CHECK(client.listChangedCount() == 0);
     CHECK(!processIsAlive(childPid));
 
     client.process.closeStdin();
@@ -961,7 +1082,7 @@ void testRealExample(const std::string &supervisor, const std::string &example)
     CHECK(!client.initialize().contains("error"));
 
     const std::vector<std::string> idleNames = toolNames(client.toolsList());
-    CHECK((idleNames == std::vector<std::string>{"spawn"}));
+    CHECK((idleNames == childToolNames()));
 
     const nlohmann::json spawn = client.spawn(20000);
     CHECK(spawn["result"]["isError"] == false);
@@ -1013,24 +1134,57 @@ void testRealExample(const std::string &supervisor, const std::string &example)
     CHECK(spawnText(terminated) == "terminated");
 
     const std::vector<std::string> backToIdle = toolNames(client.toolsList());
-    CHECK((backToIdle == std::vector<std::string>{"spawn"}));
+    CHECK((backToIdle == childToolNames()));
 
     client.process.closeStdin();
     CHECK(client.process.waitForExit(kLineTimeoutMs * 2));
     CHECK(waitForNoProcessUsingExecutable(example, 3000));
 }
 
+/*
+  `readme_check` runs this binary with --dump-tools to inspect the descriptions
+  tools/list really carries. Emitting the catalog here keeps the documentation
+  guard on the same data as the wire instead of on a copy in the README.
+*/
+void dumpToolDefinitions()
+{
+    nlohmann::json tools = nlohmann::json::array();
+    for (const sdl3mcp::ToolDefinition &tool : sdl3mcp::toolCatalog()) {
+        tools.push_back(nlohmann::json{
+            {"name", tool.name},
+            {"description", tool.description},
+            {"inputSchema", tool.inputSchema},
+        });
+    }
+
+    tools.push_back(sdl3mcp::spawnToolDefinition());
+    tools.push_back(sdl3mcp::waitSessionToolDefinition());
+    tools.push_back(sdl3mcp::supervisorCaptureToolDefinition());
+
+    sdl3mcp::SpawnTarget target;
+    target.alias = "demo";
+    target.argv = {"./demo"};
+    tools.push_back(sdl3mcp::spawnerToolDefinition(target));
+
+    std::printf("%s\n", tools.dump().c_str());
+}
+
 } // namespace
 
 int main(int argc, char **argv)
 {
+    if (argc == 2 && std::string_view(argv[1]) == "--dump-tools") {
+        dumpToolDefinitions();
+        return 0;
+    }
+
     CHECK(argc >= 3);
     const std::string supervisor = argv[1];
     const std::string fakeChild = argv[2];
 
     testCommandLine();
     testToolListViews();
-    testIdleListsOnlySpawn(supervisor, fakeChild);
+    testIdleAdvertisesSpawnAndAppTools(supervisor, fakeChild);
 
     const std::string pidFile = makeTempPath();
     testSpawnAndProxy(supervisor, fakeChild, pidFile);
@@ -1042,6 +1196,9 @@ int main(int argc, char **argv)
     testCaptureRpcError(supervisor, fakeChild);
     testCaptureMismatch(supervisor, fakeChild);
     testCaptureLargeFrame(supervisor, fakeChild);
+
+    testInputFrameThroughProxy(supervisor, fakeChild);
+    testInputForwardDeadline(supervisor, fakeChild);
 
     testChildExitWhileRunning(supervisor, fakeChild);
     testChildExitDuringStartup(supervisor, fakeChild);

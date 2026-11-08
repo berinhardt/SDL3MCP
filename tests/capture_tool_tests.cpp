@@ -174,6 +174,8 @@ CaptureResponse readCapture(MessageReader &reader, int id)
     CHECK(result["width"].is_number_integer());
     CHECK(result["height"].is_number_integer());
     CHECK(result["byteLength"].is_number_integer());
+    /* The stamp names the app frame the pixels came from. */
+    CHECK(result["frame"].is_number_unsigned());
 
     CaptureResponse capture;
     capture.header = result;
@@ -275,6 +277,9 @@ void runClient(int requestsFd, MessageReader &reader)
     CHECK(full.header["byteLength"] == 64 * 64 * 4);
     CHECK(full.pixels.size() == 64 * 64 * 4);
     CHECK(allPixelsAreClearColor(full.pixels));
+    /* A later capture holds a later frame, and the crop kept the earlier stamp. */
+    CHECK(full.header["frame"].get<std::uint64_t>() >
+          cropped.header["frame"].get<std::uint64_t>());
     CHECK(reader.pending.empty());
 
     const nlohmann::json info =

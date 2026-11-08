@@ -14,6 +14,7 @@
 #include "cli.hpp"
 #include "socket_connect.hpp"
 #include "supervisor.hpp"
+#include "tools.hpp"
 #include "transport.hpp"
 
 #include "test_util.hpp"
@@ -302,16 +303,6 @@ struct RelayClient
         }
         return count;
     }
-
-    /* Reads notifications until at least `expected` list_changed ones arrived. */
-    void waitForListChanged(size_t expected)
-    {
-        while (listChangedCount() < expected) {
-            const nlohmann::json message = readMessage();
-            CHECK(message.contains("method"));
-            notifications.push_back(message);
-        }
-    }
 };
 
 /* The base64 a downstream supervisor hands a relay: an image already presented. */
@@ -418,6 +409,7 @@ struct FakePeer
                      {"width", width},
                      {"height", height},
                      {"byteLength", byteLength},
+                     {"frame", 12},
                  }},
             });
             std::vector<uint8_t> pixels(byteLength, 0x80);
@@ -501,6 +493,43 @@ nlohmann::json peerToolList()
     });
 }
 
+/* The four tools a bare application advertises, straight from the library catalog. */
+nlohmann::json barePeerToolList()
+{
+    nlohmann::json tools = nlohmann::json::array();
+    for (const sdl3mcp::ToolDefinition &tool : sdl3mcp::toolCatalog()) {
+        tools.push_back(nlohmann::json{
+            {"name", std::string(tool.name)},
+            {"description", std::string(tool.description)},
+            {"inputSchema", tool.inputSchema},
+            {"annotations", tool.annotations},
+        });
+    }
+    return tools;
+}
+
+/* A spawner's view: its app_spawn_<alias> entries plus the application block. */
+nlohmann::json spawnerPeerToolList()
+{
+    nlohmann::json tools = nlohmann::json::array({
+        nlohmann::json{
+            {"name", "app_spawn_app"},
+            {"description", "fake spawner tool"},
+            {"inputSchema", nlohmann::json{{"type", "object"}}},
+        },
+    });
+    for (const nlohmann::json &tool : barePeerToolList()) {
+        tools.push_back(tool);
+    }
+    return tools;
+}
+
+/* The relay's mode-derived view: wait_session plus the application block. */
+std::vector<std::string> relayToolNames()
+{
+    return {"wait_session", "sdl_info", "sdl_input", "sdl_capture", "sdl_terminate"};
+}
+
 std::vector<std::string> toolNames(const nlohmann::json &listResponse)
 {
     CHECK(listResponse.contains("result"));
@@ -512,6 +541,20 @@ std::vector<std::string> toolNames(const nlohmann::json &listResponse)
         names.push_back(tool.value("name", std::string()));
     }
     return names;
+}
+
+const nlohmann::json *toolByName(const nlohmann::json &listResponse,
+                                 const std::string &name)
+{
+    CHECK(listResponse.contains("result"));
+    const nlohmann::json &tools = listResponse["result"]["tools"];
+    CHECK(tools.is_array());
+    for (const nlohmann::json &tool : tools) {
+        if (tool.value("name", std::string()) == name) {
+            return &tool;
+        }
+    }
+    return nullptr;
 }
 
 std::string resultText(const nlohmann::json &response)
@@ -546,6 +589,32 @@ std::vector<std::string> awaitToolNames(RelayClient &client,
             std::fprintf(stderr, "tools/list never matched; last view: %s\n", seen.c_str());
             CHECK(false);
             return names;
+        }
+        std::this_thread::sleep_for(20ms);
+    }
+}
+
+/*
+  Polls until the relay has detached a closed peer: a forwarded call is refused
+  with the no-session message only after the socket hang-up was processed.
+*/
+void awaitNoSession(RelayClient &client, int timeoutMs = 3000)
+{
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(timeoutMs);
+    for (;;) {
+        const nlohmann::json info = client.callTool("sdl_info");
+        CHECK(!info.contains("error"));
+        if (info["result"]["isError"] == true &&
+            resultText(info).find("no application session is attached") !=
+                std::string::npos) {
+            return;
+        }
+        if (std::chrono::steady_clock::now() >= deadline) {
+            std::fprintf(stderr, "the relay never detached the peer; last sdl_info: %s\n",
+                         info.dump().c_str());
+            CHECK(false);
+            return;
         }
         std::this_thread::sleep_for(20ms);
     }
@@ -612,7 +681,7 @@ void testWaitSessionTimeout(const std::string &supervisor)
     CHECK(!client.initialize().contains("error"));
 
     const std::vector<std::string> names = toolNames(client.toolsList());
-    CHECK((names == std::vector<std::string>{"wait_session"}));
+    CHECK((names == relayToolNames()));
 
     const auto started = std::chrono::steady_clock::now();
     const nlohmann::json timeout = client.callTool(
@@ -643,7 +712,7 @@ void testRelayRoundTrip(const std::string &supervisor)
     RelayClient client;
     client.start(supervisor, port);
     CHECK(!client.initialize().contains("error"));
-    CHECK(toolNames(client.toolsList()) == std::vector<std::string>{"wait_session"});
+    CHECK((toolNames(client.toolsList()) == relayToolNames()));
 
     /* wait_session with no timeout parks the supervisor until the app dials in. */
     const int waitId = client.send("tools/call", nlohmann::json{
@@ -655,20 +724,32 @@ void testRelayRoundTrip(const std::string &supervisor)
     CHECK(peer.connect(port));
     peer.handshake(peerToolList());
 
-    /* The attach wakes the waiting call and is announced once. */
+    /* The attach wakes the waiting call without changing the advertised set. */
     const nlohmann::json waited = client.readResponse(waitId);
     CHECK(waited["result"]["isError"] == false);
-    client.waitForListChanged(1);
-    CHECK(client.listChangedCount() == 1);
+    CHECK(client.listChangedCount() == 0);
 
-    const std::vector<std::string> attachedNames = toolNames(client.toolsList());
-    CHECK((attachedNames == std::vector<std::string>{"app_info", "sdl_capture"}));
+    const std::vector<std::string> attachedNames = awaitToolNames(
+        client, {"wait_session", "sdl_info", "sdl_input", "sdl_capture",
+                 "sdl_terminate", "app_info"});
+    CHECK((attachedNames == std::vector<std::string>{"wait_session", "sdl_info",
+                                                     "sdl_input", "sdl_capture",
+                                                     "sdl_terminate", "app_info"}));
 
     /* sdl_capture is the supervisor's presentation, not the peer's. */
     const nlohmann::json list = client.toolsList();
-    const nlohmann::json &capture = list["result"]["tools"][1];
-    CHECK(capture["description"].get<std::string>().find("PNG") != std::string::npos);
-    CHECK(capture["inputSchema"]["properties"].contains("region"));
+    const nlohmann::json *capture = toolByName(list, "sdl_capture");
+    CHECK(capture != nullptr);
+    CHECK(capture->at("description").get<std::string>().find("PNG") != std::string::npos);
+    CHECK(capture->at("inputSchema").at("properties").contains("region"));
+
+    /*
+      A name the base advertises but this peer does not provide is refused by the
+      supervisor instead of being forwarded and timing out at the application.
+    */
+    const nlohmann::json missing = client.callTool("sdl_input");
+    CHECK(missing["result"]["isError"] == true);
+    CHECK(resultText(missing) == "the application does not provide sdl_input");
 
     /* A forwarded call round-trips the app's answer unchanged. */
     const int callId = client.send("tools/call", nlohmann::json{
@@ -691,6 +772,9 @@ void testRelayRoundTrip(const std::string &supervisor)
     const nlohmann::json &content = image["result"]["content"];
     CHECK(content.size() == 2);
     CHECK(content[0]["text"].get<std::string>().rfind("2x2 PNG", 0) == 0);
+    /* The frame index crosses the hop and the summary names it. */
+    CHECK(content[0]["text"].get<std::string>().find("frame 12 attached") !=
+          std::string::npos);
     CHECK(content[1]["type"] == "image");
     CHECK(content[1]["mimeType"] == "image/png");
     CHECK(content[1]["data"].get<std::string>().size() > 20);
@@ -728,7 +812,9 @@ void testRelayRoundTrip(const std::string &supervisor)
     peer.announceTools(grownTools);
     client.readNotification("notifications/tools/list_changed");
     CHECK((toolNames(client.toolsList()) ==
-           std::vector<std::string>{"app_info", "sdl_capture", "app_extra"}));
+           std::vector<std::string>{"wait_session", "sdl_info", "sdl_input",
+                                    "sdl_capture", "sdl_terminate", "app_info",
+                                    "app_extra"}));
 
     /* Exactly one peer: a second connection is closed, not queued. */
     CHECK(secondConnectionIsClosed(port));
@@ -741,16 +827,15 @@ void testRelayRoundTrip(const std::string &supervisor)
         already["result"]["content"][0]["text"].get<std::string>();
     CHECK(alreadyText.find("already attached") != std::string::npos);
 
-    /* The app goes away: the next message is the withdrawal, and wait_session is back. */
+    /* The app goes away: the advertised list is unchanged, so nothing is announced. */
     peer.transport->stop();
     peer.transport.reset();
     ::close(peer.fd);
     peer.fd = -1;
 
-    /* Attach, the mid-session list change, and the withdrawal are one each. */
-    client.waitForListChanged(3);
-    CHECK(client.listChangedCount() == 3);
-    CHECK(toolNames(client.toolsList()) == std::vector<std::string>{"wait_session"});
+    /* Only the mid-session list change was announced; detach is silent. */
+    CHECK(client.listChangedCount() == 1);
+    CHECK((awaitToolNames(client, relayToolNames()) == relayToolNames()));
 
     client.process.closeStdin();
     CHECK(client.process.waitForExit(kLineTimeoutMs));
@@ -771,14 +856,14 @@ void testIdlePeerDisconnect(const std::string &supervisor)
     FakePeer peer;
     CHECK(peer.connect(port));
     peer.handshake(peerToolList());
-    client.waitForListChanged(1);
-    CHECK((toolNames(client.toolsList()) ==
-           std::vector<std::string>{"app_info", "sdl_capture"}));
+    CHECK((awaitToolNames(client, {"wait_session", "sdl_info", "sdl_input",
+                                   "sdl_capture", "sdl_terminate", "app_info"}) ==
+           std::vector<std::string>{"wait_session", "sdl_info", "sdl_input",
+                                    "sdl_capture", "sdl_terminate", "app_info"}));
 
     peer.close();
 
-    CHECK((awaitToolNames(client, {"wait_session"}) ==
-           std::vector<std::string>{"wait_session"}));
+    CHECK((awaitToolNames(client, relayToolNames()) == relayToolNames()));
 
     /* wait_session is usable again and answers with its ordinary timeout error. */
     const nlohmann::json waited =
@@ -805,7 +890,11 @@ void testPeerDisconnectDuringCall(const std::string &supervisor)
     FakePeer peer;
     CHECK(peer.connect(port));
     peer.handshake(peerToolList());
-    client.waitForListChanged(1);
+    /* app_info appears only once the relay has taken the peer's list. */
+    CHECK((awaitToolNames(client, {"wait_session", "sdl_info", "sdl_input",
+                                   "sdl_capture", "sdl_terminate", "app_info"}) ==
+           std::vector<std::string>{"wait_session", "sdl_info", "sdl_input",
+                                    "sdl_capture", "sdl_terminate", "app_info"}));
 
     const int callId = client.send("tools/call", nlohmann::json{
                                                       {"name", "app_info"},
@@ -821,8 +910,7 @@ void testPeerDisconnectDuringCall(const std::string &supervisor)
     CHECK(answer["result"]["isError"] == true);
     CHECK(resultText(answer).find("app_info") != std::string::npos);
 
-    CHECK((awaitToolNames(client, {"wait_session"}) ==
-           std::vector<std::string>{"wait_session"}));
+    CHECK((awaitToolNames(client, relayToolNames()) == relayToolNames()));
     const nlohmann::json waited =
         client.callTool("wait_session", nlohmann::json{{"timeout_ms", 200}});
     CHECK(waited["result"]["isError"] == true);
@@ -845,7 +933,11 @@ void testPeerStopsAnswering(const std::string &supervisor)
     FakePeer peer;
     CHECK(peer.connect(port));
     peer.handshake(peerToolList());
-    client.waitForListChanged(1);
+    /* app_info appears only once the relay has taken the peer's list. */
+    CHECK((awaitToolNames(client, {"wait_session", "sdl_info", "sdl_input",
+                                   "sdl_capture", "sdl_terminate", "app_info"}) ==
+           std::vector<std::string>{"wait_session", "sdl_info", "sdl_input",
+                                    "sdl_capture", "sdl_terminate", "app_info"}));
 
     const int callId = client.send("tools/call", nlohmann::json{
                                                       {"name", "app_info"},
@@ -863,14 +955,97 @@ void testPeerStopsAnswering(const std::string &supervisor)
     CHECK(answer["result"]["isError"] == true);
     CHECK(resultText(answer).find("app_info") != std::string::npos);
 
-    CHECK((awaitToolNames(client, {"wait_session"}) ==
-           std::vector<std::string>{"wait_session"}));
+    CHECK((awaitToolNames(client, relayToolNames()) == relayToolNames()));
     const nlohmann::json waited =
         client.callTool("wait_session", nlohmann::json{{"timeout_ms", 200}});
     CHECK(waited["result"]["isError"] == true);
     CHECK(resultText(waited).find("200 ms") != std::string::npos);
 
     peer.close();
+    client.process.closeStdin();
+    CHECK(client.process.waitForExit(kLineTimeoutMs));
+}
+
+/*
+  A bare application advertises exactly the block the relay already shows, so
+  attaching it is an identity on tools/list: same bytes, no notification.
+*/
+void testBarePeerKeepsToolList(const std::string &supervisor)
+{
+    std::uint16_t port = 0;
+    RelayClient client;
+    client.start(supervisor, port);
+    CHECK(!client.initialize().contains("error"));
+
+    const nlohmann::json before = client.toolsList();
+    CHECK((toolNames(before) == relayToolNames()));
+
+    FakePeer peer;
+    CHECK(peer.connect(port));
+    peer.handshake(barePeerToolList());
+
+    /* wait_session returns only once the session is really attached. */
+    const nlohmann::json attached =
+        client.callTool("wait_session", nlohmann::json{{"timeout_ms", 5000}});
+    CHECK(attached["result"]["isError"] == false);
+
+    CHECK(client.toolsList()["result"].dump() == before["result"].dump());
+    CHECK(client.listChangedCount() == 0);
+
+    /* A forwarded call works through the same attached session. */
+    const int infoId = client.send("tools/call", nlohmann::json{
+                                                  {"name", "sdl_info"},
+                                                  {"arguments", nlohmann::json::object()},
+                                              });
+    peer.serveCall("sdl_info");
+    const nlohmann::json info = client.readResponse(infoId);
+    CHECK(info["result"]["isError"] == false);
+
+    peer.close();
+    awaitNoSession(client);
+    CHECK(client.toolsList()["result"].dump() == before["result"].dump());
+    CHECK(client.listChangedCount() == 0);
+
+    client.process.closeStdin();
+    CHECK(client.process.waitForExit(kLineTimeoutMs));
+}
+
+/*
+  A spawner peer contributes only its own app_spawn_<alias> entries. Every base
+  entry keeps its bytes, so the client sees wait_session and the application
+  tools whether or not a session is attached.
+*/
+void testSpawnerPeerAddsSpawnTools(const std::string &supervisor)
+{
+    std::uint16_t port = 0;
+    RelayClient client;
+    client.start(supervisor, port);
+    CHECK(!client.initialize().contains("error"));
+
+    const nlohmann::json before = client.toolsList();
+
+    FakePeer peer;
+    CHECK(peer.connect(port));
+    peer.handshake(spawnerPeerToolList());
+
+    const std::vector<std::string> spawnerNames = awaitToolNames(
+        client, {"wait_session", "sdl_info", "sdl_input", "sdl_capture",
+                 "sdl_terminate", "app_spawn_app"});
+    CHECK((spawnerNames ==
+           std::vector<std::string>{"wait_session", "sdl_info", "sdl_input",
+                                    "sdl_capture", "sdl_terminate", "app_spawn_app"}));
+
+    const nlohmann::json after = client.toolsList();
+    const nlohmann::json &baseTools = before["result"]["tools"];
+    for (std::size_t index = 0; index < baseTools.size(); ++index) {
+        CHECK(after["result"]["tools"][index] == baseTools[index]);
+    }
+    CHECK(after["result"]["tools"][baseTools.size()]["description"] ==
+          "fake spawner tool");
+
+    peer.close();
+    CHECK((awaitToolNames(client, relayToolNames()) == relayToolNames()));
+
     client.process.closeStdin();
     CHECK(client.process.waitForExit(kLineTimeoutMs));
 }
@@ -888,6 +1063,8 @@ int main(int argc, char **argv)
     testIdlePeerDisconnect(supervisor);
     testPeerDisconnectDuringCall(supervisor);
     testPeerStopsAnswering(supervisor);
+    testBarePeerKeepsToolList(supervisor);
+    testSpawnerPeerAddsSpawnTools(supervisor);
 
     std::printf("relay_tests: all checks passed\n");
     return 0;

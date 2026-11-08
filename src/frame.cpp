@@ -99,6 +99,7 @@ std::optional<Frame> cropFrame(const Frame &frame,
     Frame cropped;
     cropped.width = region.width;
     cropped.height = region.height;
+    cropped.frame = frame.frame;
     cropped.pixels.resize(
         static_cast<size_t>(expectedByteCount(region.width, region.height)));
 
@@ -114,6 +115,17 @@ std::optional<Frame> cropFrame(const Frame &frame,
     }
 
     return cropped;
+}
+
+std::optional<std::string> checkFrameOrder(uint64_t appliedFrame,
+                                           uint64_t attachedFrame)
+{
+    if (attachedFrame > appliedFrame) {
+        return std::nullopt;
+    }
+    return "frame order violation: frame " + std::to_string(attachedFrame) +
+           " attached, but the actions were applied at frame " +
+           std::to_string(appliedFrame) + "; the attached frame must be later";
 }
 
 } // namespace sdl3mcp

@@ -158,15 +158,20 @@ bool Server::writeToolCall(const ToolCall &call)
     /*
       A raw frame is one JSON-RPC result line naming the payload, immediately
       followed by the pixels with no newline: the header's byteLength is the only
-      framing the supervisor needs.
+      framing the supervisor needs. `text` names the frame for tools that report
+      one (sdl_input); sdl_capture leaves it out.
     */
     if (result.frame.has_value()) {
-        const nlohmann::json header{
+        nlohmann::json header{
             {"format", "rgba8888"},
             {"width", result.frame->width},
             {"height", result.frame->height},
             {"byteLength", result.frame->pixels.size()},
+            {"frame", result.frame->frame},
         };
+        if (!result.frameText.empty()) {
+            header["text"] = result.frameText;
+        }
         if (!writeResponse(makeResult(call.id, header))) {
             return false;
         }

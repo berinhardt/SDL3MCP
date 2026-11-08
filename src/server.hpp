@@ -51,15 +51,19 @@ namespace sdl3mcp
 {
 
 /*
-  What a tool handler returns. Every tool except sdl_capture answers with MCP
-  content blocks plus the error flag; sdl_capture leaves `content` unused and
-  fills `frame`, which makes the server write one result line carrying the raw
-  framing header followed by exactly the pixel bytes.
+  What a tool handler returns. Most tools answer with MCP content blocks plus
+  the error flag. A handler that fills `frame` returns raw pixels instead:
+  sdl_capture writes one result line carrying the raw framing header followed
+  by exactly the pixel bytes, and sdl_input adds `frameText` so the same line
+  names the frame its batch was applied at. A frame is never a content array:
+  it is one line plus B bytes.
 */
 struct ToolResult
 {
     nlohmann::json content;
     bool isError = false;
+    /* The text block that accompanies a raw frame; empty when there is none. */
+    std::string frameText;
     std::optional<Frame> frame;
 };
 

@@ -46,7 +46,7 @@ events into the queue and hands the pixels you give it back to the agent.
 | Tool | Purpose |
 | --- | --- |
 | `sdl_info` | Window title, size in points and pixels, pixel density, video driver, SDL version, held input, frame counters, capture statistics. |
-| `sdl_input` | Send a batch of key, text, mouse-move, mouse-button, scroll, or release-all actions. |
+| `sdl_input` | Send a batch of key, text, mouse-move, mouse-button, scroll, or release-all actions; the call always returns the frame that follows the batch. Behind `sdl3mcp` that frame arrives as an `image/png` block next to text naming both the applied frame and the attached frame. |
 | `sdl_capture` | Ask the app for a fresh frame, optionally cropped, and receive its raw RGBA8888 pixels plus the exact payload size; behind `sdl3mcp` the same pixels are returned at the app's native pixel size as an `image/png` block. |
 | `sdl_terminate` | Ask the app to exit cleanly by pushing one `SDL_EVENT_QUIT` into its own event loop. |
 
@@ -54,8 +54,9 @@ Typical agent loop:
 
 1. `sdl_info` to see what it is looking at.
 2. `sdl_capture` for a baseline screenshot.
-3. `sdl_input` to click, type, or hold a key.
-4. `sdl_capture` again to see what changed.
+3. `sdl_input` to click, type, or hold a key; the call returns the frame that
+   follows the batch, so the observation costs no extra round trip.
+4. `sdl_capture` only when a later frame is needed without new input.
 
 ## How it works
 
@@ -96,9 +97,17 @@ A workflow is a single process lifetime: one `SDL3MCP_AppInit`, many
 The library counts app frames. When an input batch is applied during
 `SDL3MCP_AppIterate` of frame **F**, its events are pushed onto SDL's queue, and
 the calling `sdl_input` returns during `SDL3MCP_AppIterate` of frame **F+1**.
-That is the first frame in which the app has certainly consumed the events, so
-the result names frame F ("3 actions applied at frame 12"). A capture follows
-the same rule: the frame you receive was written after the request arrived.
+That is the first frame in which the app has certainly consumed the events. The
+call then asks for a fresh frame, which the app writes on a later iteration, so
+the answer names both numbers: the frame the actions were applied at and the
+frame attached, for example `3 actions applied at frame 12; frame 14 attached,
+rendered after the actions were delivered`. The attached frame is always
+rendered after the actions were delivered - one acknowledgement frame and at
+least one capture frame later - so an unchanged frame means the actions had no
+effect, such as a click that missed a widget; `sdl_info` carries the geometry
+for the next attempt. The gap is not fixed, because a busy or slow app may
+attach a later frame. A capture follows the same rule: the frame you receive was
+written after the request arrived, and `sdl_capture`'s summary names it too.
 
 ### What it is not
 
@@ -612,7 +621,7 @@ command line says".
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `transport` | `SDL3MCP_TRANSPORT_NONE` | `NONE` starts no server; `STDIO` starts the stdio MCP server; `CONNECT` dials `connect_host:connect_port` and serves over that socket. |
-| `frame_timeout_ms` | `2000` | Default `sdl_capture` timeout and the time `sdl_input` waits for its F+1 acknowledgement. |
+| `frame_timeout_ms` | `2000` | Default `sdl_capture` frame timeout and the time `sdl_input` waits for its F+1 acknowledgement; an `sdl_input` call without `timeout_ms` gets twice this as its overall budget. |
 | `max_frame_bytes` | `32 MiB` | Upper bound on a raw RGBA frame accepted by `SDL3MCP_WriteFrame`. 4K (`3840×2160×4`) fits; 5K and above need a larger value. |
 | `warp_cursor` | `true` | Move the OS cursor with `SDL_WarpMouseInWindow` on absolute mouse moves and positioned `mouse_button` actions. |
 | `log_level` | `-1` | Accepted and validated as -1..4 (`0` off, `1` error, `2` warn, `3` info, `4` debug). The library has no leveled logger yet, so today only command-line usage and errors are written to stderr. |
@@ -678,8 +687,9 @@ application peer comes from:
 - `--connect=HOST:PORT --targets=PATH` spawns a configured app behind a relay
   ([Spawner](#spawner)).
 
-In every mode the client keeps the same endpoint; only the tools change when the
-application comes and goes.
+In every mode the client keeps the same endpoint. The advertised tool set
+depends on the mode, not on whether an application is attached: a spawn, an
+attach, and a detach leave it unchanged.
 
 Build it alongside the example:
 
@@ -714,11 +724,32 @@ no window, renderer, or video driver of its own.
 
 ### States and `tools/list`
 
+The advertised tool list is a function of the mode, never of whether an
+application is attached:
+
+| Mode | `tools/list` |
+| --- | --- |
+| `--target` (spawn) | `spawn` plus `sdl_info`, `sdl_input`, `sdl_capture`, `sdl_terminate`. |
+| `--listen` (relay) | `wait_session` plus the same four application tools. |
+| `--connect --targets` (spawner) | one `app_spawn_<alias>` per target plus the same four application tools. |
+
+A spawner behind a relay contributes its `app_spawn_<alias>` entries to the
+relay's set when it connects; that is the only topology change a client
+observes. Spawning an application, attaching one, or detaching one changes no
+advertised name, so none of them sends `notifications/tools/list_changed`.
+
 | State | `tools/list` | When |
 | --- | --- | --- |
-| `Idle` | `spawn` only | At startup, and again after the child exits for any reason. |
-| `Starting` | empty | Between accepting `spawn` and the child reporting a window. |
-| `Running` | the child's tools, with the supervisor's own `sdl_capture` | While the child is alive. |
+| `Idle` | `spawn`, `sdl_info`, `sdl_input`, `sdl_capture`, `sdl_terminate` | At startup, and again after the child exits for any reason. |
+| `Starting` | unchanged | Between accepting `spawn` and the child reporting a window. |
+| `Running` | unchanged | While the child is alive. |
+
+`sdl_capture` always carries the supervisor's definition because presentation
+belongs to the supervisor; see
+[Capture through the supervisor](#capture-through-the-supervisor). Because the
+set does not depend on the child, a spawn sends no
+`notifications/tools/list_changed`: a name the client has already listed cannot
+arrive late behind an asynchronous refresh.
 
 `spawn` is the supervisor's own tool and is never forwarded. It starts one child
 (synchronously, so there is never more than one), completes the MCP handshake,
@@ -726,30 +757,42 @@ and waits until `sdl_info` reports a bound window. On failure the result is an
 error that includes the child's recent stderr, and the supervisor returns to
 `Idle`.
 
-While `Running`, every other `tools/call` is forwarded to the child verbatim:
-the arguments go in unchanged, the child's content blocks and `isError` come
-back unchanged, and a JSON-RPC error from the child is returned unchanged.
-`sdl_capture` is the one exception, because presentation belongs to the
-supervisor; see [Capture through the supervisor](#capture-through-the-supervisor).
-`initialize`, `ping`, and `tools/list` are always answered by the supervisor.
-If the child exits or crashes on its own, the exit handler clears the committed
-tools, sends `notifications/tools/list_changed`, and puts `spawn` back. Each
-transition sends that notification exactly once, so a client should call
-`tools/list` on each notification rather than cache the tool set.
+While a child is running, every other `tools/call` whose name the child
+advertised is forwarded to it verbatim: the arguments go in unchanged, the
+child's content blocks and `isError` come back unchanged, and a JSON-RPC error
+from the child is returned unchanged. A name the child did not advertise is
+answered with `the application does not provide <name>` instead of being
+forwarded. A raw frame is the one result the supervisor presents rather than
+relays, because presentation belongs to the supervisor: `sdl_capture` and
+`sdl_input` both answer with pixels, and both leave here as text plus one
+`image/png` block. `initialize`, `ping`, and `tools/list` are always answered by
+the supervisor.
+If the child exits or crashes on its own, the exit handler returns the
+supervisor to `Idle` and puts `spawn` back; the advertised set is unchanged, so
+nothing is announced. `notifications/tools/list_changed` is sent only when the
+advertised set itself changes, for example when an attached peer announces a
+list of its own that adds or removes names.
 
 ### Capture through the supervisor
 
 The library's `sdl_capture` returns raw pixels so the library never links an
-image encoder. The supervisor owns presentation: while `Running` it replaces the
-child's `sdl_capture` entry in `tools/list` with its own definition and keeps the
-client-facing `image/png` contract. The PNG carries the pixels at the app's
-native pixel size: captures are never resized, so a coordinate read in the image
-is the same coordinate in the app's pixel space.
+image encoder. The supervisor owns presentation: it advertises its own
+`sdl_capture` definition in every mode, alongside the application's other three
+tools, and keeps the client-facing `image/png` contract. The PNG carries the
+pixels at the app's native pixel size: captures are never resized, so a
+coordinate read in the image is the same coordinate in the app's pixel space.
+
+The frame `sdl_input` returns travels the same route: one raw frame, one native-
+size PNG, one `[text, image/png]` result. The difference is the text: a capture
+has none of its own, so the supervisor summarises the PNG and names the frame it
+attached, while an input answer carries the library's own line naming both the
+applied frame and the attached frame. Both answers therefore say which frame
+they show, and a capture's summary is not anonymous either.
 
 ```json
 {
   "name": "sdl_capture",
-  "description": "Ask the application for a fresh frame and return it as a PNG image block at the app's native pixel size. The optional region crops pixels from the captured frame, using capture.lastWidth x capture.lastHeight from sdl_info, with a top-left origin; it must fit inside the frame and is the only way to keep the payload small, because captures are never resized.",
+  "description": "Ask the application for a fresh frame and return it as a PNG image block at the app's native pixel size. Arguments: optional timeout_ms (1-60000, default the app's frame timeout) and optional region. region crops pixels from the captured frame with a top-left origin and must fit inside capture.lastWidth x capture.lastHeight from sdl_info. sdl_input coordinates are window points, while region is in pixels of the full frame; sdl_info reports pixelWidth, pixelHeight and pixelDensity so a caller can convert between them. Captures are never resized, so region is the only way to keep the payload small. The text part names the frame attached, so a caller can tell a fresh frame from a stale one. Example: {\"region\":{\"x\":0,\"y\":0,\"width\":640,\"height\":360},\"timeout_ms\":2000}",
   "inputSchema": {
     "type": "object",
     "properties": {
@@ -789,15 +832,18 @@ is the same coordinate in the app's pixel space.
   before allocating the payload. A mismatched header or a short payload is a
   tool error.
 - It then encodes the frame as PNG, base64-encodes it, and answers with the usual
-  `[text, image/png]` content and `isError: false`. The text summary names the
-  size, the region when one was given, and the PNG size, for example
-  `960x540 PNG at 0,0, 41234 bytes`.
+  `[text, image/png]` content and `isError: false`. The header's `frame` names
+  the app frame whose pixels arrived. For a capture the text summary names the
+  size, the region when one was given, the PNG size, and that frame, for example
+  `960x540 PNG at 0,0, 41234 bytes; frame 31 attached`; for an input answer the
+  library's text is kept, for example `1 actions applied at frame 12; frame 14
+  attached, rendered after the actions were delivered`.
 - A JSON-RPC error object or a text error result from the child passes through
   unchanged, so a capture timeout still reports the library's own message.
 
 ```text
 → {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"sdl_capture","arguments":{}}}
-← {"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"1920x1080 PNG, 91234 bytes"},{"type":"image","mimeType":"image/png","data":"iVBORw0KGgo..."}],"isError":false}}
+← {"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"1920x1080 PNG, 91234 bytes; frame 42 attached"},{"type":"image","mimeType":"image/png","data":"iVBORw0KGgo..."}],"isError":false}}
 ```
 
 ### Terminating the app
@@ -807,8 +853,8 @@ forwards the call, then waits for the child to actually exit within
 `--terminate-timeout-ms`. If the child exits, the result is the text
 `terminated`. If the deadline passes, the supervisor sends SIGTERM, waits about
 two seconds, sends SIGKILL, and returns a text result that says termination was
-forced. Either way the exit handler restores `Idle`/`spawn` and sends one
-`notifications/tools/list_changed`.
+forced. Either way the exit handler restores `Idle`/`spawn`; the advertised set
+is unchanged, so it sends no `notifications/tools/list_changed`.
 
 The watchdog exists because `sdl_terminate` only pushes a quit event: an app
 that ignores `SDL_EVENT_QUIT`, hangs in a render loop, or never returns from
@@ -880,14 +926,15 @@ failure is a startup error and the relay exits non-zero.
 
 ### Before a session: `wait_session`
 
-`tools/list` advertises exactly one tool, `wait_session`, until an application
-connects, and every other `tools/call` fails with
-`no application session is attached; call wait_session first`.
+`tools/list` always advertises `wait_session` together with the application's
+four tools (`sdl_info`, `sdl_input`, `sdl_capture`, `sdl_terminate`), whether or
+not a session is attached. Before one attaches, every forwarded `tools/call`
+fails with `no application session is attached; call wait_session first`.
 
 ```json
 {
   "name": "wait_session",
-  "description": "Wait for an application to connect to the relay's listening socket. Returns as soon as a session is attached; without timeout_ms it waits indefinitely and returns a normal tool error when timeout_ms expires. While a session is attached its tools replace this one.",
+  "description": "Wait for an application to connect to the relay's listening socket. Arguments: optional timeout_ms (1-60000); without it the call waits indefinitely, and an expired timeout is a normal tool error. Returns as soon as a session is attached. The application's tools are advertised alongside this one whether or not it is attached. Example: {\"timeout_ms\":5000}",
   "inputSchema": {
     "type": "object",
     "properties": {
@@ -913,25 +960,30 @@ connects, and every other `tools/call` fails with
 ### After a session attaches
 
 The relay completes a private MCP handshake with the application (the same
-protocol version and a `tools/list`), then swaps its own tool view for the
-application's `tools/list` result, replacing `sdl_capture` with the supervisor's
-PNG definition exactly as it does for a child. Each change sends one
-`notifications/tools/list_changed`: the attach, and later the detach. After the
-notification `tools/list` is the application's set; before it, `wait_session`.
+protocol version and a `tools/list`). It then merges the application's entries
+over its mode-derived list by name: the application's definition wins on a
+collision except `sdl_capture`, which always keeps the supervisor's PNG
+definition, and names the application does not advertise stay advertised.
+Attaching a bare application is therefore byte-identical to the list without it,
+and no `notifications/tools/list_changed` is sent on attach or detach.
+
+The one visible topology change is a spawner connecting: its `app_spawn_<alias>`
+entries are added to the relay's list. A spawner client necessarily connects
+before any spawn call, and a client that connects afterwards sees the new names
+in its first `tools/list`.
 
 A peer that announces a change of its own is followed rather than quoted: on
 `notifications/tools/list_changed` the relay asks that peer for `tools/list`
-again and republishes the result with its own `list_changed`. That is what makes
-a relay in front of a spawner show the spawned application's tools as soon as
-the spawn call answers, and the `app_spawn_*` set again once it exits.
+again, re-merges it, and republishes the result with its own `list_changed`.
+That keeps a chained peer's genuine additions and removals visible.
 
 Exactly one application session is accepted at a time. A second connection is
 closed as soon as it is accepted instead of queueing behind the first, and the
 listener never hands it to the proxy. When the attached application's socket
-closes — a clean exit, a crash, or a network drop — the relay clears the tool
-list, restores `wait_session`, sends one `list_changed`, and keeps the client's
-stdio endpoint open for the next application. The hang-up is probed on every
-loop pass, so an idle relay notices it while nothing is in flight.
+closes — a clean exit, a crash, or a network drop — the relay drops the peer's
+merged entries and keeps the client's stdio endpoint open for the next
+application. The hang-up is probed on every loop pass, so an idle relay notices
+it while nothing is in flight.
 
 A forwarded call is bounded as well: when the peer stops answering, the relay
 detaches it, returns a normal error content block naming the tool, and is back
@@ -1005,9 +1057,12 @@ client ──stdio──▶ relay (--listen) ◀──TCP── spawner (--conne
                                         app (--mcp=<spawner endpoint>)
 ```
 
-The relay sees the spawner as its one application session, so the client's tool
-view is the spawner's tools. Once an application is spawned, the spawner's
-`tools/list` becomes that application's tools and the relay forwards through.
+The relay sees the spawner as its one application session and merges the
+spawner's entries over its own list, so the client sees `wait_session`, the four
+application tools, and one `app_spawn_<alias>` per target. The spawner's list
+does not change when an application starts or exits; it always advertises the
+`app_spawn_*` set alongside the application block, and the relay forwards an
+application call through to the live child.
 
 ### Spawner command line
 
@@ -1119,12 +1174,12 @@ so mixing a generated file with a hand-written one is safe.
 
 ### Tool view and spawning
 
-Before the first spawn, `tools/list` is one `app_spawn_<alias>` per targets entry
-and nothing else; any other `tools/call` fails with
-`no application is attached; call one of the app_spawn_* tools`. A spawn passes
-through an empty `Starting` view, and an attached application again exposes its
-own tools with the supervisor's `sdl_capture`; every change sends one
-`notifications/tools/list_changed`.
+`tools/list` is one `app_spawn_<alias>` per targets entry plus the four
+application tools, in every state. The set does not change when an application
+is spawned or exits, so the spawner sends no
+`notifications/tools/list_changed` around a spawn. Before one is attached, an
+application `tools/call` fails with
+`no application is attached; call one of the app_spawn_* tools`.
 
 One application runs at a time. Calling another `app_spawn_<alias>` while one is
 attached fails with `an application is already attached; one spawn at a time`;
@@ -1133,7 +1188,7 @@ wait for the running application to exit first.
 ```json
 {
   "name": "app_spawn_demo",
-  "description": "Start the application registered as \"demo\" and wait until it connects back and completes the MCP handshake. Returns the child's process id; while it runs its own tools replace this one, and call app_spawn_<alias> again only after it has exited.",
+  "description": "Start the application registered as \"demo\" and wait until it connects back and completes the MCP handshake. Arguments: optional timeout_ms (1-60000, default 5000) covering bind, exec, dial-back and the handshake. Returns the child's process id; its tools are advertised alongside this one, and call app_spawn_<alias> again only after it has exited. Example: {\"timeout_ms\":5000}",
   "inputSchema": {
     "type": "object",
     "properties": {
@@ -1156,10 +1211,11 @@ just the connection. `app_spawn_<alias>` has three outcomes:
 
 1. **Success.** The application connected and completed the handshake, and its
    session is still live when the answer is written. The result is
-   `spawned <alias> (pid N)`, and the tool list is now the application's.
+   `spawned <alias> (pid N)`; the tool list is unchanged and application calls
+   now forward through to the child.
 2. **The application died first.** It exited, or could not be executed, before it
    connected. The `isError` result names the exit status or `exec` failure and
-   the pid, and the tool view returns to the `app_spawn_*` set.
+   the pid; the tool list is unchanged.
 3. **Timeout.** `timeout_ms` expired before the handshake completed. The error
    names the timeout and the pid, and the spawner terminates the child (SIGTERM,
    about two seconds of grace, then SIGKILL) before returning, so a failed spawn
@@ -1174,10 +1230,10 @@ the error text. After any failure the spawner is idle again and a later
 `sdl_terminate` is forwarded like any other application tool; the spawner does
 not wait for the exit or force it, and the application decides what the request
 means. When the application exits, whether from a clean request or on its own,
-its tools are replaced by the `app_spawn_*` set and one `list_changed` is sent.
-A forwarded call to an application that stopped answering is bounded the same
-way as the relay's: it returns an error naming the tool and restores the
-`app_spawn_*` view.
+the spawner returns to Idle with the same list it always advertised, so nothing
+is announced. A forwarded call to an application that stopped answering is
+bounded the same way as the relay's: it returns an error naming the tool and
+recovers the session.
 
 ### Stopping the spawner
 
@@ -1357,6 +1413,11 @@ not match the bound window's drawable size.
   readback of a smaller render target, a region, or an offscreen buffer is
   accepted as long as the byte count matches.
 - **Guard:** `size <= max_frame_bytes`; larger frames are dropped.
+- **Frame stamp:** the accepted frame is stamped with the index of the frame
+  whose pixels it holds. The app frame counter advances in `SDL3MCP_AppIterate`
+  at the end of each frame, so during the iteration that renders the pixels the
+  counter still names the previous one and the stamp is that counter plus one.
+  The raw header carries the index as `frame`, and the region crop preserves it.
 - The pixels are copied before the function returns, so the app can reuse or
   free its buffer immediately. The server thread crops the optional region and
   sends raw pixels; PNG encoding and base64 are the supervisor's job and never
@@ -1376,7 +1437,8 @@ cannot read a swapchain from another thread, and it does not want to know
 whether the app uses SDL_Renderer, OpenGL, Vulkan, Metal, or software. So it
 asks:
 
-1. The client calls `sdl_capture`.
+1. The client calls `sdl_capture`, or `sdl_input` once its batch has been
+   acknowledged.
 2. The server validates the arguments, checks that a window is bound, marks a
    request pending, and waits up to `timeout_ms`.
 3. On the next frame, the app's `SDL3MCP_FrameRequested()` returns true.
@@ -1402,8 +1464,8 @@ Rules that fall out of this design:
   are never served.
 - Only one capture is pending at a time. Tool calls are serialized on the server
   thread, so a slow capture delays the next tool call until it completes or
-  times out. Agents that need to act "between" two frames should call
-  `sdl_input`, then `sdl_capture`.
+  times out. `sdl_input` uses the same pipeline for the frame it returns, so an
+  action and its observation are one call.
 - A frame is dropped when `size` is not exactly `width * height * 4` for the
   supplied dimensions, when the data pointer is null, when a dimension is not
   positive, or when the frame exceeds `max_frame_bytes`. A drop leaves the
@@ -1574,10 +1636,11 @@ client asked for.
   before it fail with `-32600` ("tools are unavailable before initialize"), and
   a second `initialize` also fails with `-32600`. `ping` is answered at any time.
 - Requests are handled one at a time on the single server thread. A blocking
-  tool call delays every later request: `sdl_input` waits up to
-  `frame_timeout_ms` for its F+1 acknowledgement and `sdl_capture` waits up to
-  its timeout for a frame, so a `ping` queued behind one of them is answered
-  only after that call returns. Nothing is cancelled by the delay.
+  tool call delays every later request: `sdl_input` waits up to its
+  `timeout_ms` budget for the F+1 acknowledgement and then for the frame, and
+  `sdl_capture` waits up to its timeout for a frame, so a `ping` queued behind
+  one of them is answered only after that call returns. Nothing is cancelled by
+  the delay.
 - A JSON array is rejected as a batch with `-32600`; other malformed input is
   answered with a JSON-RPC error and the session continues. Invalid JSON is
   `-32700`, an unknown method is `-32601`, and bad parameters or an unknown tool
@@ -1644,14 +1707,16 @@ No arguments. Returns a pretty-printed JSON text block:
 - `heldKeys` are canonical lowercase scancode names in press order; a key held
   with `down` is listed until released. `heldButtons` use the same names as the
   `sdl_input` button enum.
-- `capture.pending` is true while a capture waits for a frame; `count` is
-  successful captures; `dropped` counts rejected `SDL3MCP_WriteFrame` attempts.
+- `capture.pending` is true while a frame request waits; `count` is
+  successful frames handed to a client (a `sdl_capture`, or the frame
+  `sdl_input` returned); `dropped` counts rejected `SDL3MCP_WriteFrame`
+  attempts.
   `lastWidth`/`lastHeight` describe the frame the library returned, after any
   region crop, and are the dimensions of the PNG the supervisor encodes,
   `lastBytes` is the raw RGBA payload size (`width * height * 4`), `lastMs`
   covers the wait for the frame plus the crop, and `lastError` is `null` when
-  the last capture succeeded (or none ran), otherwise the last drop or capture
-  error string.
+  the last frame request succeeded (or none ran), otherwise the last drop or
+  capture error string.
 - `limits` repeats the effective `frame_timeout_ms` and `max_frame_bytes`.
 - `frame` is the library's frame counter and `appliedFrame` is the last frame at
   which an input batch was applied (0 when none was).
@@ -1664,7 +1729,7 @@ makes it a useful first call after startup.
 ```json
 {
   "name": "sdl_input",
-  "description": "Queue a batch of synthetic key, text, mouse, scroll, or release-all actions. The batch is applied atomically at the next frame, and the call returns after the following frame, once the application has consumed the generated events. Follow with sdl_capture to observe the result.",
+  "description": "Queue a batch of synthetic input actions; the call always returns the frame that follows the batch: text naming both the frame the actions were applied at and the frame attached, plus that frame's pixels, which the supervisor presents as an image/png part and a direct library client receives as raw RGBA. The batch is applied atomically at the next frame and the call returns after the following frame, once the application has consumed the generated events. The attached frame is always rendered after the actions were delivered - one acknowledgement frame and at least one capture frame later - so an unchanged frame means the actions had no effect, such as a click that missed a widget, and sdl_info carries the geometry for the next attempt. Arguments: actions (required; 1-256 action objects), optional region, and optional timeout_ms. Each action object is one of six types: key {key name or chord, action=down|up|press (default press), modifiers=[ctrl|shift|alt|gui] (at most four)}; text {text, 1-1024 UTF-8 bytes}; mouse_move {x,y in window points or dx,dy relative, never both}; mouse_button {button=left|middle|right|x1|x2, action=down|up|click (default click), clicks=1-3 (default 1), optional x,y window points to move first}; scroll {y in notches (1.0 is one notch, positive scrolls down), x default 0}; release_all {no extra fields}. The optional region crops the returned frame in pixels of the full frame with a top-left origin, exactly like sdl_capture; sdl_input coordinates are window points, so use pixelDensity from sdl_info to convert. timeout_ms bounds the whole call, apply and capture together, and defaults to twice the frame timeout. Example: {\"actions\":[{\"type\":\"key\",\"key\":\"ctrl+s\",\"action\":\"press\"},{\"type\":\"mouse_button\",\"button\":\"left\",\"x\":120,\"y\":80}]}",
   "inputSchema": {
     "type": "object",
     "properties": {
@@ -1752,6 +1817,19 @@ makes it a useful first call after startup.
             }
           ]
         }
+      },
+      "timeout_ms": { "type": "integer", "minimum": 1, "maximum": 60000 },
+      "region": {
+        "type": "object",
+        "description": "Crop rectangle in pixels of the full frame, top-left origin.",
+        "properties": {
+          "x": { "type": "integer", "minimum": 0 },
+          "y": { "type": "integer", "minimum": 0 },
+          "width": { "type": "integer", "minimum": 1 },
+          "height": { "type": "integer", "minimum": 1 }
+        },
+        "required": ["x", "y", "width", "height"],
+        "additionalProperties": false
       }
     },
     "required": ["actions"],
@@ -1765,9 +1843,38 @@ makes it a useful first call after startup.
 }
 ```
 
-The result is a text summary such as `3 actions applied at frame 12`. Structural
-errors fail the call before queueing; key and chord errors fail it at F+1. See
-[Validation and error timing](#validation-and-error-timing).
+The result carries both halves of the observation in one message: the result
+line names the frame and the payload follows it exactly as it does for
+`sdl_capture`.
+
+```text
+← {"jsonrpc":"2.0","id":3,"result":{"format":"rgba8888","width":960,"height":540,"byteLength":2073600,"frame":14,"text":"1 actions applied at frame 12; frame 14 attached, rendered after the actions were delivered"}}
+<2073600 raw RGBA8888 bytes; no newline, no base64>
+```
+
+- `text` names both the frame the batch was applied at and the frame attached.
+  The two are always separated by at least one frame because the acknowledgement
+  waits for the F+1 completion; the attached frame is rendered after the actions
+  were delivered, so an unchanged frame means they had no effect. The gap is not
+  fixed, so do not read a constant delta from the example.
+- `frame` in the header is the appended stamp, so a client that ignores `text`
+  still knows which frame the payload holds.
+- `region` crops the returned frame with the same rules and the same parser
+  `sdl_capture` uses; the framed dimensions are the region's. It is in pixels of
+  the full frame, while the action coordinates above are window points: use
+  `window.pixelWidth`, `window.pixelHeight` and `window.pixelDensity` from
+  `sdl_info` to convert between them.
+- `timeout_ms` bounds the whole call: the wait for the F+1 acknowledgement plus
+  the wait for the frame. It defaults to twice `frame_timeout_ms` and is clamped
+  to the published 1–60000 range.
+- An input batch the app rejected, or a key it could not resolve, still returns
+  an `isError` content result with no frame.
+- When the input applies but no frame arrives in the remaining budget, the
+  result is an `isError` content result whose text names the applied frame and
+  why the frame is missing; the input is never reported as failed.
+
+Structural errors fail the call before queueing; key and chord errors fail it at
+F+1. See [Validation and error timing](#validation-and-error-timing).
 
 ### `sdl_capture`
 
@@ -1777,7 +1884,7 @@ The library's own schema returns raw pixels and advertises only `region` and
 ```json
 {
   "name": "sdl_capture",
-  "description": "Ask the application for a fresh frame through SDL3MCP_FrameRequested() and return its raw pixels. The JSON-RPC result line is {\"format\":\"rgba8888\",\"width\":W,\"height\":H,\"byteLength\":B}, immediately followed by exactly B tightly packed RGBA bytes with no newline and no base64. The optional region crops pixels from the captured frame, using capture.lastWidth x capture.lastHeight from sdl_info, with a top-left origin; it must fit inside the frame.",
+  "description": "Ask the application for a fresh frame through SDL3MCP_FrameRequested() and return its raw pixels. Arguments: optional timeout_ms (1-60000, default frame_timeout_ms) and optional region. The result is one JSON-RPC line {\"format\":\"rgba8888\",\"width\":W,\"height\":H,\"byteLength\":B,\"frame\":F}, immediately followed by exactly B tightly packed RGBA bytes with no newline and no base64. F is the app frame whose pixels these are; the supervisor names it in the image summary. region is a crop rectangle in pixels of the full frame with a top-left origin and must fit inside capture.lastWidth x capture.lastHeight from sdl_info. sdl_input coordinates are window points, not frame pixels: sdl_info reports pixelWidth, pixelHeight and pixelDensity so a caller can convert between the two. Example: {\"region\":{\"x\":0,\"y\":0,\"width\":640,\"height\":360},\"timeout_ms\":2000}",
   "inputSchema": {
     "type": "object",
     "properties": {
@@ -1809,6 +1916,9 @@ The library's own schema returns raw pixels and advertises only `region` and
   `capture.lastHeight` reported by `sdl_info` — with a top-left origin. All four
   fields are required, `x`/`y` must be at least 0, `width`/`height` at least 1,
   and the rectangle must fit inside the frame. It is applied by the library.
+  `sdl_input` coordinates are **window points**, so they are not the same space
+  unless `pixelDensity` is 1.0: `sdl_info` reports `window.pixelWidth`,
+  `window.pixelHeight` and `window.pixelDensity` so a caller can convert.
 - `timeout_ms` is 1–60000 and defaults to `frame_timeout_ms`.
 - Any other property is rejected before a frame is requested.
 
@@ -1826,6 +1936,8 @@ content array:
   follow the result line before the next JSON-RPC message.
 - `width` and `height` describe the frame that was sent: the region when one was
   given, otherwise the dimensions the app passed to `SDL3MCP_WriteFrame`.
+- `sdl_input` uses the same framing for the frame it returns, and adds its own
+  `text` to the result line; `sdl_capture` never has one.
 - A client that wants a self-contained image should go through the supervisor,
   which turns this framing into the standard `image/png` block. See
   [Capture through the supervisor](#capture-through-the-supervisor).
@@ -1847,7 +1959,7 @@ last drop reason when there was one:
 ```json
 {
   "name": "sdl_terminate",
-  "description": "Ask the application to exit cleanly: the next SDL3MCP_AppIterate() pushes one SDL_EVENT_QUIT so the app's own event loop can shut down.",
+  "description": "Ask the application to exit cleanly: the next SDL3MCP_AppIterate() pushes one SDL_EVENT_QUIT so the app's own event loop can shut down. Takes no arguments. Example: {}",
   "inputSchema": {
     "type": "object",
     "properties": {},
@@ -1882,19 +1994,19 @@ request pushes nothing.
 → {"jsonrpc":"2.0","id":2,"method":"tools/list"}
 ← {"jsonrpc":"2.0","id":2,"result":{"tools":[ ... sdl_info, sdl_input, sdl_capture, sdl_terminate ... ]}}
 → {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"sdl_input","arguments":{"actions":[{"type":"key","key":"right","action":"down"},{"type":"key","key":"space","action":"press"}]}}}
-← {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"2 actions applied at frame 7"}],"isError":false}}
+← {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"2 actions applied at frame 7; frame 9 attached, rendered after the actions were delivered"}],"isError":false}}
 → {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"sdl_capture","arguments":{"region":{"x":0,"y":0,"width":640,"height":360}}}}
-← {"jsonrpc":"2.0","id":4,"result":{"format":"rgba8888","width":640,"height":360,"byteLength":921600}}
+← {"jsonrpc":"2.0","id":4,"result":{"format":"rgba8888","width":640,"height":360,"byteLength":921600,"frame":11}}
 ← 921600 raw RGBA8888 bytes follow, with no newline and no base64
 → {"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"sdl_input","arguments":{"actions":[{"type":"key","key":"right","action":"up"},{"type":"key","key":"escape","action":"press"}]}}}
-← {"jsonrpc":"2.0","id":5,"result":{"content":[{"type":"text","text":"2 actions applied at frame 9"}],"isError":false}}
+← {"jsonrpc":"2.0","id":5,"result":{"content":[{"type":"text","text":"2 actions applied at frame 11; frame 13 attached, rendered after the actions were delivered"}],"isError":false}}
 → {"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"sdl_terminate","arguments":{}}}
 ← {"jsonrpc":"2.0","id":6,"result":{"content":[{"type":"text","text":"termination requested"}],"isError":false}}
 ```
 
 The supervisor keeps the client-facing contract an image: the same session
 through `sdl3mcp` ends the capture at
-`← {"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"1920x1080 PNG, 91234 bytes"},{"type":"image","mimeType":"image/png","data":"iVBORw0KGgo..."}],"isError":false}}`.
+`← {"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"1920x1080 PNG, 91234 bytes; frame 42 attached"},{"type":"image","mimeType":"image/png","data":"iVBORw0KGgo..."}],"isError":false}}`.
 The PNG is the app's native 1920x1080 frame, never resized, so a smaller
 `region` is the only way to shrink it.
 
@@ -2087,7 +2199,11 @@ which drives `--connect --targets` against a relay the test owns, and
 app's dialed `--mcp=HOST:PORT` transport. When Python 3 is available,
 `readme_check` runs `tests/check_readme.py`: it compiles both complete C
 examples, parses every JSON block, and checks both `sdl_capture` schemas, the
-example run path, the supervisor states, and the loop order.
+example run path, the supervisor states, and the loop order. It also loads the
+catalog the built supervisor test binary dumps with `--dump-tools` and requires
+every tool description (in the catalog and in the README's tool documents) to
+carry a parseable `Example:` JSON object and to name each argument its schema
+accepts.
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DSDL3MCP_BUILD_EXAMPLES=ON

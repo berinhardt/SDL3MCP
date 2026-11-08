@@ -13,10 +13,12 @@ nlohmann::json parseDefinition(std::string_view text)
 }
 
 constexpr std::string_view kInfoDescription =
-    "Report the window the library is bound to (title, size in points and pixels, "
-    "pixel density, relative mouse mode), the keys and mouse buttons it currently "
-    "holds, capture statistics, and the frame timeout and payload limits. Succeeds "
-    "with a null window when no window is bound, so it is a useful first call.";
+    "Report the window the library is bound to (title, width and height in "
+    "points, pixelWidth and pixelHeight in drawable pixels, pixelDensity, relative "
+    "mouse mode), the keys and mouse buttons it currently holds, capture "
+    "statistics, and the frame timeout and payload limits. Takes no arguments. "
+    "Succeeds with a null window when no window is bound, so it is a useful first "
+    "call. Example: {}";
 
 constexpr std::string_view kInfoSchema = R"({
   "type": "object",
@@ -31,14 +33,39 @@ constexpr std::string_view kInfoAnnotations = R"({
 })";
 
 constexpr std::string_view kInputDescription =
-    "Queue a batch of synthetic key, text, mouse, scroll, or release-all actions. "
-    "The batch is applied atomically at the next frame, and the call returns after "
-    "the following frame, once the application has consumed the generated events. "
-    "Follow with sdl_capture to observe the result.";
+    "Queue a batch of synthetic input actions; the call always returns the frame "
+    "that follows the batch: text naming both the frame the actions were applied "
+    "at and the frame attached, plus that frame's pixels, which the supervisor "
+    "presents as an image/png part and a direct library client receives as raw "
+    "RGBA. The batch is applied atomically at the next frame and the call "
+    "returns after the following frame, once the application has consumed the "
+    "generated events. The attached frame is always rendered after the actions "
+    "were delivered - one acknowledgement frame and at least one capture frame "
+    "later - so an unchanged frame means the actions had no effect, such as a "
+    "click that missed a widget, and sdl_info carries the geometry for the next "
+    "attempt. Arguments: actions (required; "
+    "1-256 action objects), optional region, and optional timeout_ms. Each action "
+    "object is one of six types: key {key name or chord, action=down|up|press "
+    "(default press), modifiers=[ctrl|shift|alt|gui] (at most four)}; text {text, "
+    "1-1024 UTF-8 bytes}; mouse_move {x,y in window points or dx,dy relative, "
+    "never both}; mouse_button {button=left|middle|right|x1|x2, "
+    "action=down|up|click (default click), clicks=1-3 (default 1), optional x,y "
+    "window points to move first}; scroll {y in notches (1.0 is one notch, "
+    "positive scrolls down), x default 0}; release_all {no extra fields}. The "
+    "optional region crops the returned frame in pixels of the full frame with a "
+    "top-left origin, exactly like sdl_capture; sdl_input coordinates are window "
+    "points, so use pixelDensity from sdl_info to convert. timeout_ms bounds the "
+    "whole call, apply and capture together, and defaults to twice the frame "
+    "timeout. "
+    "Example: "
+    "{\"actions\":[{\"type\":\"key\",\"key\":\"ctrl+s\",\"action\":\"press\"},"
+    "{\"type\":\"mouse_button\",\"button\":\"left\",\"x\":120,\"y\":80}]}";
 
 /*
   A key action has no repeat property: repeat a press by sending another action
-  instead, which keeps the batch a plain ordered list of single events.
+  instead, which keeps the batch a plain ordered list of single events. The
+  region and timeout_ms members are the same objects sdl_capture takes, parsed by
+  the same helpers, so the schemas cannot drift from the accepted documents.
 */
 constexpr std::string_view kInputSchema = R"({
   "type": "object",
@@ -127,6 +154,19 @@ constexpr std::string_view kInputSchema = R"({
           }
         ]
       }
+    },
+    "timeout_ms": { "type": "integer", "minimum": 1, "maximum": 60000 },
+    "region": {
+      "type": "object",
+      "description": "Crop rectangle in pixels of the full frame, top-left origin.",
+      "properties": {
+        "x": { "type": "integer", "minimum": 0 },
+        "y": { "type": "integer", "minimum": 0 },
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 }
+      },
+      "required": ["x", "y", "width", "height"],
+      "additionalProperties": false
     }
   },
   "required": ["actions"],
@@ -147,12 +187,19 @@ constexpr std::string_view kInputAnnotations = R"({
 */
 constexpr std::string_view kCaptureDescription =
     "Ask the application for a fresh frame through SDL3MCP_FrameRequested() and "
-    "return its raw pixels. The JSON-RPC result line is "
-    "{\"format\":\"rgba8888\",\"width\":W,\"height\":H,\"byteLength\":B}, "
-    "immediately followed by exactly B tightly packed RGBA bytes with no newline "
-    "and no base64. The optional region crops pixels from the captured frame, using "
-    "capture.lastWidth x capture.lastHeight from sdl_info, with a top-left origin; "
-    "it must fit inside the frame.";
+    "return its raw pixels. Arguments: optional timeout_ms (1-60000, default "
+    "frame_timeout_ms) and optional region. The result is one JSON-RPC line "
+    "{\"format\":\"rgba8888\",\"width\":W,\"height\":H,\"byteLength\":B,"
+    "\"frame\":F}, immediately followed by exactly B tightly packed RGBA bytes "
+    "with no newline and no base64. F is the app frame whose pixels these are; "
+    "the supervisor names it in the image summary. region is a crop rectangle in "
+    "pixels of the full frame with a "
+    "top-left origin and must fit inside capture.lastWidth x capture.lastHeight "
+    "from sdl_info. sdl_input coordinates are window points, not frame pixels: "
+    "sdl_info reports pixelWidth, pixelHeight and pixelDensity so a caller can "
+    "convert between the two. Example: "
+    "{\"region\":{\"x\":0,\"y\":0,\"width\":640,\"height\":360},"
+    "\"timeout_ms\":2000}";
 
 constexpr std::string_view kCaptureSchema = R"({
   "type": "object",
@@ -182,7 +229,8 @@ constexpr std::string_view kCaptureAnnotations = R"({
 
 constexpr std::string_view kTerminateDescription =
     "Ask the application to exit cleanly: the next SDL3MCP_AppIterate() pushes "
-    "one SDL_EVENT_QUIT so the app's own event loop can shut down.";
+    "one SDL_EVENT_QUIT so the app's own event loop can shut down. Takes no "
+    "arguments. Example: {}";
 
 constexpr std::string_view kTerminateSchema = R"({
   "type": "object",

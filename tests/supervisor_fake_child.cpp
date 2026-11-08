@@ -3,10 +3,13 @@
   the real app but never touches SDL, a window, or a renderer.
 
   sdl_info reports a window that appears --window-delay-ms after start (or never
-  with --no-window). sdl_input returns fixed text, and sdl_capture answers with a
-  real binary raw frame: one result line carrying format/width/height/byteLength
-  followed by exactly that many RGBA bytes. --capture-width/--capture-height set
-  its size, a region in the arguments overrides them, --capture-error and
+  with --no-window). sdl_input returns fixed text, or with --input-frame the same
+  raw framing a real application now sends: one result line carrying
+  format/width/height/byteLength/frame plus the text naming the applied and
+  attached frames, followed by exactly that many RGBA bytes. --input-delay-ms postpones that
+  answer so the proxy's forward deadline can be exercised. sdl_capture answers
+  with the same binary framing minus the text. --capture-width/--capture-height
+  set its size, a region in the arguments overrides them, --capture-error and
   --capture-rpc-error reproduce the two child failure shapes, and
   --capture-mismatch announces a byteLength that does not match the dimensions
   and sends no payload. --exit-after-ms / --exit-code / --fail-initialize
@@ -30,6 +33,8 @@
 */
 
 #include <nlohmann/json.hpp>
+
+#include "tools.hpp"
 
 #include <netdb.h>
 #include <poll.h>
@@ -67,7 +72,9 @@ struct Options
     int exitCode = 0;
     int captureWidth = 8;
     int captureHeight = 8;
+    int inputDelayMs = 0;
     bool failInitialize = false;
+    bool inputFrame = false;
     bool noWindow = false;
     bool ignoreTerminate = false;
     bool captureTextError = false;
@@ -120,6 +127,13 @@ bool parseOptions(int argc, char **argv, Options &options)
             }
         } else if (argument == "--exit-before-connect") {
             options.exitBeforeConnect = true;
+        } else if (argument == "--input-delay-ms" && hasValue) {
+            if (!parseInteger(argv[++index], options.inputDelayMs) ||
+                options.inputDelayMs < 0) {
+                return false;
+            }
+        } else if (argument == "--input-frame") {
+            options.inputFrame = true;
         } else if (argument == "--capture-width" && hasValue) {
             if (!parseInteger(argv[++index], options.captureWidth) ||
                 options.captureWidth <= 0) {
@@ -257,18 +271,20 @@ void writeTextResult(const nlohmann::json &id, std::string_view text)
 }
 
 /*
-  The raw-framing capture result: one header line naming the payload size, then
-  exactly that many RGBA bytes with no newline. The mismatch mode announces a
-  size one pixel larger and writes nothing, so the supervisor must reject it
-  before reading.
+  The raw-framing result: one header line naming the payload size, then exactly
+  that many RGBA bytes with no newline. `text` is empty for a capture; sdl_input
+  supplies the line naming the frame it was applied at. The mismatch mode
+  announces a size one pixel larger and writes nothing, so the supervisor must
+  reject it before reading.
 */
-void writeCaptureFrame(const nlohmann::json &id, int width, int height, bool mismatched)
+void writeFrameResult(const nlohmann::json &id, std::string_view text, int width,
+                      int height, std::uint64_t frame, bool mismatched)
 {
     const std::size_t byteLength = static_cast<std::size_t>(width) *
                                    static_cast<std::size_t>(height) * 4;
     const std::size_t announced = mismatched ? byteLength + 4 : byteLength;
 
-    const nlohmann::json header{
+    nlohmann::json header{
         {"jsonrpc", "2.0"},
         {"id", id},
         {"result", nlohmann::json{
@@ -276,8 +292,12 @@ void writeCaptureFrame(const nlohmann::json &id, int width, int height, bool mis
              {"width", width},
              {"height", height},
              {"byteLength", announced},
+             {"frame", frame},
          }},
     };
+    if (!text.empty()) {
+        header["result"]["text"] = std::string(text);
+    }
     std::string line = header.dump();
     line.push_back('\n');
     std::fwrite(line.data(), 1, line.size(), g_output);
@@ -301,15 +321,20 @@ void writeCaptureFrame(const nlohmann::json &id, int width, int height, bool mis
     std::fflush(g_output);
 }
 
+/*
+  The library's own catalog, so the fake child looks like a real application: the
+  supervisor's merge over its base is then an identity, which is what the spawn
+  view tests assert.
+*/
 nlohmann::json toolsResult()
 {
     nlohmann::json tools = nlohmann::json::array();
-    for (const std::string_view name :
-         {"sdl_info", "sdl_input", "sdl_capture", "sdl_terminate"}) {
+    for (const sdl3mcp::ToolDefinition &tool : sdl3mcp::toolCatalog()) {
         tools.push_back(nlohmann::json{
-            {"name", std::string(name)},
-            {"description", "fake child tool"},
-            {"inputSchema", nlohmann::json{{"type", "object"}}},
+            {"name", std::string(tool.name)},
+            {"description", std::string(tool.description)},
+            {"inputSchema", tool.inputSchema},
+            {"annotations", tool.annotations},
         });
     }
     return nlohmann::json{{"tools", std::move(tools)}};
@@ -373,6 +398,16 @@ void handleToolsCall(const nlohmann::json &id,
         return;
     }
     if (tool == "sdl_input") {
+        if (options.inputDelayMs > 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(options.inputDelayMs));
+        }
+        if (options.inputFrame) {
+            writeFrameResult(id,
+                             "1 actions applied at frame 7; frame 9 attached, rendered "
+                             "after the actions were delivered",
+                             options.captureWidth, options.captureHeight, 9, false);
+            return;
+        }
         writeTextResult(id, "fake sdl_input ok");
         return;
     }
@@ -407,7 +442,7 @@ void handleToolsCall(const nlohmann::json &id,
                 }
             }
         }
-        writeCaptureFrame(id, width, height, options.captureMismatch);
+        writeFrameResult(id, {}, width, height, 11, options.captureMismatch);
         return;
     }
     if (tool == "sdl_terminate") {

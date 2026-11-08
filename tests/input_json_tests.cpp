@@ -11,7 +11,9 @@
 
 #include <nlohmann/json.hpp>
 
+#include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
@@ -24,7 +26,10 @@
 namespace
 {
 
-using sdl3mcp::InputBatch;
+using sdl3mcp::InputRequest;
+
+/* The frame timeout these parser checks run under: 2000 ms is the default. */
+constexpr uint32_t kFrameTimeoutMs = 2000;
 using sdl3mcp::KeyAction;
 using sdl3mcp::KeyInput;
 using sdl3mcp::Modifier;
@@ -75,17 +80,18 @@ void checkErrorText(const std::string &error,
     }
 }
 
-std::optional<InputBatch> parseOk(const nlohmann::json &arguments,
+std::optional<InputRequest> parseOk(const nlohmann::json &arguments,
                                   const char *file,
                                   int line)
 {
     std::string error;
-    std::optional<InputBatch> batch = sdl3mcp::parseInputArguments(arguments, error);
-    if (!batch.has_value() || !error.empty()) {
+    std::optional<InputRequest> request = sdl3mcp::parseInputArguments(
+        arguments, kFrameTimeoutMs, error);
+    if (!request.has_value() || !error.empty()) {
         std::fprintf(stderr, "%s:%d: unexpected error \"%s\"\n", file, line, error.c_str());
         std::exit(1);
     }
-    return batch;
+    return request;
 }
 
 void expectError(const nlohmann::json &arguments,
@@ -94,8 +100,9 @@ void expectError(const nlohmann::json &arguments,
                  int line)
 {
     std::string error;
-    const std::optional<InputBatch> batch = sdl3mcp::parseInputArguments(arguments, error);
-    if (batch.has_value()) {
+    const std::optional<InputRequest> request = sdl3mcp::parseInputArguments(
+        arguments, kFrameTimeoutMs, error);
+    if (request.has_value()) {
         std::fprintf(stderr,
                      "%s:%d: expected an error matching \"%.*s\"\n",
                      file,
@@ -115,8 +122,9 @@ void expectIndexedError(const nlohmann::json &arguments,
 {
     const std::string prefix = "actions[" + std::to_string(index) + "]: ";
     std::string error;
-    const std::optional<InputBatch> batch = sdl3mcp::parseInputArguments(arguments, error);
-    if (batch.has_value() || error.compare(0, prefix.size(), prefix) != 0) {
+    const std::optional<InputRequest> request = sdl3mcp::parseInputArguments(
+        arguments, kFrameTimeoutMs, error);
+    if (request.has_value() || error.compare(0, prefix.size(), prefix) != 0) {
         std::fprintf(stderr,
                      "%s:%d: expected an error prefixed \"%s\", got \"%s\"\n",
                      file,
@@ -136,9 +144,9 @@ void expectIndexedError(const nlohmann::json &arguments,
 
 void testKeyDefaults()
 {
-    const std::optional<InputBatch> batch = PARSE_OK(single({{"type", "key"}, {"key", "a"}}));
-    CHECK(batch->actions.size() == 1);
-    const auto &key = std::get<KeyInput>(batch->actions.at(0));
+    const std::optional<InputRequest> request = PARSE_OK(single({{"type", "key"}, {"key", "a"}}));
+    CHECK(request->batch.actions.size() == 1);
+    const auto &key = std::get<KeyInput>(request->batch.actions.at(0));
     CHECK(key.key == "a");
     CHECK(key.action == KeyAction::Press);
     CHECK(key.modifiers.empty());
@@ -148,25 +156,25 @@ void testKeyActions()
 {
     const auto down =
         PARSE_OK(single({{"type", "key"}, {"key", "space"}, {"action", "down"}}));
-    const auto &downKey = std::get<KeyInput>(down->actions.at(0));
+    const auto &downKey = std::get<KeyInput>(down->batch.actions.at(0));
     CHECK(downKey.key == "space");
     CHECK(downKey.action == KeyAction::Down);
 
     const auto up = PARSE_OK(single({{"type", "key"}, {"key", "space"}, {"action", "up"}}));
-    CHECK(std::get<KeyInput>(up->actions.at(0)).action == KeyAction::Up);
+    CHECK(std::get<KeyInput>(up->batch.actions.at(0)).action == KeyAction::Up);
 
     const auto press =
         PARSE_OK(single({{"type", "key"}, {"key", "a"}, {"action", "press"}}));
-    CHECK(std::get<KeyInput>(press->actions.at(0)).action == KeyAction::Press);
+    CHECK(std::get<KeyInput>(press->batch.actions.at(0)).action == KeyAction::Press);
 }
 
 void testKeyModifiers()
 {
-    const auto batch = PARSE_OK(single({{"type", "key"},
+    const auto request = PARSE_OK(single({{"type", "key"},
                                         {"key", "s"},
                                         {"action", "press"},
                                         {"modifiers", {"shift", "ctrl", "alt", "gui"}}}));
-    const auto &key = std::get<KeyInput>(batch->actions.at(0));
+    const auto &key = std::get<KeyInput>(request->batch.actions.at(0));
     CHECK(key.modifiers.size() == 4);
     CHECK(key.modifiers.at(0) == Modifier::Shift);
     CHECK(key.modifiers.at(1) == Modifier::Ctrl);
@@ -206,10 +214,10 @@ void testKeyErrors()
 void testText()
 {
     const auto one = PARSE_OK(single({{"type", "text"}, {"text", "a"}}));
-    CHECK(std::get<TextInput>(one->actions.at(0)).text == "a");
+    CHECK(std::get<TextInput>(one->batch.actions.at(0)).text == "a");
 
     const auto longest = PARSE_OK(single({{"type", "text"}, {"text", std::string(1024, 'x')}}));
-    CHECK(std::get<TextInput>(longest->actions.at(0)).text.size() == 1024);
+    CHECK(std::get<TextInput>(longest->batch.actions.at(0)).text.size() == 1024);
 
     EXPECT_INDEXED_ERROR(single({{"type", "text"}, {"text", ""}}),
                          0, "text must not be empty");
@@ -225,13 +233,13 @@ void testText()
 void testMouseMove()
 {
     const auto absolute = PARSE_OK(single({{"type", "mouse_move"}, {"x", 10}, {"y", 20}}));
-    const auto &move = std::get<MouseMoveInput>(absolute->actions.at(0));
+    const auto &move = std::get<MouseMoveInput>(absolute->batch.actions.at(0));
     CHECK(move.mode == MouseMoveInput::Mode::Absolute);
     CHECK(move.x == 10.0F);
     CHECK(move.y == 20.0F);
 
     const auto relative = PARSE_OK(single({{"type", "mouse_move"}, {"dx", -3}, {"dy", 4}}));
-    const auto &delta = std::get<MouseMoveInput>(relative->actions.at(0));
+    const auto &delta = std::get<MouseMoveInput>(relative->batch.actions.at(0));
     CHECK(delta.mode == MouseMoveInput::Mode::Relative);
     CHECK(delta.x == -3.0F);
     CHECK(delta.y == 4.0F);
@@ -259,9 +267,9 @@ void testMouseMove()
 
 void expectButton(const char *name, MouseButton expected)
 {
-    const std::optional<InputBatch> batch =
+    const std::optional<InputRequest> request =
         PARSE_OK(single({{"type", "mouse_button"}, {"button", name}}));
-    const auto &input = std::get<MouseButtonInput>(batch->actions.at(0));
+    const auto &input = std::get<MouseButtonInput>(request->batch.actions.at(0));
     CHECK(input.button == expected);
     CHECK(input.action == MouseButtonAction::Click);
     CHECK(input.clicks == 1);
@@ -271,9 +279,9 @@ void expectButton(const char *name, MouseButton expected)
 
 void expectButtonAction(const char *name, MouseButtonAction expected)
 {
-    const std::optional<InputBatch> batch = PARSE_OK(
+    const std::optional<InputRequest> request = PARSE_OK(
         single({{"type", "mouse_button"}, {"button", "left"}, {"action", name}}));
-    const auto &input = std::get<MouseButtonInput>(batch->actions.at(0));
+    const auto &input = std::get<MouseButtonInput>(request->batch.actions.at(0));
     CHECK(input.action == expected);
 }
 
@@ -295,7 +303,7 @@ void testMouseButton()
                                              {"x", 12},
                                              {"y", 34},
                                              {"clicks", 2}}));
-    const auto &input = std::get<MouseButtonInput>(positioned->actions.at(0));
+    const auto &input = std::get<MouseButtonInput>(positioned->batch.actions.at(0));
     CHECK(input.button == MouseButton::Right);
     CHECK(input.action == MouseButtonAction::Down);
     CHECK(input.x.has_value());
@@ -306,7 +314,7 @@ void testMouseButton()
 
     const auto triple =
         PARSE_OK(single({{"type", "mouse_button"}, {"button", "left"}, {"clicks", 3}}));
-    CHECK(std::get<MouseButtonInput>(triple->actions.at(0)).clicks == 3);
+    CHECK(std::get<MouseButtonInput>(triple->batch.actions.at(0)).clicks == 3);
 
     EXPECT_INDEXED_ERROR(single({{"type", "mouse_button"}, {"button", "left"}, {"x", 1}}),
                          0, "x and y must be provided together");
@@ -340,12 +348,12 @@ void testMouseButton()
 void testScroll()
 {
     const auto both = PARSE_OK(single({{"type", "scroll"}, {"x", 2}, {"y", -3}}));
-    const auto &full = std::get<ScrollInput>(both->actions.at(0));
+    const auto &full = std::get<ScrollInput>(both->batch.actions.at(0));
     CHECK(full.x == 2.0F);
     CHECK(full.y == -3.0F);
 
     const auto vertical = PARSE_OK(single({{"type", "scroll"}, {"y", 1.5}}));
-    const auto &partial = std::get<ScrollInput>(vertical->actions.at(0));
+    const auto &partial = std::get<ScrollInput>(vertical->batch.actions.at(0));
     CHECK(partial.x == 0.0F);
     CHECK(partial.y == 1.5F);
 
@@ -359,8 +367,8 @@ void testScroll()
 
 void testReleaseAll()
 {
-    const auto batch = PARSE_OK(single({{"type", "release_all"}}));
-    CHECK(std::holds_alternative<ReleaseAllInput>(batch->actions.at(0)));
+    const auto request = PARSE_OK(single({{"type", "release_all"}}));
+    CHECK(std::holds_alternative<ReleaseAllInput>(request->batch.actions.at(0)));
 
     EXPECT_INDEXED_ERROR(single({{"type", "release_all"}, {"count", 1}}),
                          0, "unknown property \"count\"");
@@ -372,9 +380,9 @@ void testBatchRules()
     EXPECT_ERROR(argumentsWith(repeatedKeyActions(257)), "the maximum is 256");
 
     const auto one = PARSE_OK(argumentsWith(repeatedKeyActions(1)));
-    CHECK(one->actions.size() == 1);
+    CHECK(one->batch.actions.size() == 1);
     const auto full = PARSE_OK(argumentsWith(repeatedKeyActions(256)));
-    CHECK(full->actions.size() == 256);
+    CHECK(full->batch.actions.size() == 256);
 
     EXPECT_INDEXED_ERROR(single({{"type", "tap"}}), 0, "unknown action type \"tap\"");
     EXPECT_ERROR(nlohmann::json::object(), "actions is required");
@@ -406,10 +414,90 @@ void testErrorIndices()
 
     /* A stale error from an earlier call must not survive a successful parse. */
     std::string error = "stale";
-    const auto batch = sdl3mcp::parseInputArguments(
-        single({{"type", "key"}, {"key", "a"}}), error);
-    CHECK(batch.has_value());
+    const auto request = sdl3mcp::parseInputArguments(
+        single({{"type", "key"}, {"key", "a"}}), kFrameTimeoutMs, error);
+    CHECK(request.has_value());
     CHECK(error.empty());
+}
+
+/*
+  The observation half is shared with sdl_capture: the same region object and
+  the same timeout range, plus a default of twice the frame timeout.
+*/
+void testObservationArguments()
+{
+    const auto defaults = PARSE_OK(single({{"type", "release_all"}}));
+    CHECK(!defaults->region.has_value());
+    CHECK(defaults->timeout == std::chrono::milliseconds(2 * kFrameTimeoutMs));
+
+    nlohmann::json region;
+    region["x"] = 1;
+    region["y"] = 2;
+    region["width"] = 3;
+    region["height"] = 4;
+
+    const nlohmann::json observed{
+        {"actions", nlohmann::json::array({{{"type", "release_all"}}})},
+        {"region", region},
+        {"timeout_ms", 250},
+    };
+    const auto requested = PARSE_OK(observed);
+    CHECK(requested->region.has_value());
+    CHECK(requested->region->x == 1);
+    CHECK(requested->region->y == 2);
+    CHECK(requested->region->width == 3);
+    CHECK(requested->region->height == 4);
+    CHECK(requested->timeout == std::chrono::milliseconds(250));
+
+    /* The default is clamped to the published timeout range. */
+    std::string error;
+    const auto longest = sdl3mcp::parseInputArguments(
+        single({{"type", "release_all"}}), 60000, error);
+    CHECK(longest.has_value());
+    CHECK(longest->timeout == std::chrono::milliseconds(60000));
+
+    const nlohmann::json releaseOnly{
+        {"actions", nlohmann::json::array({{{"type", "release_all"}}})},
+    };
+    nlohmann::json notAnObject = releaseOnly;
+    notAnObject["region"] = 5;
+    EXPECT_ERROR(notAnObject, "region must be an object");
+
+    nlohmann::json missingHeight = region;
+    missingHeight.erase("height");
+    nlohmann::json missingHeightArguments = releaseOnly;
+    missingHeightArguments["region"] = missingHeight;
+    EXPECT_ERROR(missingHeightArguments, "height is required");
+
+    nlohmann::json negativeX = region;
+    negativeX["x"] = -1;
+    nlohmann::json negativeXArguments = releaseOnly;
+    negativeXArguments["region"] = negativeX;
+    EXPECT_ERROR(negativeXArguments, "region x and y must be at least 0");
+
+    nlohmann::json zeroWidth = region;
+    zeroWidth["width"] = 0;
+    nlohmann::json zeroWidthArguments = releaseOnly;
+    zeroWidthArguments["region"] = zeroWidth;
+    EXPECT_ERROR(zeroWidthArguments, "region width and height must be at least 1");
+
+    nlohmann::json extraRegion = region;
+    extraRegion["zoom"] = 1;
+    nlohmann::json extraRegionArguments = releaseOnly;
+    extraRegionArguments["region"] = extraRegion;
+    EXPECT_ERROR(extraRegionArguments, "unknown property \"zoom\"");
+
+    nlohmann::json zeroTimeout = releaseOnly;
+    zeroTimeout["timeout_ms"] = 0;
+    EXPECT_ERROR(zeroTimeout, "must be between 1 and 60000");
+
+    nlohmann::json hugeTimeout = releaseOnly;
+    hugeTimeout["timeout_ms"] = 60001;
+    EXPECT_ERROR(hugeTimeout, "must be between 1 and 60000");
+
+    nlohmann::json stringTimeout = releaseOnly;
+    stringTimeout["timeout_ms"] = "200";
+    EXPECT_ERROR(stringTimeout, "timeout_ms must be an integer");
 }
 
 void testAllTypesInOneBatch()
@@ -422,14 +510,14 @@ void testAllTypesInOneBatch()
     actions.push_back(nlohmann::json{{"type", "scroll"}, {"y", 1}});
     actions.push_back(nlohmann::json{{"type", "release_all"}});
 
-    const std::optional<InputBatch> batch = PARSE_OK(argumentsWith(actions));
-    CHECK(batch->actions.size() == 6);
-    CHECK(std::holds_alternative<KeyInput>(batch->actions.at(0)));
-    CHECK(std::holds_alternative<TextInput>(batch->actions.at(1)));
-    CHECK(std::holds_alternative<MouseMoveInput>(batch->actions.at(2)));
-    CHECK(std::holds_alternative<MouseButtonInput>(batch->actions.at(3)));
-    CHECK(std::holds_alternative<ScrollInput>(batch->actions.at(4)));
-    CHECK(std::holds_alternative<ReleaseAllInput>(batch->actions.at(5)));
+    const std::optional<InputRequest> request = PARSE_OK(argumentsWith(actions));
+    CHECK(request->batch.actions.size() == 6);
+    CHECK(std::holds_alternative<KeyInput>(request->batch.actions.at(0)));
+    CHECK(std::holds_alternative<TextInput>(request->batch.actions.at(1)));
+    CHECK(std::holds_alternative<MouseMoveInput>(request->batch.actions.at(2)));
+    CHECK(std::holds_alternative<MouseButtonInput>(request->batch.actions.at(3)));
+    CHECK(std::holds_alternative<ScrollInput>(request->batch.actions.at(4)));
+    CHECK(std::holds_alternative<ReleaseAllInput>(request->batch.actions.at(5)));
 }
 
 } // namespace
@@ -447,6 +535,7 @@ int main()
     testReleaseAll();
     testBatchRules();
     testErrorIndices();
+    testObservationArguments();
     testAllTypesInOneBatch();
 
     std::puts("input_json_tests passed");

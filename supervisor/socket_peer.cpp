@@ -57,6 +57,16 @@ bool makeNonBlocking(int fd)
     return ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0;
 }
 
+/* A spawner's listener must not leak into the application it forks. */
+bool makeCloseOnExec(int fd)
+{
+    const int flags = ::fcntl(fd, F_GETFD);
+    if (flags < 0) {
+        return false;
+    }
+    return ::fcntl(fd, F_SETFD, flags | FD_CLOEXEC) == 0;
+}
+
 } // namespace
 
 SocketPeer::SocketPeer(int fd) : fd_(fd), transport_(fd, fd)
@@ -163,6 +173,11 @@ bool listenSocket(const char *host,
         int reuse = 1;
         (void)::setsockopt(socketFd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof reuse);
 
+        if (!makeCloseOnExec(socketFd)) {
+            lastError = errno;
+            ::close(socketFd);
+            continue;
+        }
         if (::bind(socketFd, address->ai_addr, address->ai_addrlen) != 0) {
             lastError = errno;
             ::close(socketFd);

@@ -34,6 +34,15 @@ constexpr int kWindowPollMs = 50;
 constexpr int kPeerPollMs = 50;
 /* Bounded read of an idle peer's queued announcements; a line arrives at once. */
 constexpr int kPeerDrainMs = 10;
+/*
+  A forwarded call is bounded so a peer that stopped answering cannot hold the
+  single request slot forever. The default matches the library's frame timeout,
+  and a call carrying its own timeout_ms gets that budget plus a small grace so
+  the application's own timeout answer still arrives first.
+*/
+constexpr int kForwardTimeoutMs = 2000;
+constexpr int kForwardGraceMs = 500;
+constexpr std::int64_t kMaxForwardTimeoutMs = 60000;
 /* SIGTERM to SIGKILL grace when the application ignores the quit request. */
 constexpr int kTerminateGraceMs = 2000;
 constexpr std::int64_t kMaxWaitSessionMs = 60000;
@@ -209,6 +218,17 @@ bool readInteger(const nlohmann::json &object, const char *name, int64_t &value)
     }
     value = entry->get<int64_t>();
     return true;
+}
+
+/* The budget for one forwarded call: the caller's tool timeout plus a grace. */
+int forwardTimeoutMs(const nlohmann::json &arguments)
+{
+    int64_t requested = 0;
+    if (arguments.is_object() && readInteger(arguments, "timeout_ms", requested) &&
+        requested >= 1 && requested <= kMaxForwardTimeoutMs) {
+        return static_cast<int>(requested) + kForwardGraceMs;
+    }
+    return kForwardTimeoutMs;
 }
 
 /*
@@ -525,6 +545,14 @@ int Supervisor::run()
     const bool polled = options_.relay() || options_.spawner();
     const int tickMs = polled ? kPeerPollMs : -1;
     for (;;) {
+        /*
+          A session can end while no call is in flight. Probe on every pass, not
+          only on an idle timeout: a client that keeps sending must not starve
+          the only check that notices a dead peer.
+        */
+        pollRelayPeer();
+        pollSpawnerSession();
+
         std::string line;
         std::string error;
         const ReadStatus status = upstream_->readLine(line, error, tickMs);
@@ -536,9 +564,6 @@ int Supervisor::run()
             break;
         }
         if (status == ReadStatus::Timeout) {
-            /* A relayed session, or a spawned app, may close while no call is in flight. */
-            pollRelayPeer();
-            pollSpawnerSession();
             /* It may also announce a tool-list change while idle. */
             servicePeerSession();
             continue;
@@ -1853,23 +1878,32 @@ nlohmann::json Supervisor::forwardChildCall(const nlohmann::json &id,
         {"params", nlohmann::json{{"name", name}, {"arguments", arguments}}},
     };
     if (!peer->writeLine(request.dump())) {
-        if (options_.relay() || options_.spawner()) {
-            detachPeer(peer);
-        }
-        return toolResultJson(id, toolError("cannot reach the application"));
+        const int errorCode = errno;
+        detachPeer(peer);
+        return toolResultJson(
+            id, toolError("cannot send " + name + " to the application: " +
+                          std::strerror(errorCode)));
     }
 
     /*
-      No deadline: the app's own tool timeouts bound the wait, and a peer that
-      dies closes its connection, which is reported as a tool error.
+      A peer that never answers must not wedge the session: expiry means the
+      session is gone, so it is detached and the caller gets an error naming the
+      tool instead of waiting forever.
     */
+    const Deadline deadline = std::chrono::steady_clock::now() +
+                              std::chrono::milliseconds(forwardTimeoutMs(arguments));
     for (;;) {
         std::string line;
         std::string error;
-        const ReadStatus status = peer->readLine(line, error);
+        const ReadStatus status = peer->readLine(line, error, remainingMs(deadline));
+        if (status == ReadStatus::Timeout) {
+            detachPeer(peer);
+            return toolResultJson(
+                id, toolError("the application did not answer " + name +
+                              " within the proxy timeout"));
+        }
         if (status != ReadStatus::Line) {
-            if ((options_.relay() || options_.spawner()) &&
-                status != ReadStatus::Stopped) {
+            if (status != ReadStatus::Stopped) {
                 /* A session that went away returns the supervisor to its idle tools. */
                 detachPeer(peer);
             }
@@ -1934,19 +1968,28 @@ nlohmann::json Supervisor::forwardCapture(const nlohmann::json &id,
         {"params", nlohmann::json{{"name", "sdl_capture"}, {"arguments", arguments}}},
     };
     if (!peer->writeLine(request.dump())) {
-        if (options_.relay() || options_.spawner()) {
-            detachPeer(peer);
-        }
-        return toolResultJson(id, toolError("cannot reach the application"));
+        const int errorCode = errno;
+        detachPeer(peer);
+        return toolResultJson(
+            id, toolError(std::string("cannot send sdl_capture to the application: ") +
+                          std::strerror(errorCode)));
     }
 
+    /* The same bound as every other forwarded call, from the capture timeout. */
+    const Deadline deadline = std::chrono::steady_clock::now() +
+                              std::chrono::milliseconds(forwardTimeoutMs(arguments));
     for (;;) {
         std::string line;
         std::string error;
-        const ReadStatus status = peer->readLine(line, error);
+        const ReadStatus status = peer->readLine(line, error, remainingMs(deadline));
+        if (status == ReadStatus::Timeout) {
+            detachPeer(peer);
+            return toolResultJson(
+                id, toolError("the application did not answer sdl_capture within the "
+                              "proxy timeout"));
+        }
         if (status != ReadStatus::Line) {
-            if ((options_.relay() || options_.spawner()) &&
-                status != ReadStatus::Stopped) {
+            if (status != ReadStatus::Stopped) {
                 detachPeer(peer);
             }
             return toolResultJson(
@@ -2008,14 +2051,16 @@ nlohmann::json Supervisor::forwardCapture(const nlohmann::json &id,
             return toolResultJson(id, toolError(std::move(headerError)));
         }
 
-        /* No deadline, like every other forwarded call: the app's timeout bounds it. */
+        /* The frame payload shares the call's deadline, so a stalled peer detaches. */
         std::vector<uint8_t> pixels;
-        if (!peer->readBytes(byteLength, pixels, error)) {
-            if (options_.relay() || options_.spawner()) {
-                detachPeer(peer);
-            }
+        if (!peer->readBytes(byteLength, pixels, error, remainingMs(deadline))) {
+            const bool timedOut = remainingMs(deadline) == 0;
+            detachPeer(peer);
             return toolResultJson(
-                id, toolError("cannot read the frame from the application: " + error));
+                id, toolError(timedOut
+                                  ? std::string("the application did not send the "
+                                                "sdl_capture frame within the proxy timeout")
+                                  : "cannot read the frame from the application: " + error));
         }
 
         Frame frame;

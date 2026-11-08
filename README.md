@@ -930,7 +930,12 @@ closed as soon as it is accepted instead of queueing behind the first, and the
 listener never hands it to the proxy. When the attached application's socket
 closes — a clean exit, a crash, or a network drop — the relay clears the tool
 list, restores `wait_session`, sends one `list_changed`, and keeps the client's
-stdio endpoint open for the next application.
+stdio endpoint open for the next application. The hang-up is probed on every
+loop pass, so an idle relay notices it while nothing is in flight.
+
+A forwarded call is bounded as well: when the peer stops answering, the relay
+detaches it, returns a normal error content block naming the tool, and is back
+in `wait_session` instead of holding the request slot forever.
 
 `sdl_capture` keeps the supervisor contract while a session is attached: the
 library's raw `rgba8888` frame is encoded as a PNG at the app's native pixel size
@@ -1170,6 +1175,9 @@ the error text. After any failure the spawner is idle again and a later
 not wait for the exit or force it, and the application decides what the request
 means. When the application exits, whether from a clean request or on its own,
 its tools are replaced by the `app_spawn_*` set and one `list_changed` is sent.
+A forwarded call to an application that stopped answering is bounded the same
+way as the relay's: it returns an error naming the tool and restores the
+`app_spawn_*` view.
 
 ### Stopping the spawner
 
@@ -1177,7 +1185,9 @@ The spawner lives exactly as long as its relay connection: when the relay closes
 the socket, the run loop ends and the spawner exits. On the way out it stops a
 live application with SIGTERM, a grace period, and SIGKILL, reaps it, and only
 then exits; SIGINT and SIGTERM take the same path. Closing the relay therefore
-never leaves an orphan application behind.
+never leaves an orphan application behind. The spawned application does not
+inherit the relay connection or the spawn listener, so the relay sees the socket
+close as soon as the spawner dies, even if the application is still running.
 
 ### Spawner client configuration
 

@@ -24,11 +24,23 @@
 #include <utility>
 #include <vector>
 
+#include <fcntl.h>
 #include <pthread.h>
 #include <unistd.h>
 
 namespace
 {
+
+/*
+  A spawned application must not inherit the relay connection. If it does, the
+  relay keeps a socket its child still holds open after this process dies, so no
+  EOF ever arrives and the session looks alive to an idle client.
+*/
+bool makeCloseOnExec(int fd)
+{
+    const int flags = ::fcntl(fd, F_GETFD);
+    return flags >= 0 && ::fcntl(fd, F_SETFD, flags | FD_CLOEXEC) == 0;
+}
 
 bool blockStopSignals(sigset_t &signals)
 {
@@ -50,6 +62,11 @@ std::unique_ptr<sdl3mcp::Peer> openUpstream(const sdl3mcp::SupervisorOptions &op
         if (!sdl3mcp::connectSocket(options.connectHost.c_str(), options.connectPort, fd,
                                     error)) {
             error = "--connect: " + error;
+            return nullptr;
+        }
+        if (!makeCloseOnExec(fd)) {
+            error = "--connect: cannot make the relay connection close-on-exec";
+            ::close(fd);
             return nullptr;
         }
         return std::make_unique<sdl3mcp::SocketPeer>(fd);

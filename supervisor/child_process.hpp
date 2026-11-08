@@ -44,6 +44,12 @@ struct ChildCommand
     std::string executable;
     /* argv after argv[0]. */
     std::vector<std::string> arguments;
+    /*
+      When true the child inherits stdin/stdout/stderr instead of getting
+      private pipes. The spawner uses this because the child's MCP channel is
+      the socket it dials, not stdio.
+    */
+    bool inheritStdio = false;
 };
 
 class ChildProcess
@@ -67,6 +73,9 @@ public:
     /* The parent ends. Valid after a successful start() and owned by this object. */
     int stdinFd() const noexcept { return stdinFd_; }
     int stdoutFd() const noexcept { return stdoutFd_; }
+
+    /* The child's process id, or -1 before start(). */
+    pid_t pid() const noexcept { return pid_; }
 
     /*
       Waits up to timeoutMs for the exec to either close the error pipe (true) or

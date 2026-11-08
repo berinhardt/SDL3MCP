@@ -87,6 +87,18 @@ add_test(NAME mouse_tests COMMAND sdl3mcp_test_mouse)
 
 find_package(Threads REQUIRED)
 
+add_executable(sdl3mcp_test_connect connect_tests.cpp)
+target_compile_features(sdl3mcp_test_connect PRIVATE cxx_std_20)
+target_include_directories(sdl3mcp_test_connect PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+)
+target_link_libraries(sdl3mcp_test_connect PRIVATE
+    ${SDL3MCP_TEST_INTERNAL_LIBRARY}
+    SDL3::SDL3
+    Threads::Threads
+)
+add_test(NAME connect_tests COMMAND sdl3mcp_test_connect)
+
 add_executable(sdl3mcp_test_queue queue_tests.cpp)
 target_compile_features(sdl3mcp_test_queue PRIVATE cxx_std_20)
 target_include_directories(sdl3mcp_test_queue PRIVATE
@@ -322,7 +334,46 @@ if(SDL3MCP_BUILD_SUPERVISOR)
     )
     add_test(NAME supervisor_tests
              COMMAND sdl3mcp_test_supervisor
-                     $<TARGET_FILE:sdl3mcp-supervisor>
+                     $<TARGET_FILE:sdl3mcp>
+                     $<TARGET_FILE:sdl3mcp_fake_child>)
+
+    # The relay drives the same executable with --listen and a fake application
+    # that dials in over TCP, so no child process and no SDL are involved.
+    add_executable(sdl3mcp_test_relay relay_tests.cpp)
+    target_compile_features(sdl3mcp_test_relay PRIVATE cxx_std_20)
+    target_include_directories(sdl3mcp_test_relay PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+    )
+    target_link_libraries(sdl3mcp_test_relay PRIVATE
+        sdl3mcp_supervisor_objects
+        sdl3mcp_objects
+        SDL3::SDL3
+        nlohmann_json::nlohmann_json
+        Threads::Threads
+    )
+    add_test(NAME relay_tests
+             COMMAND sdl3mcp_test_relay
+                     $<TARGET_FILE:sdl3mcp>)
+
+    # The spawner dials a relay the test itself listens on, then spawns the fake
+    # child through its own per-spawn listener; the fake child dials back with
+    # --mcp=<endpoint> and speaks MCP like the real app.
+    add_executable(sdl3mcp_test_spawner spawner_tests.cpp)
+    target_compile_features(sdl3mcp_test_spawner PRIVATE cxx_std_20)
+    target_include_directories(sdl3mcp_test_spawner PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../supervisor"
+    )
+    target_link_libraries(sdl3mcp_test_spawner PRIVATE
+        sdl3mcp_supervisor_objects
+        sdl3mcp_objects
+        SDL3::SDL3
+        nlohmann_json::nlohmann_json
+        Threads::Threads
+    )
+    add_test(NAME spawner_tests
+             COMMAND sdl3mcp_test_spawner
+                     $<TARGET_FILE:sdl3mcp>
                      $<TARGET_FILE:sdl3mcp_fake_child>)
 
     # The same binary again, this time driving the real example through the
@@ -333,7 +384,7 @@ if(SDL3MCP_BUILD_SUPERVISOR)
     if(SDL3MCP_BUILD_EXAMPLES)
         add_test(NAME supervisor_real_app
                  COMMAND sdl3mcp_test_supervisor
-                         $<TARGET_FILE:sdl3mcp-supervisor>
+                         $<TARGET_FILE:sdl3mcp>
                          $<TARGET_FILE:sdl3mcp_fake_child>
                          $<TARGET_FILE:minimal>)
         set_tests_properties(supervisor_real_app PROPERTIES ENVIRONMENT

@@ -3,6 +3,7 @@
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <string>
 #include <string_view>
@@ -70,7 +71,50 @@ bool isValueFlag(std::string_view name)
            || name == "--mcp-log-level";
 }
 
+constexpr std::size_t kConnectHostCapacity = 64;
+
 } // namespace
+
+bool parseEndpoint(std::string_view value,
+                   std::string_view &host,
+                   std::uint16_t &port,
+                   bool allowZeroPort)
+{
+    std::string_view portText;
+    if (!value.empty() && value.front() == '[') {
+        const std::size_t closing = value.find(']');
+        if (closing == std::string_view::npos || closing == 1) {
+            return false;
+        }
+        if (closing + 1 >= value.size() || value[closing + 1] != ':') {
+            return false;
+        }
+        host = value.substr(1, closing - 1);
+        portText = value.substr(closing + 2);
+    } else {
+        const std::size_t separator = value.find(':');
+        if (separator == std::string_view::npos || separator == 0) {
+            return false;
+        }
+        if (value.find(':', separator + 1) != std::string_view::npos) {
+            return false;
+        }
+        host = value.substr(0, separator);
+        portText = value.substr(separator + 1);
+    }
+
+    if (host.empty() || host.size() >= kConnectHostCapacity) {
+        return false;
+    }
+
+    std::uint64_t parsed = 0;
+    const std::uint64_t minimum = allowZeroPort ? 0u : 1u;
+    if (!parseDecimal(portText, parsed) || parsed < minimum || parsed > 65535) {
+        return false;
+    }
+    port = static_cast<std::uint16_t>(parsed);
+    return true;
+}
 
 Configuration::Configuration() noexcept : value_(SDL3MCP_DefaultConfiguration())
 {
@@ -173,8 +217,19 @@ Status Configuration::applyTransport(std::string_view argument,
         candidate.transport = SDL3MCP_TRANSPORT_NONE;
         return Status::Continue;
     }
+
+    std::string_view host;
+    std::uint16_t port = 0;
+    if (parseEndpoint(value, host, port)) {
+        std::memset(candidate.connect_host, 0, sizeof(candidate.connect_host));
+        std::memcpy(candidate.connect_host, host.data(), host.size());
+        candidate.connect_port = port;
+        candidate.transport = SDL3MCP_TRANSPORT_CONNECT;
+        return Status::Continue;
+    }
+
     return fail("invalid value for '" + std::string(argument)
-                + "': expected 'stdio' or 'off'");
+                + "': expected 'stdio', 'off', HOST:PORT or [V6]:PORT");
 }
 
 Status Configuration::applyFrameTimeout(std::string_view argument,
@@ -235,8 +290,25 @@ Status Configuration::applyLogLevel(std::string_view argument,
 Status Configuration::validateValues(const SDL3MCP_Configuration &candidate)
 {
     if (candidate.transport != SDL3MCP_TRANSPORT_NONE
-        && candidate.transport != SDL3MCP_TRANSPORT_STDIO) {
-        return fail("transport must be SDL3MCP_TRANSPORT_NONE or SDL3MCP_TRANSPORT_STDIO");
+        && candidate.transport != SDL3MCP_TRANSPORT_STDIO
+        && candidate.transport != SDL3MCP_TRANSPORT_CONNECT) {
+        return fail("transport must be SDL3MCP_TRANSPORT_NONE, SDL3MCP_TRANSPORT_STDIO or "
+                    "SDL3MCP_TRANSPORT_CONNECT");
+    }
+    if (candidate.transport == SDL3MCP_TRANSPORT_CONNECT) {
+        const void *terminator =
+            std::memchr(candidate.connect_host, '\0', sizeof(candidate.connect_host));
+        if (terminator == nullptr) {
+            return fail("connect_host must be a non-empty string shorter than 64 bytes");
+        }
+        const std::size_t hostLength =
+            static_cast<std::size_t>(static_cast<const char *>(terminator) - candidate.connect_host);
+        if (hostLength == 0) {
+            return fail("connect_host must be a non-empty string shorter than 64 bytes");
+        }
+        if (candidate.connect_port == 0) {
+            return fail("connect_port must be in 1..65535, got 0");
+        }
     }
     if (candidate.frame_timeout_ms < kMinFrameTimeoutMs
         || candidate.frame_timeout_ms > kMaxFrameTimeoutMs) {
@@ -266,6 +338,8 @@ std::string Configuration::usageText()
            "  --mcp                     Start the stdio MCP server (same as --mcp=stdio).\n"
            "  --mcp=stdio               Start the stdio MCP server.\n"
            "  --mcp=off                 Start no server.\n"
+           "  --mcp=HOST:PORT           Connect to an MCP client at HOST:PORT.\n"
+           "  --mcp=[V6]:PORT           Connect to an IPv6 MCP client.\n"
            "  --mcp-timeout-ms=N        Frame timeout in milliseconds (1..60000).\n"
            "  --mcp-max-frame-bytes=N   Maximum frame size in bytes (1048576..1073741824).\n"
            "  --mcp-no-warp-cursor      Do not warp the cursor for pointer actions.\n"

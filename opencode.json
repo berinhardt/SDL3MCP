@@ -4,7 +4,7 @@
       "sdl3mcp": {
         "type": "local",
         "command": [
-          "build/sdl3mcp-supervisor",
+          "build/sdl3mcp",
           "--target",
           "build/examples/minimal",
           "--mcp"

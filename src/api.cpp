@@ -33,6 +33,7 @@
 #include "replay.hpp"
 #include "server.hpp"
 #include "session.hpp"
+#include "socket_connect.hpp"
 #include "stdio_isolation.hpp"
 
 #include <algorithm>
@@ -54,6 +55,8 @@
 #include <vector>
 
 #include <nlohmann/json.hpp>
+
+#include <unistd.h>
 
 namespace
 {
@@ -107,6 +110,9 @@ struct LibraryState
     CaptureState capture;
     Session session;
     StdioIsolation isolation;
+
+    /* The connected socket in CONNECT mode; -1 otherwise. */
+    int connectFd = -1;
 
     /*
       Set by the server thread's sdl_terminate handler and exchanged by the app
@@ -694,6 +700,10 @@ void teardownState() noexcept
                 g_state->server->stop();
                 g_state->server->join();
             }
+            if (g_state->connectFd >= 0) {
+                ::close(g_state->connectFd);
+                g_state->connectFd = -1;
+            }
             g_state->isolation.restore();
         } catch (...) {
             /* Shutdown must not throw; dropping the state still stops the thread. */
@@ -761,6 +771,32 @@ SDL3MCP_AppInit(SDL3MCP_Configuration *config, int argc, char **argv)
                                                    makeToolHandler(g_state.get()));
             if (!server->start(error)) {
                 g_state->isolation.restore();
+                g_state.reset();
+                SDL_SetError("%s", error.c_str());
+                return SDL_APP_FAILURE;
+            }
+            g_state->server = std::move(server);
+        } else if (g_state->configuration.value().transport == SDL3MCP_TRANSPORT_CONNECT) {
+            /*
+              One dial, no retry. Storing the descriptor before start() lets the
+              exception path and teardownState close it exactly once.
+            */
+            const SDL3MCP_Configuration &configuration = g_state->configuration.value();
+            std::string error;
+            int fd = -1;
+            if (!sdl3mcp::connectSocket(configuration.connect_host, configuration.connect_port,
+                                        fd, error)) {
+                g_state.reset();
+                SDL_SetError("%s", error.c_str());
+                return SDL_APP_FAILURE;
+            }
+            g_state->connectFd = fd;
+
+            auto server = std::make_unique<Server>(fd, fd, g_state->session,
+                                                   makeToolHandler(g_state.get()));
+            if (!server->start(error)) {
+                ::close(g_state->connectFd);
+                g_state->connectFd = -1;
                 g_state.reset();
                 SDL_SetError("%s", error.c_str());
                 return SDL_APP_FAILURE;

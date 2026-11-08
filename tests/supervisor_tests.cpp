@@ -342,7 +342,7 @@ bool pngHasSize(const std::vector<uint8_t> &png, uint32_t width, uint32_t height
 
 std::string makeTempPath()
 {
-    char pattern[] = "/tmp/sdl3mcp-supervisor-test-XXXXXX";
+    char pattern[] = "/tmp/sdl3mcp-test-XXXXXX";
     const int descriptor = ::mkstemp(pattern);
     CHECK(descriptor >= 0);
     ::close(descriptor);
@@ -514,7 +514,7 @@ void testIdleListsOnlySpawn(const std::string &supervisor, const std::string &fa
     CHECK(!initialize.contains("error"));
     CHECK(initialize["result"]["protocolVersion"] == "2025-11-25");
     CHECK(initialize["result"]["capabilities"]["tools"]["listChanged"] == true);
-    CHECK(initialize["result"]["serverInfo"]["name"] == "sdl3mcp-supervisor");
+    CHECK(initialize["result"]["serverInfo"]["name"] == "sdl3mcp");
     CHECK(initialize["result"]["serverInfo"]["version"].is_string());
 
     const std::vector<std::string> names = toolNames(client.toolsList());

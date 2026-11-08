@@ -1,10 +1,10 @@
 # AGENTS.md
 
 SDL3MCP is a library that embeds an MCP server in any SDL3 application: public
-C API, C++20 internals, stdio transport, synthetic input, and PNG frame capture.
-`README.md` is the design contract and the implementation follows it: the
-transport, input replay, frame pipeline, and all four MCP tools are in `src/`,
-and `examples/minimal` is a complete host.
+C API, C++20 internals, stdio and dialed-socket transports, synthetic input, and
+PNG frame capture. `README.md` is the design contract and the implementation
+follows it: the transport, input replay, frame pipeline, and all four MCP tools
+are in `src/`, and `examples/minimal` is a complete host.
 
 ## Current state
 
@@ -18,7 +18,7 @@ and `examples/minimal` is a complete host.
   a separate directory with `-DSDL3MCP_BUILD_SHARED=ON`. `CMakePresets.json`
   wraps the same configurations as `debug`, `shared`, `asan`, and `tsan`
   presets. All four pass `-DSDL3MCP_BUILD_SUPERVISOR=ON`, so every preset builds
-  `sdl3mcp-supervisor` and registers the supervisor tests; the `asan` suite runs
+  `sdl3mcp` and registers the supervisor tests; the `asan` suite runs
   with leak detection on (the real-example supervisor test scopes it off for
   itself and its SDL child) and `tsan` filters to `queue_tests`, `server_tests`,
   and `supervisor_tests`. The direct `cmake -S . -B build` flow stays the
@@ -32,27 +32,38 @@ and `examples/minimal` is a complete host.
   prose, the region's captured-frame dimensions, the four-argument
   `SDL3MCP_WriteFrame` signature, the run command, the supervisor states, and
   the loop order. CTest registers it as `readme_check` when Python 3 is found.
-- `extras/sdl-vision/` is optional OpenCode agent configuration — a subagent
-  plus a skill that drives `sdl_capture` through a vision model. It is
-  not built or installed by CMake, has no `ctest` entry, and
-  `tests/check_readme.py` ignores it.
-- `SDL3MCP_BUILD_SUPERVISOR=ON` builds `build/sdl3mcp-supervisor`, the optional
-  single-endpoint supervisor over a restartable app. Its sources live in
-  `supervisor/` (CLI, child process, proxy, PNG/base64) and its tests are
-  `supervisor_png_tests` (the moved presentation code), `supervisor_tests` (fake
-  MCP child over real pipes) and `supervisor_real_app` (the real
-  `examples/minimal` under `SDL_VIDEODRIVER=dummy`); the last is registered only
-  when examples are built. `opencode.json` in the repository root points the
-  local MCP client at the supervisor.
+- `SDL3MCP_BUILD_SUPERVISOR=ON` builds `build/sdl3mcp`, one executable with
+  three modes over one peer seam. `--target <executable>` is the child
+  supervisor: it speaks MCP on its own stdio and runs one target child at a time
+  over private pipes. `--listen=HOST:PORT` is a relay: it speaks MCP on its own
+  stdio and proxies to whichever application dials in, one session at a time.
+  `--connect=HOST:PORT --targets=FILE [--listen=HOST:PORT]` is a spawner: it
+  dials a relay, advertises one `app_spawn_<alias>` per targets entry, and starts
+  the chosen application with `--mcp=HOST:PORT` so it dials back to a listener
+  the spawner owns. The modes vary only how the data-path `Peer`
+  (`supervisor/peer.hpp`) is created: `stdio_peer.*` for the client's own pipes,
+  `child_peer.*` for a `--target` child, and `socket_peer.*` for an accepted
+  application connection (`--listen`) or the dialed relay (`--connect`). The
+  proxy loop never knows which one it holds. Sources live in `supervisor/` (CLI, child process, peers, proxy,
+  targets file, PNG/base64) and its tests are `supervisor_png_tests` (the moved
+  presentation code), `supervisor_tests` (fake MCP child over real pipes),
+  `relay_tests` (fake application over TCP), `spawner_tests` (spawner against a
+  relay the test owns) and `supervisor_real_app` (the real `examples/minimal`
+  under `SDL_VIDEODRIVER=dummy`); the last is registered only when examples are
+  built. `connect_tests` covers the library's `--mcp=HOST:PORT` dial.
+  `opencode.json` in the repository root points the local MCP client at the
+  supervisor.
 - Target SDL 3.2+. There, `SDL_RenderReadPixels(renderer, rect)` returns an
   `SDL_Surface *`; the old five-argument form is retired. Keep examples on 3.2
   APIs (no `SDL_RenderDebugText` or other 3.4-only calls).
 
 ## Decisions not to regress
 
-- **stdio only.** TCP was considered and removed. The default transport is
-  `SDL3MCP_TRANSPORT_NONE`; `--mcp` (or `--mcp=stdio`) enables the server,
-  `--mcp=off` disables it.
+- **The library never listens.** The default transport is
+  `SDL3MCP_TRANSPORT_NONE`; `--mcp` (or `--mcp=stdio`) enables the stdio server,
+  `--mcp=HOST:PORT` dials one endpoint with no retry, and `--mcp=off` disables
+  it. A failed dial fails `SDL3MCP_AppInit` instead of falling back to stdio or
+  to no server. Only the optional `sdl3mcp` relay binds a port.
 - **One lifecycle per process.** A second `SDL3MCP_AppInit` fails even after
   shutdown; `SDL3MCP_AppShutdown` is idempotent.
 - **`SDL3MCP_AppIterate` is the last call of the frame**, after drawing, after
@@ -70,7 +81,10 @@ and `examples/minimal` is a complete host.
   resized. The supervisor reads that framing, validates the header and payload
   size, and returns the standard
   `{"type":"image","mimeType":"image/png","data":"<base64>"}` content block,
-  which stays the client-facing contract. Do not reintroduce a
+  which stays the client-facing contract. A supervisor in front of another
+  supervisor relays that already-presented `content` result untouched; only a
+  raw `format`/`width`/`height`/`byteLength` frame is encoded, and exactly once,
+  at the hop nearest the application. Do not reintroduce a
   custom client, a non-standard content type, or PNG encoding in the library.
 - **Frame contract.** `SDL3MCP_WriteFrame(data, size, width, height)` accepts
   only tightly packed RGBA8888 with `size == width * height * 4`, top-left
@@ -119,16 +133,27 @@ and `examples/minimal` is a complete host.
   exchanges the flag and pushes exactly one zeroed `SDL_EVENT_QUIT`, restoring
   the flag to retry when `SDL_PushEvent` fails. It still returns
   `SDL_APP_CONTINUE` and leaves the app's own quit handling untouched.
-- **The supervisor is an optional separate process with one state machine.** It
-  speaks MCP on its own stdio and runs one target child at a time. `Idle`
+- **The supervisor is one executable with three modes and one state machine.**
+  Child mode (`--target`) speaks MCP on its own stdio and runs one target child
+  at a time. Relay mode (`--listen`) speaks MCP on its own stdio and waits for an
+  application to dial in. Spawner mode (`--connect --targets`) speaks MCP to the
+  relay it dialed and starts the chosen application on demand. `Idle`
   advertises only `spawn`, `Starting` advertises nothing, and `Running` mirrors
   the committed child tools except `sdl_capture`, which the supervisor replaces
   with its own definition (region, `timeout_ms`) because it owns presentation.
-  `spawn` is synchronous: fork/exec, initialize, `tools/list`, then poll
-  `sdl_info` until a window is bound or `--startup-timeout-ms` expires. A
-  second `spawn` while not idle is an error. Every transition that changes the
-  tool view sends one `notifications/tools/list_changed`; do not make it fire
-  twice or cache the tool list on the client side.
+  Relay mode starts in `WaitingSession` (`wait_session` only) and becomes
+  `PeerAttached` once a session attaches; spawner mode starts in `Idle` but
+  advertises one `app_spawn_<alias>` per targets entry instead of `spawn`, and
+  also uses `PeerAttached`. `spawn` is synchronous: fork/exec, initialize,
+  `tools/list`, then poll `sdl_info` until a window is bound or
+  `--startup-timeout-ms` expires. A second `spawn` while not idle is an error,
+  and the spawner starts one application at a time. Every transition that changes
+  the tool view sends one `notifications/tools/list_changed`; do not make it fire
+  twice or cache the tool list on the client side. A supervisor never treats a
+  peer's announcement as the list itself: on
+  `notifications/tools/list_changed` from an attached peer — a spawner behind a
+  relay, or an application behind a spawner — it asks that peer for `tools/list`
+  again and republishes the result, so a chained view is observed by listing.
 - **The terminate watchdog is supervisor policy, not library policy.**
   `sdl_terminate` is forwarded like any other running tool, but its timer starts
   before the forward and the supervisor waits for the child to exit. Clean exit
@@ -136,21 +161,27 @@ and `examples/minimal` is a complete host.
   watchdog sends SIGTERM, waits about two seconds, then SIGKILL, and says the
   termination was forced. The child's exit handler, whether from the request, a
   crash, or the watchdog, restores `Idle`/`spawn` and sends the single
-  `list_changed`.
+  `list_changed`. In relay and spawner modes the call is forwarded to the app
+  unchanged; a relay holds no pid, so it cannot enforce the exit.
 - **Supervisor shutdown never orphans the child.** stdin EOF, SIGINT/SIGTERM,
   and a normal return all run the same shutdown: SIGTERM, grace, SIGKILL, then
-  join and reap. Signals are blocked process-wide and consumed by a `sigwait`
-  thread because the handler cannot take the state or writer mutexes.
+  join and reap. A relayed application is not a child, so it is left running. In
+  spawner mode the relay connection closing ends the process the same way and
+  takes the live child with it. Signals are blocked process-wide and consumed by
+  a `sigwait` thread because the handler cannot take the state or writer mutexes.
 - **The supervisor reuses the library plumbing.** CLI parsing, the line
-  transport, and JSON-RPC dispatch come from `supervisor/cli.*`,
-  `src/transport.*`, and `src/json_rpc.*`; the supervisor links
+  transport, endpoint parsing and dialing, and JSON-RPC dispatch come from
+  `supervisor/cli.*`, `src/transport.*`, `src/configuration.*`,
+  `src/socket_connect.*`, and `src/json_rpc.*`; the supervisor links
   `sdl3mcp_objects` and `sdl3mcp_supervisor_objects` rather than duplicating
-  them. It never calls SDL and is POSIX-only (`fork`/`exec`, pipes, signals),
-  matching the platform stance above.
+  them. It never calls SDL and is POSIX-only (`fork`/`exec`, pipes, sockets,
+  signals), matching the platform stance above.
 - **fd ownership.** `NONE` leaves stdin/stdout untouched. `STDIO` duplicates the
   originals for MCP, redirects the host stdin to `/dev/null` and the host stdout
-  to stderr, and restores both at shutdown. stderr stays separate and is where
-  diagnostics go; the host must not write stdout before `SDL3MCP_AppInit`.
+  to stderr, and restores both at shutdown. `CONNECT` dials one socket and
+  duplicates nothing, so the host keeps its own stdin/stdout. stderr stays
+  separate and is where diagnostics go; the host must not write stdout before
+  `SDL3MCP_AppInit` in stdio mode.
 - **Threading.** The server thread never calls SDL. Geometry is snapshotted on
   the app thread; frames and input cross through queues/copies.
 - **Public surface.** The six entry points plus the header-inline
@@ -166,10 +197,12 @@ and `examples/minimal` is a complete host.
   link the object library `sdl3mcp_objects` rather than the shared object. The
   sources are compiled once; do not add a second static copy for the tests or
   drop the hidden visibility to make them link.
-- **The transport and stdio isolation are POSIX-only; Windows is a TODO.**
-  `poll`/`read`/`write`, `dup`/`dup2`, `/dev/null`, and blocking `SIGPIPE` on
-  the server thread are the shipped paths. `CMakeLists.txt` rejects a `WIN32`
-  configure with a `FATAL_ERROR`, and `src/transport.cpp` and
+- **The transports and stdio isolation are POSIX-only; Windows is a TODO.**
+  `poll`/`read`/`write`, `dup`/`dup2`, `/dev/null`, blocking `SIGPIPE` on the
+  server thread, and the socket dial/listen/accept path (`getaddrinfo`, `socket`,
+  `connect`, `listen`, `accept` in `src/socket_connect.cpp` and
+  `supervisor/socket_peer.cpp`) are the shipped paths. `CMakeLists.txt` rejects
+  a `WIN32` configure with a `FATAL_ERROR`, and `src/transport.cpp` and
   `src/stdio_isolation.cpp` carry a `TODO(windows)` comment naming the work:
   binary stdio (`_setmode` with `_O_BINARY`), a Win32 reader wake-up
   (`PeekNamedPipe`/`WaitForSingleObject`), `_dup`/`_dup2` with `NUL` for stdio

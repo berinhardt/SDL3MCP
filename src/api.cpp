@@ -514,7 +514,7 @@ ToolResult inputResult(LibraryState &state, const ToolCall &call)
         return textResult("SDL3MCP is shutting down", true);
     }
 
-    const std::string text =
+    const std::string appliedText =
         std::to_string(actionCount) + " actions applied at frame " +
         std::to_string(outcome.appliedFrame);
 
@@ -525,19 +525,32 @@ ToolResult inputResult(LibraryState &state, const ToolCall &call)
     */
     const std::chrono::milliseconds remaining = remainingBudget(started, request->timeout);
     if (remaining.count() <= 0) {
-        return textResult(text + " but no frame was taken: the timeout_ms budget ran out "
-                                 "before the capture",
+        return textResult(appliedText + " but no frame was taken: the timeout_ms budget ran "
+                                        "out before the capture",
                           true);
     }
 
     Frame frame;
     std::string failure;
     if (!takeFrame(state, remaining, request->region, frame, failure)) {
-        return textResult(text + " but no frame was taken: " + failure, true);
+        return textResult(appliedText + " but no frame was taken: " + failure, true);
+    }
+
+    /*
+      The acknowledgement waits for the F+1 completion before this capture is
+      requested, so the attached frame is always rendered after the actions were
+      delivered. Naming both indices makes that a fact the caller can act on: an
+      unchanged frame then means the actions had no effect, not that it is stale.
+    */
+    if (const std::optional<std::string> order =
+            sdl3mcp::checkFrameOrder(outcome.appliedFrame, frame.frame);
+        order.has_value()) {
+        return textResult(*order, true);
     }
 
     ToolResult result;
-    result.frameText = text;
+    result.frameText = appliedText + "; frame " + std::to_string(frame.frame) +
+                       " attached, rendered after the actions were delivered";
     result.frame = std::move(frame);
     return result;
 }
@@ -928,6 +941,7 @@ SDL3MCP_WriteFrame(const uint8_t *data, size_t size, int width, int height)
         Frame frame;
         frame.width = width;
         frame.height = height;
+        frame.frame = g_state->frameCounter + 1;
         frame.pixels.assign(data, data + size);
         g_state->capture.submit(std::move(frame));
     } catch (...) {

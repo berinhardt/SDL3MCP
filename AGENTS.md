@@ -77,12 +77,17 @@ are in `src/`, and `examples/minimal` is a complete host.
   follows the batch through the same capture pipeline, so an action and its
   observation are one call: `timeout_ms` bounds both waits (default twice
   `frame_timeout_ms`), and a frame that cannot be taken is reported as a missing
-  observation that still names the applied frame.
+  observation that still names the applied frame. A taken frame is named too:
+  the answer says which frame carries the pixels, and because the capture is
+  requested only after the F+1 completion that frame is always rendered after
+  the actions were delivered (one acknowledgement frame and at least one capture
+  frame later), so an unchanged frame means the actions had no effect.
 - **Capture framing: raw in the library, image/png at the MCP edge.**
   `sdl_capture` and `sdl_input` are the two tools whose library result is not a
   content array: they write one result line
-  `{"format":"rgba8888","width":W,"height":H,"byteLength":B}` (`sdl_input` adds
-  `"text"`, the line naming the frame it was applied at) and then exactly `B`
+  `{"format":"rgba8888","width":W,"height":H,"byteLength":B,"frame":F}`
+  (`sdl_input` adds `"text"`, the line naming the applied and attached frames;
+  `F` is the attached frame) and then exactly `B`
   tightly packed RGBA bytes, with no newline and no base64. `region` stays in
   the library; PNG and base64 are supervisor policy, and the supervisor encodes
   the frame at exactly the dimensions it received, so frames are never
@@ -96,7 +101,12 @@ are in `src/`, and `examples/minimal` is a complete host.
   custom client, a non-standard content type, or PNG encoding in the library.
 - **Frame contract.** `SDL3MCP_WriteFrame(data, size, width, height)` accepts
   only tightly packed RGBA8888 with `size == width * height * 4`, top-left
-  origin, no row padding and no pitch parameter. The app supplies the
+  origin, no row padding and no pitch parameter. It stamps the frame with
+  `frameCounter + 1`, the index of the frame whose pixels it holds, and a crop
+  preserves that stamp. That index travels in the raw header as `frame`, so the
+  supervisor's summary and `sdl_input`'s text can name the attached frame. The
+  raw header also carries `format`/`width`/`height`/`byteLength`, and nothing
+  about the JSON-RPC envelope changes. The app supplies the
   dimensions, so any render target is valid and the library never reads the
   window size to validate a frame. The app converts and packs when a readback
   surface is padded. The server thread crops the optional region and writes the

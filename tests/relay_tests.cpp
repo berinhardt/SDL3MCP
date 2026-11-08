@@ -409,6 +409,7 @@ struct FakePeer
                      {"width", width},
                      {"height", height},
                      {"byteLength", byteLength},
+                     {"frame", 12},
                  }},
             });
             std::vector<uint8_t> pixels(byteLength, 0x80);
@@ -771,6 +772,9 @@ void testRelayRoundTrip(const std::string &supervisor)
     const nlohmann::json &content = image["result"]["content"];
     CHECK(content.size() == 2);
     CHECK(content[0]["text"].get<std::string>().rfind("2x2 PNG", 0) == 0);
+    /* The frame index crosses the hop and the summary names it. */
+    CHECK(content[0]["text"].get<std::string>().find("frame 12 attached") !=
+          std::string::npos);
     CHECK(content[1]["type"] == "image");
     CHECK(content[1]["mimeType"] == "image/png");
     CHECK(content[1]["data"].get<std::string>().size() > 20);

@@ -46,7 +46,7 @@ events into the queue and hands the pixels you give it back to the agent.
 | Tool | Purpose |
 | --- | --- |
 | `sdl_info` | Window title, size in points and pixels, pixel density, video driver, SDL version, held input, frame counters, capture statistics. |
-| `sdl_input` | Send a batch of key, text, mouse-move, mouse-button, scroll, or release-all actions; the call always returns the frame that follows the batch. Behind `sdl3mcp` that frame arrives as an `image/png` block next to the text naming the applied frame. |
+| `sdl_input` | Send a batch of key, text, mouse-move, mouse-button, scroll, or release-all actions; the call always returns the frame that follows the batch. Behind `sdl3mcp` that frame arrives as an `image/png` block next to text naming both the applied frame and the attached frame. |
 | `sdl_capture` | Ask the app for a fresh frame, optionally cropped, and receive its raw RGBA8888 pixels plus the exact payload size; behind `sdl3mcp` the same pixels are returned at the app's native pixel size as an `image/png` block. |
 | `sdl_terminate` | Ask the app to exit cleanly by pushing one `SDL_EVENT_QUIT` into its own event loop. |
 
@@ -97,10 +97,17 @@ A workflow is a single process lifetime: one `SDL3MCP_AppInit`, many
 The library counts app frames. When an input batch is applied during
 `SDL3MCP_AppIterate` of frame **F**, its events are pushed onto SDL's queue, and
 the calling `sdl_input` returns during `SDL3MCP_AppIterate` of frame **F+1**.
-That is the first frame in which the app has certainly consumed the events, so
-the result names frame F ("3 actions applied at frame 12") and the call then
-asks for the frame that follows it. A capture follows the same rule: the frame
-you receive was written after the request arrived.
+That is the first frame in which the app has certainly consumed the events. The
+call then asks for a fresh frame, which the app writes on a later iteration, so
+the answer names both numbers: the frame the actions were applied at and the
+frame attached, for example `3 actions applied at frame 12; frame 14 attached,
+rendered after the actions were delivered`. The attached frame is always
+rendered after the actions were delivered - one acknowledgement frame and at
+least one capture frame later - so an unchanged frame means the actions had no
+effect, such as a click that missed a widget; `sdl_info` carries the geometry
+for the next attempt. The gap is not fixed, because a busy or slow app may
+attach a later frame. A capture follows the same rule: the frame you receive was
+written after the request arrived, and `sdl_capture`'s summary names it too.
 
 ### What it is not
 
@@ -777,13 +784,15 @@ coordinate read in the image is the same coordinate in the app's pixel space.
 
 The frame `sdl_input` returns travels the same route: one raw frame, one native-
 size PNG, one `[text, image/png]` result. The difference is the text: a capture
-has none, so the supervisor summarises the PNG, while an input answer carries the
-library's own line naming the frame it was applied at.
+has none of its own, so the supervisor summarises the PNG and names the frame it
+attached, while an input answer carries the library's own line naming both the
+applied frame and the attached frame. Both answers therefore say which frame
+they show, and a capture's summary is not anonymous either.
 
 ```json
 {
   "name": "sdl_capture",
-  "description": "Ask the application for a fresh frame and return it as a PNG image block at the app's native pixel size. Arguments: optional timeout_ms (1-60000, default the app's frame timeout) and optional region. region crops pixels from the captured frame with a top-left origin and must fit inside capture.lastWidth x capture.lastHeight from sdl_info. sdl_input coordinates are window points, while region is in pixels of the full frame; sdl_info reports pixelWidth, pixelHeight and pixelDensity so a caller can convert between them. Captures are never resized, so region is the only way to keep the payload small. Example: {\"region\":{\"x\":0,\"y\":0,\"width\":640,\"height\":360},\"timeout_ms\":2000}",
+  "description": "Ask the application for a fresh frame and return it as a PNG image block at the app's native pixel size. Arguments: optional timeout_ms (1-60000, default the app's frame timeout) and optional region. region crops pixels from the captured frame with a top-left origin and must fit inside capture.lastWidth x capture.lastHeight from sdl_info. sdl_input coordinates are window points, while region is in pixels of the full frame; sdl_info reports pixelWidth, pixelHeight and pixelDensity so a caller can convert between them. Captures are never resized, so region is the only way to keep the payload small. The text part names the frame attached, so a caller can tell a fresh frame from a stale one. Example: {\"region\":{\"x\":0,\"y\":0,\"width\":640,\"height\":360},\"timeout_ms\":2000}",
   "inputSchema": {
     "type": "object",
     "properties": {
@@ -823,16 +832,18 @@ library's own line naming the frame it was applied at.
   before allocating the payload. A mismatched header or a short payload is a
   tool error.
 - It then encodes the frame as PNG, base64-encodes it, and answers with the usual
-  `[text, image/png]` content and `isError: false`. For a capture the text
-  summary names the size, the region when one was given, and the PNG size, for
-  example `960x540 PNG at 0,0, 41234 bytes`; for an input answer the library's
-  text is kept, for example `1 actions applied at frame 12`.
+  `[text, image/png]` content and `isError: false`. The header's `frame` names
+  the app frame whose pixels arrived. For a capture the text summary names the
+  size, the region when one was given, the PNG size, and that frame, for example
+  `960x540 PNG at 0,0, 41234 bytes; frame 31 attached`; for an input answer the
+  library's text is kept, for example `1 actions applied at frame 12; frame 14
+  attached, rendered after the actions were delivered`.
 - A JSON-RPC error object or a text error result from the child passes through
   unchanged, so a capture timeout still reports the library's own message.
 
 ```text
 → {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"sdl_capture","arguments":{}}}
-← {"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"1920x1080 PNG, 91234 bytes"},{"type":"image","mimeType":"image/png","data":"iVBORw0KGgo..."}],"isError":false}}
+← {"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"1920x1080 PNG, 91234 bytes; frame 42 attached"},{"type":"image","mimeType":"image/png","data":"iVBORw0KGgo..."}],"isError":false}}
 ```
 
 ### Terminating the app
@@ -1402,6 +1413,11 @@ not match the bound window's drawable size.
   readback of a smaller render target, a region, or an offscreen buffer is
   accepted as long as the byte count matches.
 - **Guard:** `size <= max_frame_bytes`; larger frames are dropped.
+- **Frame stamp:** the accepted frame is stamped with the index of the frame
+  whose pixels it holds. The app frame counter advances in `SDL3MCP_AppIterate`
+  at the end of each frame, so during the iteration that renders the pixels the
+  counter still names the previous one and the stamp is that counter plus one.
+  The raw header carries the index as `frame`, and the region crop preserves it.
 - The pixels are copied before the function returns, so the app can reuse or
   free its buffer immediately. The server thread crops the optional region and
   sends raw pixels; PNG encoding and base64 are the supervisor's job and never
@@ -1713,7 +1729,7 @@ makes it a useful first call after startup.
 ```json
 {
   "name": "sdl_input",
-  "description": "Queue a batch of synthetic input actions; the call always returns the frame that follows the batch: text naming the applied frame plus that frame's pixels, which the supervisor presents as an image/png part and a direct library client receives as raw RGBA. The batch is applied atomically at the next frame and the call returns after the following frame, once the application has consumed the generated events. Arguments: actions (required; 1-256 action objects), optional region, and optional timeout_ms. Each action object is one of six types: key {key name or chord, action=down|up|press (default press), modifiers=[ctrl|shift|alt|gui] (at most four)}; text {text, 1-1024 UTF-8 bytes}; mouse_move {x,y in window points or dx,dy relative, never both}; mouse_button {button=left|middle|right|x1|x2, action=down|up|click (default click), clicks=1-3 (default 1), optional x,y window points to move first}; scroll {y in notches (1.0 is one notch, positive scrolls down), x default 0}; release_all {no extra fields}. The optional region crops the returned frame in pixels of the full frame with a top-left origin, exactly like sdl_capture; sdl_input coordinates are window points, so use pixelDensity from sdl_info to convert. timeout_ms bounds the whole call, apply and capture together, and defaults to twice the frame timeout. Example: {\"actions\":[{\"type\":\"key\",\"key\":\"ctrl+s\",\"action\":\"press\"},{\"type\":\"mouse_button\",\"button\":\"left\",\"x\":120,\"y\":80}]}",
+  "description": "Queue a batch of synthetic input actions; the call always returns the frame that follows the batch: text naming both the frame the actions were applied at and the frame attached, plus that frame's pixels, which the supervisor presents as an image/png part and a direct library client receives as raw RGBA. The batch is applied atomically at the next frame and the call returns after the following frame, once the application has consumed the generated events. The attached frame is always rendered after the actions were delivered - one acknowledgement frame and at least one capture frame later - so an unchanged frame means the actions had no effect, such as a click that missed a widget, and sdl_info carries the geometry for the next attempt. Arguments: actions (required; 1-256 action objects), optional region, and optional timeout_ms. Each action object is one of six types: key {key name or chord, action=down|up|press (default press), modifiers=[ctrl|shift|alt|gui] (at most four)}; text {text, 1-1024 UTF-8 bytes}; mouse_move {x,y in window points or dx,dy relative, never both}; mouse_button {button=left|middle|right|x1|x2, action=down|up|click (default click), clicks=1-3 (default 1), optional x,y window points to move first}; scroll {y in notches (1.0 is one notch, positive scrolls down), x default 0}; release_all {no extra fields}. The optional region crops the returned frame in pixels of the full frame with a top-left origin, exactly like sdl_capture; sdl_input coordinates are window points, so use pixelDensity from sdl_info to convert. timeout_ms bounds the whole call, apply and capture together, and defaults to twice the frame timeout. Example: {\"actions\":[{\"type\":\"key\",\"key\":\"ctrl+s\",\"action\":\"press\"},{\"type\":\"mouse_button\",\"button\":\"left\",\"x\":120,\"y\":80}]}",
   "inputSchema": {
     "type": "object",
     "properties": {
@@ -1832,12 +1848,17 @@ line names the frame and the payload follows it exactly as it does for
 `sdl_capture`.
 
 ```text
-← {"jsonrpc":"2.0","id":3,"result":{"format":"rgba8888","width":960,"height":540,"byteLength":2073600,"text":"1 actions applied at frame 12"}}
+← {"jsonrpc":"2.0","id":3,"result":{"format":"rgba8888","width":960,"height":540,"byteLength":2073600,"frame":14,"text":"1 actions applied at frame 12; frame 14 attached, rendered after the actions were delivered"}}
 <2073600 raw RGBA8888 bytes; no newline, no base64>
 ```
 
-- `text` names the frame the batch was applied at, the same line a direct
-  client used to get as a text block.
+- `text` names both the frame the batch was applied at and the frame attached.
+  The two are always separated by at least one frame because the acknowledgement
+  waits for the F+1 completion; the attached frame is rendered after the actions
+  were delivered, so an unchanged frame means they had no effect. The gap is not
+  fixed, so do not read a constant delta from the example.
+- `frame` in the header is the appended stamp, so a client that ignores `text`
+  still knows which frame the payload holds.
 - `region` crops the returned frame with the same rules and the same parser
   `sdl_capture` uses; the framed dimensions are the region's. It is in pixels of
   the full frame, while the action coordinates above are window points: use
@@ -1863,7 +1884,7 @@ The library's own schema returns raw pixels and advertises only `region` and
 ```json
 {
   "name": "sdl_capture",
-  "description": "Ask the application for a fresh frame through SDL3MCP_FrameRequested() and return its raw pixels. Arguments: optional timeout_ms (1-60000, default frame_timeout_ms) and optional region. The result is one JSON-RPC line {\"format\":\"rgba8888\",\"width\":W,\"height\":H,\"byteLength\":B}, immediately followed by exactly B tightly packed RGBA bytes with no newline and no base64. region is a crop rectangle in pixels of the full frame with a top-left origin and must fit inside capture.lastWidth x capture.lastHeight from sdl_info. sdl_input coordinates are window points, not frame pixels: sdl_info reports pixelWidth, pixelHeight and pixelDensity so a caller can convert between the two. Example: {\"region\":{\"x\":0,\"y\":0,\"width\":640,\"height\":360},\"timeout_ms\":2000}",
+  "description": "Ask the application for a fresh frame through SDL3MCP_FrameRequested() and return its raw pixels. Arguments: optional timeout_ms (1-60000, default frame_timeout_ms) and optional region. The result is one JSON-RPC line {\"format\":\"rgba8888\",\"width\":W,\"height\":H,\"byteLength\":B,\"frame\":F}, immediately followed by exactly B tightly packed RGBA bytes with no newline and no base64. F is the app frame whose pixels these are; the supervisor names it in the image summary. region is a crop rectangle in pixels of the full frame with a top-left origin and must fit inside capture.lastWidth x capture.lastHeight from sdl_info. sdl_input coordinates are window points, not frame pixels: sdl_info reports pixelWidth, pixelHeight and pixelDensity so a caller can convert between the two. Example: {\"region\":{\"x\":0,\"y\":0,\"width\":640,\"height\":360},\"timeout_ms\":2000}",
   "inputSchema": {
     "type": "object",
     "properties": {
@@ -1973,19 +1994,19 @@ request pushes nothing.
 → {"jsonrpc":"2.0","id":2,"method":"tools/list"}
 ← {"jsonrpc":"2.0","id":2,"result":{"tools":[ ... sdl_info, sdl_input, sdl_capture, sdl_terminate ... ]}}
 → {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"sdl_input","arguments":{"actions":[{"type":"key","key":"right","action":"down"},{"type":"key","key":"space","action":"press"}]}}}
-← {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"2 actions applied at frame 7"}],"isError":false}}
+← {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"2 actions applied at frame 7; frame 9 attached, rendered after the actions were delivered"}],"isError":false}}
 → {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"sdl_capture","arguments":{"region":{"x":0,"y":0,"width":640,"height":360}}}}
-← {"jsonrpc":"2.0","id":4,"result":{"format":"rgba8888","width":640,"height":360,"byteLength":921600}}
+← {"jsonrpc":"2.0","id":4,"result":{"format":"rgba8888","width":640,"height":360,"byteLength":921600,"frame":11}}
 ← 921600 raw RGBA8888 bytes follow, with no newline and no base64
 → {"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"sdl_input","arguments":{"actions":[{"type":"key","key":"right","action":"up"},{"type":"key","key":"escape","action":"press"}]}}}
-← {"jsonrpc":"2.0","id":5,"result":{"content":[{"type":"text","text":"2 actions applied at frame 9"}],"isError":false}}
+← {"jsonrpc":"2.0","id":5,"result":{"content":[{"type":"text","text":"2 actions applied at frame 11; frame 13 attached, rendered after the actions were delivered"}],"isError":false}}
 → {"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"sdl_terminate","arguments":{}}}
 ← {"jsonrpc":"2.0","id":6,"result":{"content":[{"type":"text","text":"termination requested"}],"isError":false}}
 ```
 
 The supervisor keeps the client-facing contract an image: the same session
 through `sdl3mcp` ends the capture at
-`← {"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"1920x1080 PNG, 91234 bytes"},{"type":"image","mimeType":"image/png","data":"iVBORw0KGgo..."}],"isError":false}}`.
+`← {"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"1920x1080 PNG, 91234 bytes; frame 42 attached"},{"type":"image","mimeType":"image/png","data":"iVBORw0KGgo..."}],"isError":false}}`.
 The PNG is the app's native 1920x1080 frame, never resized, so a smaller
 `region` is the only way to shrink it.
 

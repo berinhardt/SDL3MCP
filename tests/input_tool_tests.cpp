@@ -11,10 +11,10 @@
   loop would, and writing a known frame whenever one is requested.
 
   An input result is now two things at once: a result line carrying the text
-  naming the applied frame and the raw framing header, followed by exactly
-  byteLength RGBA bytes. The reader therefore consumes the payload before the
-  next line, which is what proves a frame-returning call never desynchronises
-  the stream.
+  naming both the applied and attached frames and the raw framing header,
+  followed by exactly byteLength RGBA bytes. The reader therefore consumes the
+  payload before the next line, which is what proves a frame-returning call never
+  desynchronises the stream.
 
   Text is the interesting lifetime case: SDL's text event borrows a string owned
   by the batch, which AppIterate frees one frame later. The recorder copies the
@@ -223,6 +223,32 @@ nlohmann::json textOf(const nlohmann::json &response)
     return result["content"][0]["text"];
 }
 
+/* The two frame indices an sdl_input answer names, parsed from its text. */
+struct FrameNames
+{
+    std::uint64_t applied = 0;
+    std::uint64_t attached = 0;
+};
+
+std::uint64_t numberAfter(const std::string &text, std::string_view marker)
+{
+    const std::size_t position = text.find(marker);
+    CHECK(position != std::string::npos);
+    const std::size_t begin = position + marker.size();
+    std::size_t end = begin;
+    while (end < text.size() && text[end] >= '0' && text[end] <= '9') {
+        ++end;
+    }
+    CHECK(end > begin);
+    return std::stoull(text.substr(begin, end - begin));
+}
+
+FrameNames frameNamesOf(const std::string &text)
+{
+    return FrameNames{numberAfter(text, "applied at frame "),
+                      numberAfter(text, "; frame ")};
+}
+
 nlohmann::json infoOf(int requestsFd, MessageReader &reader, int id)
 {
     sendCall(requestsFd, id, "sdl_info", nlohmann::json::object());
@@ -309,8 +335,19 @@ void runClient(int requestsFd, MessageReader &reader, std::atomic<bool> &answerF
     /* A press returns the text naming its frame plus exactly that frame. */
     const FramedResult pressed =
         inputFramed(requestsFd, reader, 2, actionsOf({{{"type", "key"}, {"key", "a"}}}));
-    CHECK(pressed.header["text"].get<std::string>().find("1 actions applied at frame ") !=
+    const std::string pressedText = pressed.header["text"].get<std::string>();
+    CHECK(pressedText.find("1 actions applied at frame ") != std::string::npos);
+    const FrameNames pressedFrames = frameNamesOf(pressedText);
+    CHECK(pressedFrames.applied > 0);
+    /*
+      The app answers the capture on the first iteration after the F+1
+      acknowledgement, so the stamp is exactly two frames past the applied one.
+      The text must state the relation without promising this fixed delta.
+    */
+    CHECK(pressedFrames.attached == pressedFrames.applied + 2);
+    CHECK(pressedText.find("rendered after the actions were delivered") !=
           std::string::npos);
+    CHECK(pressed.header["frame"].get<std::uint64_t>() == pressedFrames.attached);
     CHECK(pressed.header["width"] == kFrameWidth);
     CHECK(pressed.header["height"] == kFrameHeight);
     CHECK(pressed.pixels.size() ==
@@ -320,8 +357,10 @@ void runClient(int requestsFd, MessageReader &reader, std::atomic<bool> &answerF
     const FramedResult held =
         inputFramed(requestsFd, reader, 3,
                     actionsOf({{{"type", "key"}, {"key", "right"}, {"action", "down"}}}));
-    CHECK(held.header["text"].get<std::string>().find("actions applied at frame ") !=
-          std::string::npos);
+    const std::string heldText = held.header["text"].get<std::string>();
+    CHECK(heldText.find("actions applied at frame ") != std::string::npos);
+    /* A later service is stamped higher, so the indices really move. */
+    CHECK(frameNamesOf(heldText).attached > pressedFrames.attached);
 
     const nlohmann::json heldInfo = infoOf(requestsFd, reader, 4);
     CHECK(heldInfo["input"]["heldKeys"].is_array());
@@ -358,8 +397,14 @@ void runClient(int requestsFd, MessageReader &reader, std::atomic<bool> &answerF
     const FramedResult cropped = inputFramed(requestsFd, reader, 9, croppedArguments);
     CHECK(cropped.header["width"] == 8);
     CHECK(cropped.header["height"] == 6);
+    CHECK(cropped.header["byteLength"] == 8 * 6 * 4);
     CHECK(cropped.pixels.size() == 8 * 6 * 4);
     CHECK(allPixelsAreFrameColor(cropped.pixels));
+    /* The crop keeps the stamp, so the text and header still name one frame. */
+    const FrameNames croppedFrames =
+        frameNamesOf(cropped.header["text"].get<std::string>());
+    CHECK(cropped.header["frame"].get<std::uint64_t>() == croppedFrames.attached);
+    CHECK(croppedFrames.attached > croppedFrames.applied);
 
     /* A rejected batch is an error and no image at all. */
     sendCall(requestsFd, 10, "sdl_input", nlohmann::json{{"actions", nlohmann::json::array()}});

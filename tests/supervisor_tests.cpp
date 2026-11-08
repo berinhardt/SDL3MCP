@@ -680,6 +680,7 @@ void testCaptureStaysNativeSize(const std::string &supervisor,
     const std::string text = content[0]["text"].get<std::string>();
     CHECK(text.rfind("64x32 PNG", 0) == 0);
     CHECK(text.find(" bytes") != std::string::npos);
+    CHECK(text.find("frame 11 attached") != std::string::npos);
     CHECK(pngHasSize(decodeBase64(content[1]["data"].get<std::string>()), 64, 32));
 
     client.process.closeStdin();
@@ -705,6 +706,7 @@ void testCaptureRegion(const std::string &supervisor, const std::string &fakeChi
     CHECK(content.size() == 2);
     const std::string text = content[0]["text"].get<std::string>();
     CHECK(text.rfind("16x8 PNG at 0,0", 0) == 0);
+    CHECK(text.find("frame 11 attached") != std::string::npos);
     CHECK(pngHasSize(decodeBase64(content[1]["data"].get<std::string>()), 16, 8));
 
     client.process.closeStdin();
@@ -816,7 +818,10 @@ void testInputFrameThroughProxy(const std::string &supervisor,
     CHECK(content.is_array());
     CHECK(content.size() == 2);
     CHECK(content[0]["type"] == "text");
-    CHECK(content[0]["text"].get<std::string>().find("applied at frame 7") !=
+    const std::string inputText = content[0]["text"].get<std::string>();
+    CHECK(inputText.find("applied at frame 7") != std::string::npos);
+    CHECK(inputText.find("frame 9 attached") != std::string::npos);
+    CHECK(inputText.find("rendered after the actions were delivered") !=
           std::string::npos);
     CHECK(content[1]["type"] == "image");
     CHECK(content[1]["mimeType"] == "image/png");

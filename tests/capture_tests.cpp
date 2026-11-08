@@ -206,6 +206,45 @@ void testPendingTransitions()
     CHECK(!capture.pending());
 }
 
+/*
+  The frame stamp is app state carried by value, so a crop must copy it. The
+  library stamps at WriteFrame and crops on the server thread; losing the index
+  there would make every cropped answer anonymous.
+*/
+void testCropPreservesFrameStamp()
+{
+    Frame frame = solidFrame(4, 3, 5);
+    frame.frame = 9;
+
+    std::string error;
+    const auto cropped =
+        sdl3mcp::cropFrame(frame, sdl3mcp::CaptureRegion{1, 1, 2, 2}, error);
+    CHECK(cropped.has_value());
+    CHECK(error.empty());
+    CHECK(cropped->frame == 9);
+}
+
+/*
+  The attached frame is always later than the applied one because the answer
+  waits for the F+1 completion before requesting a capture. The helper is a
+  direct assertion of that relation: it must reject equal and earlier indices
+  even though the protocol never produces them.
+*/
+void testFrameOrderHelper()
+{
+    CHECK(!sdl3mcp::checkFrameOrder(3, 5).has_value());
+    CHECK(!sdl3mcp::checkFrameOrder(0, 1).has_value());
+
+    const auto same = sdl3mcp::checkFrameOrder(4, 4);
+    CHECK(same.has_value());
+    CHECK(same->find("frame 4") != std::string::npos);
+
+    const auto earlier = sdl3mcp::checkFrameOrder(7, 6);
+    CHECK(earlier.has_value());
+    CHECK(earlier->find("frame 6") != std::string::npos);
+    CHECK(earlier->find("frame 7") != std::string::npos);
+}
+
 } // namespace
 
 int main()
@@ -216,6 +255,8 @@ int main()
     testCancelWakesWaiter();
     testStatsUpdateOnlyOnSuccess();
     testPendingTransitions();
+    testCropPreservesFrameStamp();
+    testFrameOrderHelper();
 
     std::fprintf(stderr, "capture tests passed\n");
     return 0;

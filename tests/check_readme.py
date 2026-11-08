@@ -14,6 +14,8 @@ the loop order is a bug. The checks are deliberately mechanical:
   binary) and in the README's tool documents states an ``Example:`` JSON object
   that parses and names each argument its schema accepts;
 - the region prose names the captured frame's dimensions, not the window's;
+- the frame attribution prose says the attached frame follows the actions and
+  that an unchanged frame means they had no effect;
 - the public ``SDL3MCP_WriteFrame`` signature takes explicit width and height;
 - the ``sdl_terminate`` schema is the empty object with all four hints;
 - the quick start matches ``examples/minimal/main.c`` and contains R/G/B;
@@ -377,6 +379,21 @@ def check_capture_framing_prose(readme: str, failures: list[str]) -> None:
             failures.append(f"README does not document the region against {required!r}")
 
 
+def check_frame_attribution_prose(readme: str, failures: list[str]) -> None:
+    """A stale frame must not be mistakable for an action that had no effect."""
+    lowered = readme.lower()
+    if "rendered after the actions were delivered" not in lowered:
+        failures.append(
+            "README must state that the attached frame is rendered after the "
+            "actions were delivered")
+    if "attached frame" not in lowered:
+        failures.append(
+            "README must name the attached frame next to the applied frame")
+    if "had no effect" not in lowered:
+        failures.append(
+            "README must say that an unchanged frame means the actions had no effect")
+
+
 def check_write_frame_signature(readme: str, failures: list[str]) -> None:
     """Explicit dimensions are the contract: the app, not the window, decides."""
     signature = "SDL3MCP_WriteFrame(const uint8_t *data, size_t size, int width, int height)"
@@ -511,6 +528,7 @@ def main(argv: list[str] | None = None) -> int:
     check_input_schema(documents, failures)
     check_capture_schemas(documents, failures)
     check_capture_framing_prose(readme, failures)
+    check_frame_attribution_prose(readme, failures)
     check_write_frame_signature(readme, failures)
     check_terminate_schema(documents, failures)
     check_example_command(readme, failures)

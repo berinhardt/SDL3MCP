@@ -167,6 +167,7 @@ bool Server::writeToolCall(const ToolCall &call)
             {"width", result.frame->width},
             {"height", result.frame->height},
             {"byteLength", result.frame->pixels.size()},
+            {"frame", result.frame->frame},
         };
         if (!result.frameText.empty()) {
             header["text"] = result.frameText;

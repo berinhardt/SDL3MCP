@@ -5,8 +5,8 @@
   sdl_info reports a window that appears --window-delay-ms after start (or never
   with --no-window). sdl_input returns fixed text, or with --input-frame the same
   raw framing a real application now sends: one result line carrying
-  format/width/height/byteLength plus the text naming the applied frame,
-  followed by exactly that many RGBA bytes. --input-delay-ms postpones that
+  format/width/height/byteLength/frame plus the text naming the applied and
+  attached frames, followed by exactly that many RGBA bytes. --input-delay-ms postpones that
   answer so the proxy's forward deadline can be exercised. sdl_capture answers
   with the same binary framing minus the text. --capture-width/--capture-height
   set its size, a region in the arguments overrides them, --capture-error and
@@ -278,7 +278,7 @@ void writeTextResult(const nlohmann::json &id, std::string_view text)
   reject it before reading.
 */
 void writeFrameResult(const nlohmann::json &id, std::string_view text, int width,
-                      int height, bool mismatched)
+                      int height, std::uint64_t frame, bool mismatched)
 {
     const std::size_t byteLength = static_cast<std::size_t>(width) *
                                    static_cast<std::size_t>(height) * 4;
@@ -292,6 +292,7 @@ void writeFrameResult(const nlohmann::json &id, std::string_view text, int width
              {"width", width},
              {"height", height},
              {"byteLength", announced},
+             {"frame", frame},
          }},
     };
     if (!text.empty()) {
@@ -401,8 +402,10 @@ void handleToolsCall(const nlohmann::json &id,
             std::this_thread::sleep_for(std::chrono::milliseconds(options.inputDelayMs));
         }
         if (options.inputFrame) {
-            writeFrameResult(id, "1 actions applied at frame 7", options.captureWidth,
-                             options.captureHeight, false);
+            writeFrameResult(id,
+                             "1 actions applied at frame 7; frame 9 attached, rendered "
+                             "after the actions were delivered",
+                             options.captureWidth, options.captureHeight, 9, false);
             return;
         }
         writeTextResult(id, "fake sdl_input ok");
@@ -439,7 +442,7 @@ void handleToolsCall(const nlohmann::json &id,
                 }
             }
         }
-        writeFrameResult(id, {}, width, height, options.captureMismatch);
+        writeFrameResult(id, {}, width, height, 11, options.captureMismatch);
         return;
     }
     if (tool == "sdl_terminate") {

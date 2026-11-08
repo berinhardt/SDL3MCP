@@ -49,7 +49,8 @@
   frame as PNG at exactly the dimensions it arrived with, then base64s it so the
   client-facing image block stays standard. sdl_input now returns the frame that
   follows its batch through the same raw framing, so the proxy presents it the
-  same way and keeps the text naming the applied frame. That holds for a child
+  same way and keeps the text naming the applied and attached frames. That holds
+  for a child
   and for a relayed session alike, so the application tool block always carries
   the supervisor's own sdl_capture definition. Captures are never resized, so
   image pixels map 1:1 to app pixels.
@@ -238,8 +239,9 @@ private:
       A result carrying `byteLength` is a raw frame: the payload is read and
       PNG-encoded at the dimensions it arrived with, then answered as text plus
       one image block. The text is the frame's own `text` when the tool supplied
-      one (sdl_input names the applied frame), otherwise the supervisor's capture
-      summary. Any other result shape is an error naming the tool.
+      one (sdl_input names the applied and attached frames), otherwise the
+      supervisor's capture summary, which names the attached frame. Any other
+      result shape is an error naming the tool.
     */
     nlohmann::json forwardCall(const nlohmann::json &id,
                                const std::string &name,

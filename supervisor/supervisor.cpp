@@ -253,6 +253,7 @@ bool parseCaptureHeader(const std::string &name,
                         int &width,
                         int &height,
                         size_t &byteLength,
+                        uint64_t &frameIndex,
                         std::string &error)
 {
     const auto format = result.find("format");
@@ -278,6 +279,20 @@ bool parseCaptureHeader(const std::string &name,
         return false;
     }
 
+    /*
+      The app stamps the frame it rendered; zero means the peer predates the
+      stamp, in which case the summary cannot name it. A negative or non-integer
+      value is malformed and rejected like the other header fields.
+    */
+    int64_t frameValue = 0;
+    if (result.contains("frame")) {
+        if (!readInteger(result, "frame", frameValue) || frameValue < 0) {
+            error = "the application sent an invalid " + name +
+                    " result: frame must be a non-negative integer";
+            return false;
+        }
+    }
+
     const uint64_t expected = static_cast<uint64_t>(widthValue) *
                               static_cast<uint64_t>(heightValue) * 4u;
     if (static_cast<uint64_t>(lengthValue) != expected) {
@@ -297,12 +312,14 @@ bool parseCaptureHeader(const std::string &name,
     width = static_cast<int>(widthValue);
     height = static_cast<int>(heightValue);
     byteLength = static_cast<size_t>(lengthValue);
+    frameIndex = static_cast<uint64_t>(frameValue);
     return true;
 }
 
 /*
   The image summary names the frame the app sent, its region when one was given,
-  and the PNG size.
+  and the PNG size. The frame index is the app's render index, so a caller can
+  tell a fresh attachment from a stale one.
 */
 std::string captureSummary(const nlohmann::json &arguments,
                            const Frame &frame,
@@ -320,6 +337,9 @@ std::string captureSummary(const nlohmann::json &arguments,
     }
 
     text += ", " + std::to_string(pngBytes) + " bytes";
+    if (frame.frame > 0) {
+        text += "; frame " + std::to_string(frame.frame) + " attached";
+    }
     return text;
 }
 
@@ -439,7 +459,8 @@ nlohmann::json supervisorCaptureToolDefinition()
          "coordinates are window points, while region is in pixels of the full "
          "frame; sdl_info reports pixelWidth, pixelHeight and pixelDensity so a "
          "caller can convert between them. Captures are never resized, so region "
-         "is the only way to keep the payload small. "
+         "is the only way to keep the payload small. The text part names the "
+         "frame attached, so a caller can tell a fresh frame from a stale one. "
          "Example: {\"region\":{\"x\":0,\"y\":0,\"width\":640,\"height\":360},"
          "\"timeout_ms\":2000}"},
         {"inputSchema",
@@ -2043,9 +2064,10 @@ nlohmann::json Supervisor::forwardCall(const nlohmann::json &id,
         int sourceWidth = 0;
         int sourceHeight = 0;
         size_t byteLength = 0;
+        uint64_t sourceFrame = 0;
         std::string headerError;
         if (!parseCaptureHeader(name, *result, sourceWidth, sourceHeight, byteLength,
-                                headerError)) {
+                                sourceFrame, headerError)) {
             return toolResultJson(id, toolError(std::move(headerError)));
         }
 
@@ -2065,6 +2087,7 @@ nlohmann::json Supervisor::forwardCall(const nlohmann::json &id,
         Frame frame;
         frame.width = sourceWidth;
         frame.height = sourceHeight;
+        frame.frame = sourceFrame;
         frame.pixels = std::move(pixels);
 
         const std::vector<uint8_t> png = encodePng(frame);
@@ -2075,8 +2098,9 @@ nlohmann::json Supervisor::forwardCall(const nlohmann::json &id,
         }
 
         /*
-          sdl_input names the frame it was applied at; a capture carries no text,
-          so the supervisor's summary describes the PNG it just encoded.
+          sdl_input names both the applied and the attached frame; a capture
+          carries no text, so the supervisor's summary describes the PNG it just
+          encoded and names the frame it attached.
         */
         std::string text = result->value("text", std::string());
         if (text.empty()) {

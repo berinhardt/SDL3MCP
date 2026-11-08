@@ -35,6 +35,12 @@ struct Frame
     int width = 0;
     int height = 0;
     std::vector<uint8_t> pixels;
+    /*
+      The app frame whose rendered pixels these are. SDL3MCP_WriteFrame stamps
+      it, and a crop carries it over, so an answer can name the frame it shows
+      instead of leaving the caller to guess whether it predates its actions.
+    */
+    uint64_t frame = 0;
 };
 
 /* A crop rectangle in frame pixels; only non-empty, in-bounds regions are valid. */
@@ -66,6 +72,17 @@ std::optional<std::string> validateFrame(const uint8_t *data,
 std::optional<Frame> cropFrame(const Frame &frame,
                                const CaptureRegion &region,
                                std::string &error);
+
+/*
+  Defence in depth for the acknowledgement protocol: the frame attached to an
+  sdl_input answer is always rendered after the batch was applied, because the
+  answer waits for the F+1 completion before it requests a capture. This helper
+  states that relation as a check rather than a runtime branch; returns nullopt
+  when `attachedFrame` is greater, otherwise one line naming both indices.
+  Nothing in the protocol can make it fire, so tests exercise it directly.
+*/
+std::optional<std::string> checkFrameOrder(uint64_t appliedFrame,
+                                           uint64_t attachedFrame);
 
 } // namespace sdl3mcp
 

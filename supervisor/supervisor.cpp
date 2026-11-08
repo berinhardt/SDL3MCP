@@ -331,8 +331,9 @@ nlohmann::json spawnToolDefinition()
         {"name", "spawn"},
         {"description",
          "Start the application the supervisor was launched with and wait until it "
-         "has a window. Its tools are advertised alongside this one; call spawn "
-         "again only after the application has exited."},
+         "has a window. Takes no arguments. Its tools are advertised alongside this "
+         "one; call spawn again only after the application has exited. "
+         "Example: {}"},
         {"inputSchema",
          nlohmann::json{
              {"type", "object"},
@@ -355,10 +356,11 @@ nlohmann::json waitSessionToolDefinition()
         {"name", "wait_session"},
         {"description",
          "Wait for an application to connect to the relay's listening socket. "
-         "Returns as soon as a session is attached; without timeout_ms it waits "
-         "indefinitely and returns a normal tool error when timeout_ms expires. "
-         "The application's tools are advertised alongside this one whether or not "
-         "it is attached."},
+         "Arguments: optional timeout_ms (1-60000); without it the call waits "
+         "indefinitely, and an expired timeout is a normal tool error. Returns as "
+         "soon as a session is attached. The application's tools are advertised "
+         "alongside this one whether or not it is attached. "
+         "Example: {\"timeout_ms\":5000}"},
         {"inputSchema",
          nlohmann::json{
              {"type", "object"},
@@ -387,8 +389,11 @@ nlohmann::json spawnerToolDefinition(const SpawnTarget &target)
         {"description",
          "Start the application registered as \"" + target.alias +
              "\" and wait until it connects back and completes the MCP handshake. "
-             "Returns the child's process id; its tools are advertised alongside "
-             "this one, and call app_spawn_<alias> again only after it has exited."},
+             "Arguments: optional timeout_ms (1-60000, default 5000) covering "
+             "bind, exec, dial-back and the handshake. Returns the child's process "
+             "id; its tools are advertised alongside this one, and call "
+             "app_spawn_<alias> again only after it has exited. "
+             "Example: {\"timeout_ms\":5000}"},
         {"inputSchema",
          nlohmann::json{
              {"type", "object"},
@@ -427,10 +432,16 @@ nlohmann::json supervisorCaptureToolDefinition()
         {"name", "sdl_capture"},
         {"description",
          "Ask the application for a fresh frame and return it as a PNG image block "
-         "at the app's native pixel size. The optional region crops pixels from the "
-         "captured frame, using capture.lastWidth x capture.lastHeight from sdl_info, "
-         "with a top-left origin; it must fit inside the frame and is the only way "
-         "to keep the payload small, because captures are never resized."},
+         "at the app's native pixel size. Arguments: optional timeout_ms "
+         "(1-60000, default the app's frame timeout) and optional region. region "
+         "crops pixels from the captured frame with a top-left origin and must fit "
+         "inside capture.lastWidth x capture.lastHeight from sdl_info. sdl_input "
+         "coordinates are window points, while region is in pixels of the full "
+         "frame; sdl_info reports pixelWidth, pixelHeight and pixelDensity so a "
+         "caller can convert between them. Captures are never resized, so region "
+         "is the only way to keep the payload small. "
+         "Example: {\"region\":{\"x\":0,\"y\":0,\"width\":640,\"height\":360},"
+         "\"timeout_ms\":2000}"},
         {"inputSchema",
          nlohmann::json{
              {"type", "object"},

@@ -10,6 +10,9 @@ the loop order is a bug. The checks are deliberately mechanical:
 - the ``sdl_capture`` schemas match both sides: region + timeout_ms for the
   library's raw framing and the same two arguments, PNG at native size, for the
   supervisor's image block;
+- every tool description in the catalog (read from the built supervisor test
+  binary) and in the README's tool documents states an ``Example:`` JSON object
+  that parses and names each argument its schema accepts;
 - the region prose names the captured frame's dimensions, not the window's;
 - the public ``SDL3MCP_WriteFrame`` signature takes explicit width and height;
 - the ``sdl_terminate`` schema is the empty object with all four hints;
@@ -34,6 +37,7 @@ from pathlib import Path
 EXAMPLE_COMMAND = "./build/examples/minimal --mcp"
 WRONG_EXAMPLE_PATH = "examples/minimal/minimal"
 SUPERVISOR_STATES = ("Idle", "Starting", "Running")
+EXAMPLE_MARKER = "Example:"
 
 STALE_PHRASES = (
     "F+2",
@@ -108,6 +112,90 @@ def find_action_variant(schema: dict, action_type: str) -> dict | None:
         if properties.get("type", {}).get("const") == action_type:
             return variant
     return None
+
+
+def example_arguments(description: str) -> object | None:
+    """Return the JSON value after the description's ``Example:`` marker."""
+    marker = description.rfind(EXAMPLE_MARKER)
+    if marker < 0:
+        return None
+    text = description[marker + len(EXAMPLE_MARKER):].lstrip()
+    if not text:
+        return None
+    try:
+        value, _ = json.JSONDecoder().raw_decode(text)
+    except json.JSONDecodeError:
+        return None
+    return value
+
+
+def check_tool_description(tool: dict, label: str, failures: list[str]) -> None:
+    """Every catalog entry documents its purpose, arguments, and one example."""
+    name = tool.get("name")
+    if not isinstance(name, str) or not name:
+        failures.append(f"{label} has a tool definition without a name")
+        return
+
+    description = tool.get("description")
+    if not isinstance(description, str) or not description.strip():
+        failures.append(f"{label} tool {name} has no description")
+        return
+
+    if not isinstance(example_arguments(description), dict):
+        failures.append(
+            f"{label} tool {name} description has no parseable "
+            "'Example: {...}' JSON object")
+
+    schema = tool.get("inputSchema")
+    if not isinstance(schema, dict):
+        return
+    arguments = set(schema.get("properties", {}))
+    required = schema.get("required", [])
+    if isinstance(required, list):
+        arguments.update(argument for argument in required if isinstance(argument, str))
+    for argument in sorted(arguments):
+        if argument not in description:
+            failures.append(
+                f"{label} tool {name} description does not name its argument "
+                f"'{argument}'")
+
+
+def check_tool_descriptions(documents: list[object], label: str,
+                            failures: list[str]) -> None:
+    for document in documents:
+        if (isinstance(document, dict)
+                and isinstance(document.get("name"), str)
+                and "inputSchema" in document):
+            check_tool_description(document, label, failures)
+
+
+def find_tool_helper(build: Path) -> Path | None:
+    """The supervisor test binary can dump the real catalog tools/list uses."""
+    direct = build / "tests" / "sdl3mcp_test_supervisor"
+    if direct.is_file():
+        return direct
+    matches = sorted(build.glob("**/sdl3mcp_test_supervisor"))
+    return matches[0] if matches else None
+
+
+def load_tool_catalog(helper: Path | None, failures: list[str]) -> list[object]:
+    if helper is None:
+        print("tool catalog dump not built; checked README tool documents only")
+        return []
+    result = subprocess.run([str(helper), "--dump-tools"],
+                            capture_output=True, text=True)
+    if result.returncode != 0:
+        failures.append(f"{helper} --dump-tools failed:\n{result.stderr.strip()}")
+        return []
+    try:
+        catalog = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        failures.append(f"{helper} --dump-tools did not print JSON: {error}")
+        return []
+    if not isinstance(catalog, list) or not catalog:
+        failures.append(f"{helper} --dump-tools returned no tool definitions")
+        return []
+    return catalog
 
 
 def sdl_cflags(failures: list[str]) -> list[str]:
@@ -392,6 +480,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="repository source directory")
     parser.add_argument("--build", required=True, type=Path,
                         help="CMake build directory with generated headers")
+    parser.add_argument("--tools", type=Path,
+                        help="supervisor test binary that dumps the tool catalog")
     arguments = parser.parse_args(argv)
 
     readme_path = arguments.source / "README.md"
@@ -410,6 +500,14 @@ def main(argv: list[str] | None = None) -> int:
         failures.append("README has no complete manual-loop example")
 
     documents = check_json_blocks(blocks, failures)
+    check_tool_descriptions(documents, "README", failures)
+    if arguments.tools is not None:
+        helper = arguments.tools
+        if not helper.is_file():
+            failures.append(f"tool catalog helper {helper} does not exist")
+    else:
+        helper = find_tool_helper(arguments.build)
+    check_tool_descriptions(load_tool_catalog(helper, failures), "catalog", failures)
     check_input_schema(documents, failures)
     check_capture_schemas(documents, failures)
     check_capture_framing_prose(readme, failures)

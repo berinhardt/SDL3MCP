@@ -31,7 +31,10 @@ are in `src/`, and `examples/minimal` is a complete host.
   every JSON block, and checks both `sdl_capture` schemas, the raw-framing
   prose, the region's captured-frame dimensions, the four-argument
   `SDL3MCP_WriteFrame` signature, the run command, the supervisor states, and
-  the loop order. CTest registers it as `readme_check` when Python 3 is found.
+  the loop order. It also runs `sdl3mcp_test_supervisor --dump-tools` and
+  requires every catalog and README tool description to carry a parseable
+  `Example:` JSON object naming each argument its schema accepts. CTest
+  registers it as `readme_check` when Python 3 is found.
 - `SDL3MCP_BUILD_CLI=ON` builds `build/sdl3mcp`, one executable with
   three modes over one peer seam. `--target <executable>` is the child
   supervisor: it speaks MCP on its own stdio and runs one target child at a time

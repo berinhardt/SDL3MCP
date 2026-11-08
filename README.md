@@ -46,7 +46,7 @@ events into the queue and hands the pixels you give it back to the agent.
 | Tool | Purpose |
 | --- | --- |
 | `sdl_info` | Window title, size in points and pixels, pixel density, video driver, SDL version, held input, frame counters, capture statistics. |
-| `sdl_input` | Send a batch of key, text, mouse-move, mouse-button, scroll, or release-all actions, and receive the frame that follows it. Behind `sdl3mcp` that frame arrives as an `image/png` block next to the text naming the applied frame. |
+| `sdl_input` | Send a batch of key, text, mouse-move, mouse-button, scroll, or release-all actions; the call always returns the frame that follows the batch. Behind `sdl3mcp` that frame arrives as an `image/png` block next to the text naming the applied frame. |
 | `sdl_capture` | Ask the app for a fresh frame, optionally cropped, and receive its raw RGBA8888 pixels plus the exact payload size; behind `sdl3mcp` the same pixels are returned at the app's native pixel size as an `image/png` block. |
 | `sdl_terminate` | Ask the app to exit cleanly by pushing one `SDL_EVENT_QUIT` into its own event loop. |
 
@@ -680,8 +680,9 @@ application peer comes from:
 - `--connect=HOST:PORT --targets=PATH` spawns a configured app behind a relay
   ([Spawner](#spawner)).
 
-In every mode the client keeps the same endpoint; only the tools change when the
-application comes and goes.
+In every mode the client keeps the same endpoint. The advertised tool set
+depends on the mode, not on whether an application is attached: a spawn, an
+attach, and a detach leave it unchanged.
 
 Build it alongside the example:
 
@@ -718,6 +719,17 @@ no window, renderer, or video driver of its own.
 
 The advertised tool list is a function of the mode, never of whether an
 application is attached:
+
+| Mode | `tools/list` |
+| --- | --- |
+| `--target` (spawn) | `spawn` plus `sdl_info`, `sdl_input`, `sdl_capture`, `sdl_terminate`. |
+| `--listen` (relay) | `wait_session` plus the same four application tools. |
+| `--connect --targets` (spawner) | one `app_spawn_<alias>` per target plus the same four application tools. |
+
+A spawner behind a relay contributes its `app_spawn_<alias>` entries to the
+relay's set when it connects; that is the only topology change a client
+observes. Spawning an application, attaching one, or detaching one changes no
+advertised name, so none of them sends `notifications/tools/list_changed`.
 
 | State | `tools/list` | When |
 | --- | --- | --- |
@@ -771,7 +783,7 @@ library's own line naming the frame it was applied at.
 ```json
 {
   "name": "sdl_capture",
-  "description": "Ask the application for a fresh frame and return it as a PNG image block at the app's native pixel size. The optional region crops pixels from the captured frame, using capture.lastWidth x capture.lastHeight from sdl_info, with a top-left origin; it must fit inside the frame and is the only way to keep the payload small, because captures are never resized.",
+  "description": "Ask the application for a fresh frame and return it as a PNG image block at the app's native pixel size. Arguments: optional timeout_ms (1-60000, default the app's frame timeout) and optional region. region crops pixels from the captured frame with a top-left origin and must fit inside capture.lastWidth x capture.lastHeight from sdl_info. sdl_input coordinates are window points, while region is in pixels of the full frame; sdl_info reports pixelWidth, pixelHeight and pixelDensity so a caller can convert between them. Captures are never resized, so region is the only way to keep the payload small. Example: {\"region\":{\"x\":0,\"y\":0,\"width\":640,\"height\":360},\"timeout_ms\":2000}",
   "inputSchema": {
     "type": "object",
     "properties": {
@@ -911,7 +923,7 @@ fails with `no application session is attached; call wait_session first`.
 ```json
 {
   "name": "wait_session",
-  "description": "Wait for an application to connect to the relay's listening socket. Returns as soon as a session is attached; without timeout_ms it waits indefinitely and returns a normal tool error when timeout_ms expires. The application's tools are advertised alongside this one whether or not it is attached.",
+  "description": "Wait for an application to connect to the relay's listening socket. Arguments: optional timeout_ms (1-60000); without it the call waits indefinitely, and an expired timeout is a normal tool error. Returns as soon as a session is attached. The application's tools are advertised alongside this one whether or not it is attached. Example: {\"timeout_ms\":5000}",
   "inputSchema": {
     "type": "object",
     "properties": {
@@ -1165,7 +1177,7 @@ wait for the running application to exit first.
 ```json
 {
   "name": "app_spawn_demo",
-  "description": "Start the application registered as \"demo\" and wait until it connects back and completes the MCP handshake. Returns the child's process id; its tools are advertised alongside this one, and call app_spawn_<alias> again only after it has exited.",
+  "description": "Start the application registered as \"demo\" and wait until it connects back and completes the MCP handshake. Arguments: optional timeout_ms (1-60000, default 5000) covering bind, exec, dial-back and the handshake. Returns the child's process id; its tools are advertised alongside this one, and call app_spawn_<alias> again only after it has exited. Example: {\"timeout_ms\":5000}",
   "inputSchema": {
     "type": "object",
     "properties": {
@@ -1701,7 +1713,7 @@ makes it a useful first call after startup.
 ```json
 {
   "name": "sdl_input",
-  "description": "Queue a batch of synthetic key, text, mouse, scroll, or release-all actions, then return the frame that follows it. The batch is applied atomically at the next frame, the call returns after the following frame once the application has consumed the generated events, and the result is the text naming that frame plus that frame's pixels. The optional region crops the returned frame exactly like sdl_capture; timeout_ms bounds the whole call, apply and capture together, and defaults to twice the frame timeout.",
+  "description": "Queue a batch of synthetic input actions; the call always returns the frame that follows the batch: text naming the applied frame plus that frame's pixels, which the supervisor presents as an image/png part and a direct library client receives as raw RGBA. The batch is applied atomically at the next frame and the call returns after the following frame, once the application has consumed the generated events. Arguments: actions (required; 1-256 action objects), optional region, and optional timeout_ms. Each action object is one of six types: key {key name or chord, action=down|up|press (default press), modifiers=[ctrl|shift|alt|gui] (at most four)}; text {text, 1-1024 UTF-8 bytes}; mouse_move {x,y in window points or dx,dy relative, never both}; mouse_button {button=left|middle|right|x1|x2, action=down|up|click (default click), clicks=1-3 (default 1), optional x,y window points to move first}; scroll {y in notches (1.0 is one notch, positive scrolls down), x default 0}; release_all {no extra fields}. The optional region crops the returned frame in pixels of the full frame with a top-left origin, exactly like sdl_capture; sdl_input coordinates are window points, so use pixelDensity from sdl_info to convert. timeout_ms bounds the whole call, apply and capture together, and defaults to twice the frame timeout. Example: {\"actions\":[{\"type\":\"key\",\"key\":\"ctrl+s\",\"action\":\"press\"},{\"type\":\"mouse_button\",\"button\":\"left\",\"x\":120,\"y\":80}]}",
   "inputSchema": {
     "type": "object",
     "properties": {
@@ -1827,7 +1839,10 @@ line names the frame and the payload follows it exactly as it does for
 - `text` names the frame the batch was applied at, the same line a direct
   client used to get as a text block.
 - `region` crops the returned frame with the same rules and the same parser
-  `sdl_capture` uses; the framed dimensions are the region's.
+  `sdl_capture` uses; the framed dimensions are the region's. It is in pixels of
+  the full frame, while the action coordinates above are window points: use
+  `window.pixelWidth`, `window.pixelHeight` and `window.pixelDensity` from
+  `sdl_info` to convert between them.
 - `timeout_ms` bounds the whole call: the wait for the F+1 acknowledgement plus
   the wait for the frame. It defaults to twice `frame_timeout_ms` and is clamped
   to the published 1–60000 range.
@@ -1848,7 +1863,7 @@ The library's own schema returns raw pixels and advertises only `region` and
 ```json
 {
   "name": "sdl_capture",
-  "description": "Ask the application for a fresh frame through SDL3MCP_FrameRequested() and return its raw pixels. The JSON-RPC result line is {\"format\":\"rgba8888\",\"width\":W,\"height\":H,\"byteLength\":B}, immediately followed by exactly B tightly packed RGBA bytes with no newline and no base64. The optional region crops pixels from the captured frame, using capture.lastWidth x capture.lastHeight from sdl_info, with a top-left origin; it must fit inside the frame.",
+  "description": "Ask the application for a fresh frame through SDL3MCP_FrameRequested() and return its raw pixels. Arguments: optional timeout_ms (1-60000, default frame_timeout_ms) and optional region. The result is one JSON-RPC line {\"format\":\"rgba8888\",\"width\":W,\"height\":H,\"byteLength\":B}, immediately followed by exactly B tightly packed RGBA bytes with no newline and no base64. region is a crop rectangle in pixels of the full frame with a top-left origin and must fit inside capture.lastWidth x capture.lastHeight from sdl_info. sdl_input coordinates are window points, not frame pixels: sdl_info reports pixelWidth, pixelHeight and pixelDensity so a caller can convert between the two. Example: {\"region\":{\"x\":0,\"y\":0,\"width\":640,\"height\":360},\"timeout_ms\":2000}",
   "inputSchema": {
     "type": "object",
     "properties": {
@@ -1880,6 +1895,9 @@ The library's own schema returns raw pixels and advertises only `region` and
   `capture.lastHeight` reported by `sdl_info` — with a top-left origin. All four
   fields are required, `x`/`y` must be at least 0, `width`/`height` at least 1,
   and the rectangle must fit inside the frame. It is applied by the library.
+  `sdl_input` coordinates are **window points**, so they are not the same space
+  unless `pixelDensity` is 1.0: `sdl_info` reports `window.pixelWidth`,
+  `window.pixelHeight` and `window.pixelDensity` so a caller can convert.
 - `timeout_ms` is 1–60000 and defaults to `frame_timeout_ms`.
 - Any other property is rejected before a frame is requested.
 
@@ -1920,7 +1938,7 @@ last drop reason when there was one:
 ```json
 {
   "name": "sdl_terminate",
-  "description": "Ask the application to exit cleanly: the next SDL3MCP_AppIterate() pushes one SDL_EVENT_QUIT so the app's own event loop can shut down.",
+  "description": "Ask the application to exit cleanly: the next SDL3MCP_AppIterate() pushes one SDL_EVENT_QUIT so the app's own event loop can shut down. Takes no arguments. Example: {}",
   "inputSchema": {
     "type": "object",
     "properties": {},
@@ -2160,7 +2178,11 @@ which drives `--connect --targets` against a relay the test owns, and
 app's dialed `--mcp=HOST:PORT` transport. When Python 3 is available,
 `readme_check` runs `tests/check_readme.py`: it compiles both complete C
 examples, parses every JSON block, and checks both `sdl_capture` schemas, the
-example run path, the supervisor states, and the loop order.
+example run path, the supervisor states, and the loop order. It also loads the
+catalog the built supervisor test binary dumps with `--dump-tools` and requires
+every tool description (in the catalog and in the README's tool documents) to
+carry a parseable `Example:` JSON object and to name each argument its schema
+accepts.
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DSDL3MCP_BUILD_EXAMPLES=ON

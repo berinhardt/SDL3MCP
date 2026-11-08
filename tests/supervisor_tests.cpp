@@ -17,6 +17,7 @@
 
 #include "cli.hpp"
 #include "supervisor.hpp"
+#include "tools.hpp"
 #include "transport.hpp"
 
 #include "test_util.hpp"
@@ -1135,10 +1136,43 @@ void testRealExample(const std::string &supervisor, const std::string &example)
     CHECK(waitForNoProcessUsingExecutable(example, 3000));
 }
 
+/*
+  `readme_check` runs this binary with --dump-tools to inspect the descriptions
+  tools/list really carries. Emitting the catalog here keeps the documentation
+  guard on the same data as the wire instead of on a copy in the README.
+*/
+void dumpToolDefinitions()
+{
+    nlohmann::json tools = nlohmann::json::array();
+    for (const sdl3mcp::ToolDefinition &tool : sdl3mcp::toolCatalog()) {
+        tools.push_back(nlohmann::json{
+            {"name", tool.name},
+            {"description", tool.description},
+            {"inputSchema", tool.inputSchema},
+        });
+    }
+
+    tools.push_back(sdl3mcp::spawnToolDefinition());
+    tools.push_back(sdl3mcp::waitSessionToolDefinition());
+    tools.push_back(sdl3mcp::supervisorCaptureToolDefinition());
+
+    sdl3mcp::SpawnTarget target;
+    target.alias = "demo";
+    target.argv = {"./demo"};
+    tools.push_back(sdl3mcp::spawnerToolDefinition(target));
+
+    std::printf("%s\n", tools.dump().c_str());
+}
+
 } // namespace
 
 int main(int argc, char **argv)
 {
+    if (argc == 2 && std::string_view(argv[1]) == "--dump-tools") {
+        dumpToolDefinitions();
+        return 0;
+    }
+
     CHECK(argc >= 3);
     const std::string supervisor = argv[1];
     const std::string fakeChild = argv[2];

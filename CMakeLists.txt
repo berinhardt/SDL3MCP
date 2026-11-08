@@ -48,12 +48,30 @@ else()
     set(sdl3mcp_library_type STATIC)
 endif()
 
-# The translation units live in an object library so unit tests that include
+# The translation units live in object libraries so unit tests that include
 # the private src/ headers can link them directly: a shared library hides those
 # symbols from its dynamic symbol table.
-add_library(sdl3mcp_objects OBJECT
-    src/api.cpp
+#
+# They are split in two so the supervisor can link the wire half alone:
+#   * wire: protocol, session, framing, transports and configuration; the relay
+#     needs these and references no SDL symbol.
+#   * app: everything that calls SDL (input, replay, capture plumbing, info).
+# SDL3MCP keeps both halves, so the application sees no difference. The split is
+# enforced by the link: if a wire unit starts calling SDL, sdl3mcp stops linking.
+add_library(sdl3mcp_wire_objects OBJECT
     src/configuration.cpp
+    src/frame.cpp
+    src/capture.cpp
+    src/json_rpc.cpp
+    src/tools.cpp
+    src/session.cpp
+    src/server.cpp
+    src/transport.cpp
+    src/stdio_isolation.cpp
+    src/socket_connect.cpp
+)
+add_library(sdl3mcp_app_objects OBJECT
+    src/api.cpp
     src/keymap.cpp
     src/input.cpp
     src/input_json.cpp
@@ -61,40 +79,47 @@ add_library(sdl3mcp_objects OBJECT
     src/replay.cpp
     src/app_input.cpp
     src/queue.cpp
-    src/json_rpc.cpp
-    src/tools.cpp
     src/info.cpp
-    src/session.cpp
-    src/frame.cpp
-    src/capture.cpp
-    src/transport.cpp
-    src/server.cpp
-    src/stdio_isolation.cpp
-    src/socket_connect.cpp
 )
-add_library(SDL3MCP ${sdl3mcp_library_type} $<TARGET_OBJECTS:sdl3mcp_objects>)
+add_library(SDL3MCP ${sdl3mcp_library_type}
+    $<TARGET_OBJECTS:sdl3mcp_wire_objects>
+    $<TARGET_OBJECTS:sdl3mcp_app_objects>
+)
 add_library(SDL3MCP::SDL3MCP ALIAS SDL3MCP)
 
-target_compile_features(sdl3mcp_objects PRIVATE cxx_std_20)
 find_package(Threads REQUIRED)
-target_link_libraries(sdl3mcp_objects PRIVATE SDL3::SDL3 Threads::Threads)
+set(SDL3MCP_OBJECT_TARGETS sdl3mcp_wire_objects sdl3mcp_app_objects)
+foreach(sdl3mcp_object_target IN LISTS SDL3MCP_OBJECT_TARGETS)
+    target_compile_features(${sdl3mcp_object_target} PRIVATE cxx_std_20)
+    target_link_libraries(${sdl3mcp_object_target} PRIVATE Threads::Threads)
+    set_target_properties(${sdl3mcp_object_target} PROPERTIES
+        CXX_VISIBILITY_PRESET hidden
+        VISIBILITY_INLINES_HIDDEN YES
+        POSITION_INDEPENDENT_CODE ON
+    )
+    if(SDL3MCP_BUILD_SHARED)
+        # SDL's SDL_DECLSPEC expands to __declspec(dllexport) when DLL_EXPORT is
+        # defined, which is what DEFINE_SYMBOL sets for a shared library.
+        target_compile_definitions(${sdl3mcp_object_target} PRIVATE DLL_EXPORT)
+    else()
+        target_compile_definitions(${sdl3mcp_object_target} PRIVATE SDL_STATIC_LIB)
+    endif()
+endforeach()
+
+# The app half is the only one that needs SDL at link time.
+target_link_libraries(sdl3mcp_app_objects PRIVATE SDL3::SDL3)
 target_link_libraries(SDL3MCP
     PUBLIC SDL3::SDL3
     PRIVATE Threads::Threads
 )
-set_target_properties(sdl3mcp_objects PROPERTIES
-    CXX_VISIBILITY_PRESET hidden
-    VISIBILITY_INLINES_HIDDEN YES
-    POSITION_INDEPENDENT_CODE ON
-)
 
-if(SDL3MCP_BUILD_SHARED)
-    # SDL's SDL_DECLSPEC expands to __declspec(dllexport) when DLL_EXPORT is
-    # defined, which is what DEFINE_SYMBOL sets for a shared library.
-    target_compile_definitions(sdl3mcp_objects PRIVATE DLL_EXPORT)
-else()
-    target_compile_definitions(sdl3mcp_objects PRIVATE SDL_STATIC_LIB)
-endif()
+# The wire half includes the public header through configuration.hpp, which
+# pulls in <SDL3/SDL.h> for its types and macros, but references no SDL symbol.
+# It gets the include path only: linking SDL3::SDL3 here would put SDL back on
+# the supervisor's link line and make it a build dependency of the relay.
+target_include_directories(sdl3mcp_wire_objects PRIVATE
+    $<TARGET_PROPERTY:SDL3::SDL3,INTERFACE_INCLUDE_DIRECTORIES>
+)
 
 set(SDL3MCP_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 file(MAKE_DIRECTORY "${SDL3MCP_GENERATED_DIR}/SDL3MCP")
@@ -104,13 +129,15 @@ configure_file(
     @ONLY
 )
 
-target_include_directories(sdl3mcp_objects
-    PUBLIC
-        "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
-        "$<BUILD_INTERFACE:${SDL3MCP_GENERATED_DIR}>"
-    PRIVATE
-        ${SDL3MCP_JSON_INCLUDE_DIRS}
-)
+foreach(sdl3mcp_object_target IN LISTS SDL3MCP_OBJECT_TARGETS)
+    target_include_directories(${sdl3mcp_object_target}
+        PUBLIC
+            "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+            "$<BUILD_INTERFACE:${SDL3MCP_GENERATED_DIR}>"
+        PRIVATE
+            ${SDL3MCP_JSON_INCLUDE_DIRS}
+    )
+endforeach()
 target_include_directories(SDL3MCP PUBLIC
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
     "$<BUILD_INTERFACE:${SDL3MCP_GENERATED_DIR}>"
@@ -151,7 +178,7 @@ if(SDL3MCP_BUILD_SUPERVISOR)
     )
     target_link_libraries(sdl3mcp_supervisor_objects
         PUBLIC
-            sdl3mcp_objects
+            sdl3mcp_wire_objects
             nlohmann_json::nlohmann_json
             Threads::Threads
     )
@@ -162,12 +189,12 @@ if(SDL3MCP_BUILD_SUPERVISOR)
         "${CMAKE_CURRENT_SOURCE_DIR}/src"
     )
     # Object files from a linked object library do not propagate transitively, so
-    # the library objects are named here as well as in the supervisor objects.
-    # The object library's own link dependencies are private, hence SDL3 too.
+    # the wire objects are named here as well as in the supervisor objects. The
+    # supervisor never calls SDL, so neither SDL3::SDL3 nor the app half is on
+    # this link line; a wire unit that references SDL breaks the build here.
     target_link_libraries(sdl3mcp PRIVATE
         sdl3mcp_supervisor_objects
-        sdl3mcp_objects
-        SDL3::SDL3
+        sdl3mcp_wire_objects
     )
 endif()
 

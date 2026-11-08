@@ -302,7 +302,7 @@ endif()
 
 # The supervisor tests drive the real executable over pipes, with a fake child
 # that speaks MCP without SDL, so no window or video driver is involved.
-if(SDL3MCP_BUILD_SUPERVISOR)
+if(SDL3MCP_BUILD_CLI)
     add_executable(sdl3mcp_test_supervisor_png supervisor_png_tests.cpp)
     target_compile_features(sdl3mcp_test_supervisor_png PRIVATE cxx_std_20)
     target_include_directories(sdl3mcp_test_supervisor_png PRIVATE

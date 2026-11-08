@@ -13,7 +13,7 @@
         "CMAKE_BUILD_TYPE": "Debug",
         "SDL3MCP_BUILD_TESTS": "ON",
         "SDL3MCP_BUILD_EXAMPLES": "ON",
-        "SDL3MCP_BUILD_SUPERVISOR": "ON"
+        "SDL3MCP_BUILD_CLI": "ON"
       }
     },
     {

@@ -164,7 +164,7 @@ Targets and options:
 | --- | --- | --- |
 | `SDL3MCP_BUILD_SHARED` | `OFF` | Build a shared library instead of a static one. |
 | `SDL3MCP_BUILD_EXAMPLES` | `OFF` | Build the `minimal` executable from `examples/minimal/main.c`. |
-| `SDL3MCP_BUILD_SUPERVISOR` | `OFF` | Build the `sdl3mcp` executable: child supervisor, relay, and spawner. |
+| `SDL3MCP_BUILD_CLI` | `OFF` | Build the `sdl3mcp` executable: child supervisor, relay, and spawner. |
 | `SDL3MCP_BUILD_TESTS` | `ON` if top-level | Build the unit tests and register them with CTest. |
 | `SDL3MCP_USE_SYSTEM_JSON` | `ON` | Try `find_package(nlohmann_json CONFIG QUIET)` before using the vendored header. |
 
@@ -212,7 +212,7 @@ ctest --preset debug
 ```
 
 The `shared` preset is the same sequence with `--preset shared`. All four
-presets also set `SDL3MCP_BUILD_SUPERVISOR=ON`, so the supervisor binary and its
+presets also set `SDL3MCP_BUILD_CLI=ON`, so the supervisor binary and its
 tests are built in every configuration. The `asan` preset compiles with
 `-fsanitize=address,undefined` and runs the full suite with leak detection on,
 including the supervisor tests; only the SDL dummy-video-driver integration
@@ -684,11 +684,11 @@ application comes and goes.
 Build it alongside the example:
 
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DSDL3MCP_BUILD_EXAMPLES=ON -DSDL3MCP_BUILD_SUPERVISOR=ON
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DSDL3MCP_BUILD_EXAMPLES=ON -DSDL3MCP_BUILD_CLI=ON
 cmake --build build --parallel
 ```
 
-`SDL3MCP_BUILD_SUPERVISOR` stays `OFF` by default, so the plain
+`SDL3MCP_BUILD_CLI` stays `OFF` by default, so the plain
 `cmake -S . -B build` flow does not build it. The `debug`, `shared`, `asan` and
 `tsan` presets set it to `ON`: each one builds `sdl3mcp` and registers
 `supervisor_tests` and `supervisor_real_app`. The `asan` preset runs both with
@@ -2067,7 +2067,7 @@ Test suite (all registered with CTest): `header_c`, `header_cpp`,
 `replay_tests`, `mouse_tests`, `queue_tests`, `app_input_tests`,
 `input_tool_tests`, `capture_tests`, `capture_tool_tests`, `terminate_tests`,
 `json_rpc_tests`, `session_tests`, `frame_tests`, `info_tests`, `server_tests`,
-and six `lifecycle_*` scenarios. With `SDL3MCP_BUILD_SUPERVISOR=ON` it also adds
+and six `lifecycle_*` scenarios. With `SDL3MCP_BUILD_CLI=ON` it also adds
 `supervisor_png_tests` for the moved presentation code, `supervisor_tests`,
 which drives the real supervisor binary against a fake MCP child, `relay_tests`,
 which drives `--listen` against a fake application over TCP, `spawner_tests`,

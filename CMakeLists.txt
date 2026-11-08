@@ -12,7 +12,7 @@ include(CMakePackageConfigHelpers)
 option(SDL3MCP_BUILD_SHARED "Build SDL3MCP as a shared library" OFF)
 option(SDL3MCP_BUILD_TESTS "Build the SDL3MCP smoke tests" ${PROJECT_IS_TOP_LEVEL})
 option(SDL3MCP_BUILD_EXAMPLES "Build the SDL3MCP examples" OFF)
-option(SDL3MCP_BUILD_SUPERVISOR "Build the sdl3mcp executable" OFF)
+option(SDL3MCP_BUILD_CLI "Build the sdl3mcp executable" OFF)
 option(SDL3MCP_USE_SYSTEM_JSON "Resolve nlohmann_json from the system before vendoring" ON)
 
 # Executable targets opt into spawner mode by registering here:
@@ -242,7 +242,7 @@ if(SDL3MCP_BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()
 
-if(SDL3MCP_BUILD_SUPERVISOR)
+if(SDL3MCP_BUILD_CLI)
     # The supervisor is POSIX-only: the top-level WIN32 guard above already
     # rejects Windows, and the implementation uses fork/exec and private pipes.
     # The supervisor owns presentation: the library-to-supervisor link carries

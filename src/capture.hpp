@@ -36,6 +36,17 @@
 namespace sdl3mcp
 {
 
+/*
+  The first completed app frame a capture may be answered from. ImGui's first
+  rendered frame produces no draw data, so a frame taken from it shows the clear
+  colour only; a request that arrives before this frame waits instead of being
+  answered with an untouched scene.
+*/
+inline constexpr uint64_t kFirstServableFrame = 1;
+
+/* True once the app has completed a frame that a capture may be served from. */
+bool servableFrame(uint64_t completedFrames);
+
 struct CaptureStats
 {
     bool pending = false;

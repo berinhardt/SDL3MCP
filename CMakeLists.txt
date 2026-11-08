@@ -15,6 +15,97 @@ option(SDL3MCP_BUILD_EXAMPLES "Build the SDL3MCP examples" OFF)
 option(SDL3MCP_BUILD_SUPERVISOR "Build the sdl3mcp executable" OFF)
 option(SDL3MCP_USE_SYSTEM_JSON "Resolve nlohmann_json from the system before vendoring" ON)
 
+# Executable targets opt into spawner mode by registering here:
+#   sdl3mcp_app(<alias> <target> [ARGS <arg>...])
+# Registration only records into global properties. The write is deferred to the
+# end of the top-level directory, so entries added from any subdirectory land in
+# one file and nothing has to call the writer explicitly.
+function(sdl3mcp_app sdl3mcp_alias sdl3mcp_target)
+    if(NOT sdl3mcp_alias MATCHES "^[a-z0-9_]+$")
+        message(FATAL_ERROR
+            "sdl3mcp_app: alias \"${sdl3mcp_alias}\" must match [a-z0-9_]+")
+    endif()
+    if(sdl3mcp_alias MATCHES "^app_spawn_")
+        message(FATAL_ERROR
+            "sdl3mcp_app: alias \"${sdl3mcp_alias}\" must not use the reserved app_spawn_ prefix")
+    endif()
+
+    get_property(sdl3mcp_registered_aliases GLOBAL PROPERTY SDL3MCP_APP_ALIASES)
+    if(sdl3mcp_alias IN_LIST sdl3mcp_registered_aliases)
+        get_property(sdl3mcp_previous_target GLOBAL PROPERTY
+            "SDL3MCP_APP_${sdl3mcp_alias}_TARGET")
+        message(FATAL_ERROR
+            "sdl3mcp_app: alias \"${sdl3mcp_alias}\" is already registered by target "
+            "\"${sdl3mcp_previous_target}\"; cannot register \"${sdl3mcp_target}\"")
+    endif()
+
+    if(NOT TARGET "${sdl3mcp_target}")
+        message(FATAL_ERROR
+            "sdl3mcp_app: target \"${sdl3mcp_target}\" does not exist")
+    endif()
+
+    set(sdl3mcp_arguments)
+    if(ARGC GREATER 2)
+        if(NOT ARGV2 STREQUAL "ARGS")
+            message(FATAL_ERROR
+                "sdl3mcp_app: expected ARGS before \"${ARGV2}\"")
+        endif()
+        if(ARGC GREATER 3)
+            math(EXPR sdl3mcp_last_argument "${ARGC} - 1")
+            foreach(sdl3mcp_index RANGE 3 ${sdl3mcp_last_argument})
+                list(APPEND sdl3mcp_arguments "${ARGV${sdl3mcp_index}}")
+            endforeach()
+        endif()
+    endif()
+
+    get_property(sdl3mcp_writer_scheduled GLOBAL PROPERTY SDL3MCP_APP_WRITER_SCHEDULED)
+    set_property(GLOBAL APPEND PROPERTY SDL3MCP_APP_ALIASES "${sdl3mcp_alias}")
+    set_property(GLOBAL PROPERTY "SDL3MCP_APP_${sdl3mcp_alias}_TARGET" "${sdl3mcp_target}")
+    set_property(GLOBAL PROPERTY "SDL3MCP_APP_${sdl3mcp_alias}_ARGS" "${sdl3mcp_arguments}")
+
+    if(NOT sdl3mcp_writer_scheduled)
+        set_property(GLOBAL PROPERTY SDL3MCP_APP_WRITER_SCHEDULED TRUE)
+        cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}"
+            CALL sdl3mcp_write_targets)
+    endif()
+endfunction()
+
+function(sdl3mcp_write_targets)
+    get_property(sdl3mcp_aliases GLOBAL PROPERTY SDL3MCP_APP_ALIASES)
+    if(NOT sdl3mcp_aliases)
+        return()
+    endif()
+
+    set(sdl3mcp_document "{")
+    set(sdl3mcp_is_first TRUE)
+    foreach(sdl3mcp_alias IN LISTS sdl3mcp_aliases)
+        get_property(sdl3mcp_target GLOBAL PROPERTY
+            "SDL3MCP_APP_${sdl3mcp_alias}_TARGET")
+        get_property(sdl3mcp_arguments GLOBAL PROPERTY
+            "SDL3MCP_APP_${sdl3mcp_alias}_ARGS")
+
+        if(sdl3mcp_is_first)
+            set(sdl3mcp_is_first FALSE)
+        else()
+            string(APPEND sdl3mcp_document ",")
+        endif()
+        string(APPEND sdl3mcp_document
+            "\"${sdl3mcp_alias}\":[\"$<TARGET_FILE:${sdl3mcp_target}>\"")
+        foreach(sdl3mcp_argument IN LISTS sdl3mcp_arguments)
+            string(REPLACE "\\" "\\\\" sdl3mcp_argument "${sdl3mcp_argument}")
+            string(REPLACE "\"" "\\\"" sdl3mcp_argument "${sdl3mcp_argument}")
+            string(APPEND sdl3mcp_document ",\"${sdl3mcp_argument}\"")
+        endforeach()
+        string(APPEND sdl3mcp_document "]")
+    endforeach()
+    string(APPEND sdl3mcp_document "}")
+
+    file(GENERATE
+        OUTPUT "${CMAKE_BINARY_DIR}/sdl3mcp-targets.json"
+        CONTENT "${sdl3mcp_document}"
+    )
+endfunction()
+
 # A parent project that vendors SDL through add_subdirectory already defines the
 # target; reusing it keeps one SDL in the process and avoids the system install.
 if(NOT TARGET SDL3::SDL3)

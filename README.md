@@ -1047,6 +1047,40 @@ exists; the error names the file or entry:
 - every value must be a non-empty array of strings;
 - no element may contain `--mcp` anywhere, because the spawner supplies it.
 
+### Generating the targets file
+
+A project that builds its applications against SDL3MCP can register them in
+CMake instead of hand-writing the file. `sdl3mcp_app(<alias> <target> [ARGS
+<arg>...])` records an executable target and writes the targets file at generate
+time:
+
+```cmake
+add_executable(minimal minimal/main.c)
+target_link_libraries(minimal PRIVATE SDL3MCP::SDL3MCP SDL3::SDL3)
+sdl3mcp_app(minimal minimal)
+sdl3mcp_app(probe probe ARGS --fast --no-audio)
+```
+
+- The alias is required and must match `[a-z0-9_]+`; the reserved `app_spawn_`
+  prefix is rejected, because the spawner derives the tool name from it.
+- The target must exist, and an alias may be registered once per configure: a
+  duplicate fails at configure time with a message naming both targets.
+- The entry's first element is `$<TARGET_FILE:<target>>`, so the generated file
+  carries absolute paths resolved by the generator.
+- The file lands at `${CMAKE_BINARY_DIR}/sdl3mcp-targets.json`, the top-level
+  build directory of the configure.
+- Registration only appends to a global property. The write is deferred to the
+  end of the top-level directory, so applications registered from different
+  subdirectories all end up in one file and no CMakeLists calls the writer
+  itself. With no registration the file is never written.
+- Extra `ARGS` elements become the entry's trailing arguments; quotes and
+  backslashes are escaped for JSON. The `--mcp` rule above still applies, and
+  the spawner rejects such an entry at startup.
+
+The submodule's own `examples/CMakeLists.txt` registers the `minimal` example
+this way, so configuring with `SDL3MCP_BUILD_EXAMPLES=ON` and building the
+example produces `build/sdl3mcp-targets.json` with a single `minimal` entry.
+
 ### Tool view and spawning
 
 Before the first spawn, `tools/list` is one `app_spawn_<alias>` per targets entry

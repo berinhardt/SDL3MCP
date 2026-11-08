@@ -27,7 +27,8 @@ extern "C" {
 typedef enum SDL3MCP_Transport
 {
     SDL3MCP_TRANSPORT_NONE = 0,
-    SDL3MCP_TRANSPORT_STDIO
+    SDL3MCP_TRANSPORT_STDIO,
+    SDL3MCP_TRANSPORT_CONNECT
 } SDL3MCP_Transport;
 
 typedef struct SDL3MCP_Configuration
@@ -37,6 +38,9 @@ typedef struct SDL3MCP_Configuration
     uint32_t max_frame_bytes;
     bool warp_cursor;
     int log_level;
+    /* CONNECT only: the client endpoint the app dials, HOST:PORT. */
+    char connect_host[64];
+    uint16_t connect_port;
 } SDL3MCP_Configuration;
 
 /* Header-inline so the defaults cost no symbol and work from C and C++. */
@@ -49,6 +53,8 @@ static inline SDL3MCP_Configuration SDL3MCP_DefaultConfiguration(void)
     configuration.max_frame_bytes = 32u * 1024u * 1024u;
     configuration.warp_cursor = true;
     configuration.log_level = -1;
+    SDL_zero(configuration.connect_host);
+    configuration.connect_port = 0;
 
     return configuration;
 }

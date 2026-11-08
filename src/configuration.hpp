@@ -17,6 +17,20 @@
 namespace sdl3mcp
 {
 
+/*
+  Parses "HOST:PORT" or "[V6]:PORT". An unbracketed host may not contain a
+  colon, so an IPv6 literal must be written in brackets; an empty host and a
+  port outside 1..65535 are rejected. The host is returned as a view into
+  `value` so the caller can copy it into its fixed-size field.
+
+  `allowZeroPort` exists for a listener that asks the kernel for an ephemeral
+  port; the application's connect transport keeps the stricter rule.
+*/
+bool parseEndpoint(std::string_view value,
+                   std::string_view &host,
+                   std::uint16_t &port,
+                   bool allowZeroPort = false);
+
 class Configuration
 {
 public:

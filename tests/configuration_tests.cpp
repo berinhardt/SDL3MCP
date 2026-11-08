@@ -4,6 +4,7 @@
 
 #include <SDL3MCP/SDL3MCP.h>
 
+#include <cstring>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -34,7 +35,9 @@ bool sameConfiguration(const SDL3MCP_Configuration &left, const SDL3MCP_Configur
 {
     return left.transport == right.transport && left.frame_timeout_ms == right.frame_timeout_ms
            && left.max_frame_bytes == right.max_frame_bytes
-           && left.warp_cursor == right.warp_cursor && left.log_level == right.log_level;
+           && left.warp_cursor == right.warp_cursor && left.log_level == right.log_level
+           && std::strcmp(left.connect_host, right.connect_host) == 0
+           && left.connect_port == right.connect_port;
 }
 
 Outcome parse(const SDL3MCP_Configuration &base, const std::vector<std::string> &arguments)
@@ -138,6 +141,62 @@ void testTransport()
 
     expectDefaultRejected("--mcp=socket", "--mcp=socket");
     expectDefaultRejected("--mcp=", "--mcp");
+}
+
+void testConnectTransport()
+{
+    struct Endpoint
+    {
+        const char *argument;
+        const char *host;
+        std::uint16_t port;
+    };
+    const Endpoint accepted[] = {
+        {"--mcp=127.0.0.1:7777", "127.0.0.1", 7777},
+        {"--mcp=localhost:7777", "localhost", 7777},
+        {"--mcp=[::1]:7777", "::1", 7777},
+        {"--mcp=example.test:1", "example.test", 1},
+        {"--mcp=example.test:65535", "example.test", 65535},
+    };
+
+    for (const Endpoint &endpoint : accepted) {
+        const Outcome outcome = parse({endpoint.argument});
+        CHECK(outcome.status == kContinue);
+        CHECK(outcome.value.transport == SDL3MCP_TRANSPORT_CONNECT);
+        CHECK(std::string(outcome.value.connect_host) == endpoint.host);
+        CHECK(outcome.value.connect_port == endpoint.port);
+    }
+
+    /* A CONNECT base is replaced, not merged, by a later transport flag. */
+    Outcome outcome = parse({"--mcp=127.0.0.1:7777", "--mcp=stdio"});
+    CHECK(outcome.status == kContinue);
+    CHECK(outcome.value.transport == SDL3MCP_TRANSPORT_STDIO);
+
+    const char *rejected[] = {
+        "--mcp=localhost",
+        "--mcp=localhost:",
+        "--mcp=localhost:abc",
+        "--mcp=localhost:0",
+        "--mcp=localhost:70000",
+        "--mcp=:7777",
+        "--mcp=[]:7777",
+        "--mcp=[::1]7777",
+        "--mcp=[::1]",
+        "--mcp=::1:7777",
+        "--mcp=host:1:2",
+    };
+    for (const char *argument : rejected) {
+        expectDefaultRejected(argument, "--mcp");
+    }
+
+    /* A host that does not fit the fixed field is rejected at parse time. */
+    const std::string longHost = std::string(64, 'a') + ":7777";
+    expectDefaultRejected("--mcp=" + longHost, "--mcp");
+
+    /* The defaults leave the connect fields empty. */
+    const SDL3MCP_Configuration defaultsValue = defaults();
+    CHECK(defaultsValue.connect_host[0] == '\0');
+    CHECK(defaultsValue.connect_port == 0);
 }
 
 void testBasePreservation()
@@ -374,6 +433,7 @@ int main()
     testDefaultConstruction();
     testNoArguments();
     testTransport();
+    testConnectTransport();
     testBasePreservation();
     testFrameTimeout();
     testMaxFrameBytes();

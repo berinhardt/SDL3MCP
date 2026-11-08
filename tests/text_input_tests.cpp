@@ -1,15 +1,17 @@
 /*
   A text action on a window whose text input was never started, end to end
   through the public API: JSON-RPC on pipes, the session, the input queue,
-  SDL3MCP_AppIterate on the app thread, SDL's event queue, the app's poll.
+  SDL3MCP_AppIterate on the app thread, SDL's event queue, the app's poll, and
+  the frame the call returns.
 
   The harness is input_tool_tests': the dummy video driver, the client on its own
-  thread because sdl_input blocks until the app applies the batch and confirms it
-  at F+1, and the main thread iterating and polling as a game loop would. The
-  difference is that this test never calls SDL_StartTextInput, so the library has
-  to start text input for the batch itself and stop it again. The text events
-  prove the first half happened; SDL_TextInputActive staying false at every point
-  the app can observe proves the state was restored.
+  thread because sdl_input blocks until the app applies the batch, confirms it
+  at F+1, and answers the capture request, and the main thread iterating,
+  polling, and writing a known frame whenever one is requested. The difference
+  from input_tool_tests is that this test never calls SDL_StartTextInput, so the
+  library has to start text input for the batch itself and stop it again. The
+  text events prove the first half happened; SDL_TextInputActive staying false
+  at every point the app can observe proves the state was restored.
 */
 
 #include <SDL3MCP/SDL3MCP.h>
@@ -21,10 +23,13 @@
 #include <poll.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <string>
 #include <string_view>
@@ -36,6 +41,10 @@ namespace
 {
 
 using namespace std::chrono_literals;
+
+constexpr int kFrameWidth = 8;
+constexpr int kFrameHeight = 8;
+constexpr std::array<uint8_t, 4> kFrameColor{1, 2, 3, 255};
 
 /* A pipe pair that closes both ends on destruction. */
 struct Pipe
@@ -75,18 +84,18 @@ void writeAll(int fd, std::string_view data)
     }
 }
 
-/* Reads one newline-terminated line, failing instead of hanging on a dead server. */
-std::string readLine(int fd, std::chrono::milliseconds timeout = 10000ms)
+/*
+  Reads framed messages from the server: one line at a time, or exactly the
+  announced number of raw frame bytes, with the remainder kept for the next
+  call so the payload never bleeds into the following line.
+*/
+struct MessageReader
 {
+    int fd = -1;
     std::string pending;
-    const auto deadline = std::chrono::steady_clock::now() + timeout;
 
-    for (;;) {
-        const std::size_t newline = pending.find('\n');
-        if (newline != std::string::npos) {
-            return pending.substr(0, newline);
-        }
-
+    void fill(std::chrono::steady_clock::time_point deadline)
+    {
         const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
             deadline - std::chrono::steady_clock::now());
         CHECK(remaining > 0ms);
@@ -96,7 +105,7 @@ std::string readLine(int fd, std::chrono::milliseconds timeout = 10000ms)
         descriptor.events = POLLIN;
         const int ready = ::poll(&descriptor, 1, static_cast<int>(remaining.count()));
         if (ready < 0 && errno == EINTR) {
-            continue;
+            return;
         }
         CHECK(ready > 0);
 
@@ -105,40 +114,74 @@ std::string readLine(int fd, std::chrono::milliseconds timeout = 10000ms)
         CHECK(count > 0);
         pending.append(chunk, static_cast<std::size_t>(count));
     }
-}
 
-void writeLine(int fd, const nlohmann::json &message)
-{
-    writeAll(fd, message.dump() + "\n");
-}
+    std::string readLine(std::chrono::milliseconds timeout = 10000ms)
+    {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        for (;;) {
+            const std::size_t newline = pending.find('\n');
+            if (newline != std::string::npos) {
+                std::string line = pending.substr(0, newline);
+                pending.erase(0, newline + 1);
+                return line;
+            }
+            fill(deadline);
+        }
+    }
 
-nlohmann::json call(int requestsFd, int responsesFd, int id, const std::string &name,
-                    nlohmann::json arguments)
-{
-    const nlohmann::json request{
-        {"jsonrpc", "2.0"},
-        {"id", id},
-        {"method", "tools/call"},
-        {"params", nlohmann::json{{"name", name}, {"arguments", std::move(arguments)}}},
-    };
-    writeLine(requestsFd, request);
-    return nlohmann::json::parse(readLine(responsesFd));
-}
+    void readExact(std::size_t count)
+    {
+        const std::size_t buffered = std::min(count, pending.size());
+        pending.erase(0, buffered);
+        std::size_t consumed = buffered;
+        const auto deadline = std::chrono::steady_clock::now() + 10000ms;
+        while (consumed < count) {
+            if (pending.empty()) {
+                fill(deadline);
+            }
+            const std::size_t take = std::min(count - consumed, pending.size());
+            pending.erase(0, take);
+            consumed += take;
+        }
+    }
+};
 
-/* The single text block every tool result carries here. */
-std::string resultText(const nlohmann::json &response)
+/* One input result: the text naming the applied frame plus exactly one payload. */
+nlohmann::json readFramed(MessageReader &reader, int id)
 {
-    CHECK(response.contains("result"));
-    const nlohmann::json &result = response["result"];
-    CHECK(result["content"].is_array());
-    CHECK(result["content"].size() == 1);
-    CHECK(result["content"][0]["type"] == "text");
-    return result["content"][0]["text"].get<std::string>();
+    const nlohmann::json message = nlohmann::json::parse(reader.readLine());
+    CHECK(message["jsonrpc"] == "2.0");
+    CHECK(message["id"] == id);
+    CHECK(message.contains("result"));
+
+    const nlohmann::json &result = message["result"];
+    CHECK(result["format"] == "rgba8888");
+    CHECK(result["text"].is_string());
+    CHECK(result["text"].get<std::string>().find("actions applied at frame ") !=
+          std::string::npos);
+    const std::size_t byteLength = result["byteLength"].get<std::size_t>();
+    CHECK(byteLength == static_cast<std::size_t>(result["width"].get<int>()) *
+                            static_cast<std::size_t>(result["height"].get<int>()) * 4);
+    reader.readExact(byteLength);
+    return result;
 }
 
 nlohmann::json textAction(const std::string &text)
 {
     return nlohmann::json{{"actions", nlohmann::json::array({{{"type", "text"}, {"text", text}}})}};
+}
+
+void sendTextInput(int requestsFd, int id, const std::string &text)
+{
+    writeAll(requestsFd, nlohmann::json{
+                             {"jsonrpc", "2.0"},
+                             {"id", id},
+                             {"method", "tools/call"},
+                             {"params", nlohmann::json{{"name", "sdl_input"},
+                                                       {"arguments", textAction(text)}}},
+                         }
+                             .dump() +
+                             "\n");
 }
 
 /* What the app saw when it drained SDL's queue. */
@@ -155,26 +198,40 @@ struct Recorder
     }
 };
 
+void writeFrameIfRequested()
+{
+    if (!SDL3MCP_FrameRequested()) {
+        return;
+    }
+
+    std::vector<uint8_t> pixels(static_cast<std::size_t>(kFrameWidth) * kFrameHeight * 4);
+    for (std::size_t index = 0; index < pixels.size(); index += 4) {
+        pixels[index] = kFrameColor[0];
+        pixels[index + 1] = kFrameColor[1];
+        pixels[index + 2] = kFrameColor[2];
+        pixels[index + 3] = kFrameColor[3];
+    }
+    SDL3MCP_WriteFrame(pixels.data(), pixels.size(), kFrameWidth, kFrameHeight);
+}
+
 /* The client half: initialize, then one text action per call, asserting each reply. */
-void runClient(int requestsFd, int responsesFd)
+void runClient(int requestsFd, MessageReader &reader)
 {
     writeAll(requestsFd, R"({"jsonrpc":"2.0","id":1,"method":"initialize",)"
                          R"("params":{"protocolVersion":"2025-11-25"}})" "\n");
-    const nlohmann::json initialized = nlohmann::json::parse(readLine(responsesFd));
+    const nlohmann::json initialized = nlohmann::json::parse(reader.readLine());
     CHECK(initialized["id"] == 1);
     CHECK(initialized["result"]["protocolVersion"] == "2025-11-25");
 
     writeAll(requestsFd, R"({"jsonrpc":"2.0","method":"notifications/initialized"})" "\n");
 
-    const nlohmann::json first =
-        call(requestsFd, responsesFd, 2, "sdl_input", textAction("hi"));
-    CHECK(first["result"]["isError"] == false);
-    CHECK(!resultText(first).empty());
+    sendTextInput(requestsFd, 2, "hi");
+    const nlohmann::json first = readFramed(reader, 2);
+    CHECK(first["width"] == kFrameWidth);
 
-    const nlohmann::json second =
-        call(requestsFd, responsesFd, 3, "sdl_input", textAction("ok"));
-    CHECK(second["result"]["isError"] == false);
-    CHECK(!resultText(second).empty());
+    sendTextInput(requestsFd, 3, "ok");
+    const nlohmann::json second = readFramed(reader, 3);
+    CHECK(second["width"] == kFrameWidth);
 }
 
 } // namespace
@@ -212,15 +269,19 @@ int main()
     CHECK(SDL3MCP_AppInit(&configuration, 0, nullptr) == SDL_APP_CONTINUE);
     CHECK(SDL3MCP_SetWindow(window) == SDL_APP_CONTINUE);
 
+    MessageReader reader;
+    reader.fd = responses.readFd;
+
     std::atomic<bool> clientDone{false};
-    std::thread client([&requests, &responses, &clientDone] {
-        runClient(requests.writeFd, responses.readFd);
+    std::thread client([&requests, &reader, &clientDone] {
+        runClient(requests.writeFd, reader);
         clientDone.store(true);
     });
 
     Recorder recorder;
     const auto deadline = std::chrono::steady_clock::now() + 30s;
     while (!clientDone.load() && std::chrono::steady_clock::now() < deadline) {
+        writeFrameIfRequested();
         CHECK(SDL3MCP_AppIterate() == SDL_APP_CONTINUE);
         const std::size_t seen = recorder.textInputs.size();
         SDL_Event event;

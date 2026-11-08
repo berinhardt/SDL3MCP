@@ -23,6 +23,7 @@
 
 #include "app_input.hpp"
 #include "capture.hpp"
+#include "capture_arguments.hpp"
 #include "configuration.hpp"
 #include "frame.hpp"
 #include "info.hpp"
@@ -44,7 +45,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <exception>
-#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -419,28 +419,92 @@ void publishSnapshot(LibraryState &state, uint64_t frame)
     state.publishInfo(std::move(snapshot));
 }
 
+/*
+  Server thread: what is left of a per-call budget after `started`. A spent
+  budget is zero, never negative, so it can be handed to a blocking wait.
+*/
+std::chrono::milliseconds remainingBudget(std::chrono::steady_clock::time_point started,
+                                          std::chrono::milliseconds budget)
+{
+    const auto spent = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started);
+    return spent >= budget ? std::chrono::milliseconds(0) : budget - spent;
+}
+
+/*
+  Server thread: one request, one cropped frame. Both sdl_capture and the
+  observation half of sdl_input go through here, so the two report a missing
+  frame the same way and count the same statistics.
+*/
+bool takeFrame(LibraryState &state,
+               std::chrono::milliseconds timeout,
+               const std::optional<CaptureRegion> &region,
+               Frame &frame,
+               std::string &error)
+{
+    if (!state.snapshotInfo().window.bound) {
+        error = "no window bound";
+        return false;
+    }
+
+    const auto started = std::chrono::steady_clock::now();
+    if (!state.capture.begin(error)) {
+        return false;
+    }
+
+    std::string failure;
+    if (!state.capture.wait(timeout, frame, failure)) {
+        error = "no frame arrived within " + std::to_string(timeout.count()) +
+                " ms. The app must call SDL3MCP_WriteFrame() when "
+                "SDL3MCP_FrameRequested() returns true, with tightly packed "
+                "RGBA8888, its width, and its height.";
+        if (!failure.empty()) {
+            error += " Last drop: " + failure + ".";
+        }
+        state.capture.recordError(error);
+        return false;
+    }
+
+    if (region.has_value()) {
+        const std::optional<Frame> cropped = sdl3mcp::cropFrame(frame, *region, error);
+        if (!cropped.has_value()) {
+            state.capture.recordError(error);
+            return false;
+        }
+        frame = std::move(*cropped);
+    }
+
+    /* The statistics describe the raw pixels this handler hands to the server. */
+    const double elapsedMs = std::chrono::duration<double, std::milli>(
+                                 std::chrono::steady_clock::now() - started)
+                                 .count();
+    state.capture.updateSuccess(frame.width, frame.height, frame.pixels.size(), elapsedMs);
+    return true;
+}
+
 /* Server thread: parses the arguments, queues the batch, and waits for the app. */
 ToolResult inputResult(LibraryState &state, const ToolCall &call)
 {
+    const auto started = std::chrono::steady_clock::now();
+
     std::string error;
-    std::optional<InputBatch> batch = sdl3mcp::parseInputArguments(call.arguments, error);
-    if (!batch.has_value()) {
+    std::optional<sdl3mcp::InputRequest> request = sdl3mcp::parseInputArguments(
+        call.arguments, state.configuration.value().frame_timeout_ms, error);
+    if (!request.has_value()) {
         return textResult(std::move(error), true);
     }
 
-    const std::size_t actionCount = batch->actions.size();
-    const auto timeout = std::chrono::milliseconds(state.configuration.value().frame_timeout_ms);
+    const std::size_t actionCount = request->batch.actions.size();
     InputOutcome outcome;
-    state.inputQueue.submit(std::move(*batch), timeout, outcome);
+    state.inputQueue.submit(std::move(request->batch),
+                            remainingBudget(started, request->timeout), outcome);
 
     switch (outcome.status) {
     case InputStatus::Applied:
-        return textResult(std::to_string(actionCount) + " actions applied at frame " +
-                              std::to_string(outcome.appliedFrame),
-                          false);
+        break;
     case InputStatus::AppliedUnconfirmed:
         return textResult("applied at frame " + std::to_string(outcome.appliedFrame) +
-                              " but not confirmed before the timeout",
+                              " but not confirmed before the timeout; no frame was taken",
                           true);
     case InputStatus::Cancelled:
         return textResult("input not applied; is SDL3MCP_AppIterate called every loop?", true);
@@ -449,14 +513,36 @@ ToolResult inputResult(LibraryState &state, const ToolCall &call)
     case InputStatus::Stopped:
         return textResult("SDL3MCP is shutting down", true);
     }
-    return textResult("unknown input outcome", true);
+
+    const std::string text =
+        std::to_string(actionCount) + " actions applied at frame " +
+        std::to_string(outcome.appliedFrame);
+
+    /*
+      The whole call, apply included, is bounded by timeout_ms, so the capture
+      gets what is left. The input already reached the app: a frame that cannot
+      be taken is reported as a missing observation, never as a failed batch.
+    */
+    const std::chrono::milliseconds remaining = remainingBudget(started, request->timeout);
+    if (remaining.count() <= 0) {
+        return textResult(text + " but no frame was taken: the timeout_ms budget ran out "
+                                 "before the capture",
+                          true);
+    }
+
+    Frame frame;
+    std::string failure;
+    if (!takeFrame(state, remaining, request->region, frame, failure)) {
+        return textResult(text + " but no frame was taken: " + failure, true);
+    }
+
+    ToolResult result;
+    result.frameText = text;
+    result.frame = std::move(frame);
+    return result;
 }
 
-constexpr int kCaptureMinTimeoutMs = 1;
-constexpr int kCaptureMaxTimeoutMs = 60000;
-
 constexpr std::array<std::string_view, 2> kCaptureProperties{"timeout_ms", "region"};
-constexpr std::array<std::string_view, 4> kRegionProperties{"x", "y", "width", "height"};
 
 /* The sdl_capture arguments as the handler uses them, already range-checked. */
 struct CaptureArguments
@@ -485,35 +571,11 @@ std::optional<std::string> rejectUnknownProperties(const nlohmann::json &value,
     return std::nullopt;
 }
 
-/* Reads one required integer; unsigned JSON values too large for int64_t fail. */
-std::optional<int64_t> readCaptureInteger(const nlohmann::json &object,
-                                          const char *name,
-                                          std::string &error)
-{
-    const auto entry = object.find(name);
-    if (entry == object.end()) {
-        error = std::string(name) + " is required";
-        return std::nullopt;
-    }
-    if (!entry->is_number_integer()) {
-        error = std::string(name) + " must be an integer";
-        return std::nullopt;
-    }
-    if (entry->is_number_unsigned()) {
-        const uint64_t value = entry->get<uint64_t>();
-        if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
-            error = std::string(name) + " is out of range";
-            return std::nullopt;
-        }
-        return static_cast<int64_t>(value);
-    }
-    return entry->get<int64_t>();
-}
-
 /*
   Server thread: validates the wire shape before anything is requested. Every
   property the schema does not name is rejected, so a typo cannot silently fall
-  back to a default; ranges match the published tool schema.
+  back to a default; ranges match the published tool schema. The region and
+  timeout rules themselves live in capture_arguments.cpp, shared with sdl_input.
 */
 std::optional<CaptureArguments> parseCaptureArguments(const nlohmann::json &arguments,
                                                       uint32_t defaultTimeoutMs,
@@ -533,81 +595,20 @@ std::optional<CaptureArguments> parseCaptureArguments(const nlohmann::json &argu
     }
 
     CaptureArguments parsed;
-    parsed.timeout = std::chrono::milliseconds(defaultTimeoutMs);
-
-    if (arguments.contains("timeout_ms")) {
-        const std::optional<int64_t> value = readCaptureInteger(arguments, "timeout_ms", error);
-        if (!value.has_value()) {
-            return std::nullopt;
-        }
-        if (*value < kCaptureMinTimeoutMs || *value > kCaptureMaxTimeoutMs) {
-            error = "timeout_ms " + std::to_string(*value) + " must be between " +
-                    std::to_string(kCaptureMinTimeoutMs) + " and " +
-                    std::to_string(kCaptureMaxTimeoutMs);
-            return std::nullopt;
-        }
-        parsed.timeout = std::chrono::milliseconds(*value);
+    if (!sdl3mcp::parseTimeoutArgument(arguments,
+                                       std::chrono::milliseconds(defaultTimeoutMs),
+                                       parsed.timeout, error)) {
+        return std::nullopt;
     }
-
-    if (const auto regionEntry = arguments.find("region"); regionEntry != arguments.end()) {
-        if (!regionEntry->is_object()) {
-            error = "region must be an object";
-            return std::nullopt;
-        }
-        if (const std::optional<std::string> unknown =
-                rejectUnknownProperties(*regionEntry, kRegionProperties);
-            unknown.has_value()) {
-            error = *unknown;
-            return std::nullopt;
-        }
-
-        const std::optional<int64_t> x = readCaptureInteger(*regionEntry, "x", error);
-        if (!x.has_value()) {
-            return std::nullopt;
-        }
-        const std::optional<int64_t> y = readCaptureInteger(*regionEntry, "y", error);
-        if (!y.has_value()) {
-            return std::nullopt;
-        }
-        const std::optional<int64_t> width = readCaptureInteger(*regionEntry, "width", error);
-        if (!width.has_value()) {
-            return std::nullopt;
-        }
-        const std::optional<int64_t> height = readCaptureInteger(*regionEntry, "height", error);
-        if (!height.has_value()) {
-            return std::nullopt;
-        }
-        if (*x < 0 || *y < 0) {
-            error = "region x and y must be at least 0";
-            return std::nullopt;
-        }
-        if (*width < 1 || *height < 1) {
-            error = "region width and height must be at least 1";
-            return std::nullopt;
-        }
-        if (*x > std::numeric_limits<int>::max() || *y > std::numeric_limits<int>::max() ||
-            *width > std::numeric_limits<int>::max() ||
-            *height > std::numeric_limits<int>::max()) {
-            error = "region is out of range";
-            return std::nullopt;
-        }
-
-        CaptureRegion region;
-        region.x = static_cast<int>(*x);
-        region.y = static_cast<int>(*y);
-        region.width = static_cast<int>(*width);
-        region.height = static_cast<int>(*height);
-        parsed.region = region;
+    if (!sdl3mcp::parseRegionArgument(arguments, parsed.region, error)) {
+        return std::nullopt;
     }
-
     return parsed;
 }
 
 /* Server thread: one request, one cropped frame, then raw RGBA framing. */
 ToolResult captureResult(LibraryState &state, const ToolCall &call)
 {
-    const auto started = std::chrono::steady_clock::now();
-
     std::string error;
     const std::optional<CaptureArguments> arguments = parseCaptureArguments(
         call.arguments, state.configuration.value().frame_timeout_ms, error);
@@ -615,44 +616,10 @@ ToolResult captureResult(LibraryState &state, const ToolCall &call)
         return textResult(std::move(error), true);
     }
 
-    if (!state.snapshotInfo().window.bound) {
-        return textResult("no window bound", true);
-    }
-    if (!state.capture.begin(error)) {
+    Frame frame;
+    if (!takeFrame(state, arguments->timeout, arguments->region, frame, error)) {
         return textResult(std::move(error), true);
     }
-
-    Frame frame;
-    std::string failure;
-    if (!state.capture.wait(arguments->timeout, frame, failure)) {
-        std::string message = "no frame arrived within " +
-                              std::to_string(arguments->timeout.count()) +
-                              " ms. The app must call SDL3MCP_WriteFrame() when "
-                              "SDL3MCP_FrameRequested() returns true, with tightly packed "
-                              "RGBA8888, its width, and its height.";
-        if (!failure.empty()) {
-            message += " Last drop: " + failure + ".";
-        }
-        state.capture.recordError(message);
-        return textResult(std::move(message), true);
-    }
-
-    if (arguments->region.has_value()) {
-        const std::optional<Frame> cropped =
-            sdl3mcp::cropFrame(frame, *arguments->region, error);
-        if (!cropped.has_value()) {
-            state.capture.recordError(error);
-            return textResult(std::move(error), true);
-        }
-        frame = std::move(*cropped);
-    }
-
-    /* The statistics describe the raw pixels this handler hands to the server. */
-    const double elapsedMs = std::chrono::duration<double, std::milli>(
-                                 std::chrono::steady_clock::now() - started)
-                                 .count();
-    state.capture.updateSuccess(frame.width, frame.height, frame.pixels.size(),
-                                elapsedMs);
 
     ToolResult result;
     result.frame = std::move(frame);

@@ -70,14 +70,19 @@ are in `src/`, and `examples/minimal` is a complete host.
   `SDL_RenderPresent`, and after answering `SDL3MCP_FrameRequested`.
 - **F+1 acknowledgement.** A batch applied during frame F has its events
   consumed by the app during F+1, so `sdl_input` returns during F+1 and reports
-  frame F. At most one batch is in flight.
+  frame F. At most one batch is in flight. The call then requests the frame that
+  follows the batch through the same capture pipeline, so an action and its
+  observation are one call: `timeout_ms` bounds both waits (default twice
+  `frame_timeout_ms`), and a frame that cannot be taken is reported as a missing
+  observation that still names the applied frame.
 - **Capture framing: raw in the library, image/png at the MCP edge.**
-  `sdl_capture` is the one tool whose library result is not a content array: it
-  writes one result line
-  `{"format":"rgba8888","width":W,"height":H,"byteLength":B}` and then exactly
-  `B` tightly packed RGBA bytes, with no newline and no base64. `region` stays in
+  `sdl_capture` and `sdl_input` are the two tools whose library result is not a
+  content array: they write one result line
+  `{"format":"rgba8888","width":W,"height":H,"byteLength":B}` (`sdl_input` adds
+  `"text"`, the line naming the frame it was applied at) and then exactly `B`
+  tightly packed RGBA bytes, with no newline and no base64. `region` stays in
   the library; PNG and base64 are supervisor policy, and the supervisor encodes
-  the frame at exactly the dimensions it received, so captures are never
+  the frame at exactly the dimensions it received, so frames are never
   resized. The supervisor reads that framing, validates the header and payload
   size, and returns the standard
   `{"type":"image","mimeType":"image/png","data":"<base64>"}` content block,
@@ -99,9 +104,10 @@ are in `src/`, and `examples/minimal` is a complete host.
 - **Capture region.** `region` is `{x, y, width, height}` in pixels of the
   captured frame, top-left origin, all four required, and must fit inside
   `capture.lastWidth` by `capture.lastHeight`; the library crops it and the
-  supervisor encodes the result at those same dimensions. Captures are never
-  downscaled, so PNG pixels map 1:1 to app pixels and `region` is the only
-  payload-size lever. `timeout_ms` is 1..60000.
+  supervisor encodes the result at those same dimensions. `sdl_input` takes the
+  same object and parses it with the same helper, so both tools accept exactly
+  the same region. Captures are never downscaled, so PNG pixels map 1:1 to app
+  pixels and `region` is the only payload-size lever. `timeout_ms` is 1..60000.
 - **Input is event-based.** Actions become `SDL_PushEvent` traffic applied in
   `SDL3MCP_AppIterate` on the app thread. `SDL_GetKeyboardState` cannot be
   updated because SDL3 exposes no per-key setter; that is a documented
@@ -127,7 +133,17 @@ are in `src/`, and `examples/minimal` is a complete host.
   sessions may ignore the OS warp while event-driven apps still see the move.
 - **Requests are serialized.** One server thread handles one message at a time,
   so a blocking `sdl_input`/`sdl_capture` delays later requests, including
-  `ping`, by up to its timeout.
+  `ping`, by up to its timeout (for `sdl_input`, the whole apply-plus-frame
+  budget).
+- **The supervisor's forward deadline follows the tool.** A forwarded call that
+  carries `timeout_ms` gets that budget plus a grace; without one, `sdl_input`
+  gets twice the default frame timeout because it waits for the apply and then
+  for the frame, while every other call gets one frame timeout. One forward path
+  serves all tools: a result with `content` is relayed verbatim, a result with
+  `byteLength` is read, PNG-encoded, and answered as text plus one image block
+  (the frame's own `text` when it has one, the capture summary otherwise). An
+  application configured with a larger `frame_timeout_ms` should pass
+  `timeout_ms` explicitly.
 - **`sdl_terminate` only sets a flag.** The server thread stores the request and
   returns `termination requested`; it never calls SDL. `SDL3MCP_AppIterate`
   exchanges the flag and pushes exactly one zeroed `SDL_EVENT_QUIT`, restoring

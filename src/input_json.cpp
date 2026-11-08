@@ -1,8 +1,11 @@
 #include "input_json.hpp"
 
+#include "capture_arguments.hpp"
+
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <optional>
 #include <span>
@@ -352,7 +355,20 @@ constexpr std::array<std::string_view, 6> kMouseButtonProperties{"type", "button
                                                                  "x", "y", "clicks"};
 constexpr std::array<std::string_view, 3> kScrollProperties{"type", "x", "y"};
 constexpr std::array<std::string_view, 1> kReleaseAllProperties{"type"};
-constexpr std::array<std::string_view, 1> kArgumentsProperties{"actions"};
+constexpr std::array<std::string_view, 3> kArgumentsProperties{"actions", "region",
+                                                               "timeout_ms"};
+
+/*
+  The default budget: one frame timeout for the batch to be applied and
+  acknowledged, another for the frame that follows it. An explicit timeout_ms
+  replaces it and is itself bounded by the published 1..60000 range.
+*/
+std::chrono::milliseconds defaultInputTimeout(uint32_t frameTimeoutMs)
+{
+    const std::int64_t doubled = 2 * static_cast<std::int64_t>(frameTimeoutMs);
+    return std::chrono::milliseconds(
+        doubled > kCaptureMaxTimeoutMs ? kCaptureMaxTimeoutMs : doubled);
+}
 
 constexpr std::array<ActionType, 6> kActionTypes{{
     {"key", kKeyProperties, parseKey},
@@ -400,7 +416,9 @@ std::optional<InputAction> parseAction(const json &value, std::string &error)
 
 } // namespace
 
-std::optional<InputBatch> parseInputArguments(const json &arguments, std::string &error)
+std::optional<InputRequest> parseInputArguments(const json &arguments,
+                                                uint32_t frameTimeoutMs,
+                                                std::string &error)
 {
     error.clear();
 
@@ -415,6 +433,15 @@ std::optional<InputBatch> parseInputArguments(const json &arguments, std::string
         return std::nullopt;
     }
 
+    InputRequest request;
+    if (!parseTimeoutArgument(arguments, defaultInputTimeout(frameTimeoutMs),
+                              request.timeout, error)) {
+        return std::nullopt;
+    }
+    if (!parseRegionArgument(arguments, request.region, error)) {
+        return std::nullopt;
+    }
+
     const auto actionsEntry = arguments.find("actions");
     if (actionsEntry == arguments.end()) {
         error = "actions is required";
@@ -425,8 +452,7 @@ std::optional<InputBatch> parseInputArguments(const json &arguments, std::string
         return std::nullopt;
     }
 
-    InputBatch batch;
-    batch.actions.reserve(actionsEntry->size());
+    request.batch.actions.reserve(actionsEntry->size());
     for (std::size_t index = 0; index < actionsEntry->size(); ++index) {
         std::string actionError;
         std::optional<InputAction> action = parseAction((*actionsEntry)[index], actionError);
@@ -434,7 +460,7 @@ std::optional<InputBatch> parseInputArguments(const json &arguments, std::string
             error = actionPrefix(index) + actionError;
             return std::nullopt;
         }
-        batch.actions.push_back(std::move(*action));
+        request.batch.actions.push_back(std::move(*action));
     }
 
     /*
@@ -442,12 +468,12 @@ std::optional<InputBatch> parseInputArguments(const json &arguments, std::string
       rules, so the parser does not restate them; validateStructure is the one
       authority and its text already names the action index.
     */
-    if (const std::optional<std::string> structureError = validateStructure(batch);
+    if (const std::optional<std::string> structureError = validateStructure(request.batch);
         structureError.has_value()) {
         error = *structureError;
         return std::nullopt;
     }
-    return batch;
+    return request;
 }
 
 } // namespace sdl3mcp

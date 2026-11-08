@@ -791,6 +791,78 @@ void testCaptureLargeFrame(const std::string &supervisor, const std::string &fak
     CHECK(client.process.waitForExit(kLineTimeoutMs));
 }
 
+/*
+  sdl_input now answers with the frame that follows its batch. The fake child
+  sends the raw framing plus the text naming the applied frame, and the proxy
+  must turn that into exactly the same text-plus-image result it builds for
+  sdl_capture, then stay in step for the next call.
+*/
+void testInputFrameThroughProxy(const std::string &supervisor,
+                                const std::string &fakeChild)
+{
+    SupervisorClient client;
+    client.start(supervisor, {"--target", fakeChild, "--input-frame",
+                              "--capture-width", "32", "--capture-height", "16"});
+    CHECK(!client.initialize().contains("error"));
+    CHECK(!client.spawn().contains("error"));
+
+    const nlohmann::json input =
+        client.callTool("sdl_input", nlohmann::json{{"actions", nlohmann::json::array()}});
+    CHECK(!input.contains("error"));
+    CHECK(input["result"]["isError"] == false);
+
+    const nlohmann::json &content = input["result"]["content"];
+    CHECK(content.is_array());
+    CHECK(content.size() == 2);
+    CHECK(content[0]["type"] == "text");
+    CHECK(content[0]["text"].get<std::string>().find("applied at frame 7") !=
+          std::string::npos);
+    CHECK(content[1]["type"] == "image");
+    CHECK(content[1]["mimeType"] == "image/png");
+    CHECK(pngHasSize(decodeBase64(content[1]["data"].get<std::string>()), 32, 16));
+
+    /* The payload was consumed whole: the next call's line parses normally. */
+    const nlohmann::json info = client.callTool("sdl_info");
+    CHECK(info["result"]["isError"] == false);
+    const nlohmann::json payload = nlohmann::json::parse(spawnText(info));
+    CHECK(payload["window"]["title"] == "Fake Child Window");
+
+    client.process.closeStdin();
+    CHECK(client.process.waitForExit(kLineTimeoutMs));
+}
+
+/*
+  sdl_input waits for the apply and then for the frame, so the proxy's default
+  deadline must be longer than one frame timeout. A child that answers after
+  2.5 s would have been detached by the old 2 s default.
+*/
+void testInputForwardDeadline(const std::string &supervisor,
+                              const std::string &fakeChild)
+{
+    SupervisorClient client;
+    client.start(supervisor, {"--target", fakeChild, "--input-delay-ms", "2500"});
+    CHECK(!client.initialize().contains("error"));
+    CHECK(!client.spawn().contains("error"));
+
+    const auto started = std::chrono::steady_clock::now();
+    const nlohmann::json input = client.callTool(
+        "sdl_input", nlohmann::json{{"actions", nlohmann::json::array()}}, 10000);
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - started)
+                             .count();
+
+    CHECK(!input.contains("error"));
+    CHECK(input["result"]["isError"] == false);
+    CHECK(elapsed >= 2500);
+    CHECK(elapsed < 9000);
+
+    /* The session survived the slow answer. */
+    CHECK(client.callTool("sdl_info")["result"]["isError"] == false);
+
+    client.process.closeStdin();
+    CHECK(client.process.waitForExit(kLineTimeoutMs));
+}
+
 void testChildExitWhileRunning(const std::string &supervisor, const std::string &fakeChild)
 {
     SupervisorClient client;
@@ -1085,6 +1157,9 @@ int main(int argc, char **argv)
     testCaptureRpcError(supervisor, fakeChild);
     testCaptureMismatch(supervisor, fakeChild);
     testCaptureLargeFrame(supervisor, fakeChild);
+
+    testInputFrameThroughProxy(supervisor, fakeChild);
+    testInputForwardDeadline(supervisor, fakeChild);
 
     testChildExitWhileRunning(supervisor, fakeChild);
     testChildExitDuringStartup(supervisor, fakeChild);

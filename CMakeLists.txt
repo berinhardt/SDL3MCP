@@ -163,6 +163,7 @@ add_library(sdl3mcp_wire_objects OBJECT
 )
 add_library(sdl3mcp_app_objects OBJECT
     src/api.cpp
+    src/capture_arguments.cpp
     src/keymap.cpp
     src/input.cpp
     src/input_json.cpp

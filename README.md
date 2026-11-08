@@ -46,7 +46,7 @@ events into the queue and hands the pixels you give it back to the agent.
 | Tool | Purpose |
 | --- | --- |
 | `sdl_info` | Window title, size in points and pixels, pixel density, video driver, SDL version, held input, frame counters, capture statistics. |
-| `sdl_input` | Send a batch of key, text, mouse-move, mouse-button, scroll, or release-all actions. |
+| `sdl_input` | Send a batch of key, text, mouse-move, mouse-button, scroll, or release-all actions, and receive the frame that follows it. Behind `sdl3mcp` that frame arrives as an `image/png` block next to the text naming the applied frame. |
 | `sdl_capture` | Ask the app for a fresh frame, optionally cropped, and receive its raw RGBA8888 pixels plus the exact payload size; behind `sdl3mcp` the same pixels are returned at the app's native pixel size as an `image/png` block. |
 | `sdl_terminate` | Ask the app to exit cleanly by pushing one `SDL_EVENT_QUIT` into its own event loop. |
 
@@ -54,8 +54,9 @@ Typical agent loop:
 
 1. `sdl_info` to see what it is looking at.
 2. `sdl_capture` for a baseline screenshot.
-3. `sdl_input` to click, type, or hold a key.
-4. `sdl_capture` again to see what changed.
+3. `sdl_input` to click, type, or hold a key; the call returns the frame that
+   follows the batch, so the observation costs no extra round trip.
+4. `sdl_capture` only when a later frame is needed without new input.
 
 ## How it works
 
@@ -97,8 +98,9 @@ The library counts app frames. When an input batch is applied during
 `SDL3MCP_AppIterate` of frame **F**, its events are pushed onto SDL's queue, and
 the calling `sdl_input` returns during `SDL3MCP_AppIterate` of frame **F+1**.
 That is the first frame in which the app has certainly consumed the events, so
-the result names frame F ("3 actions applied at frame 12"). A capture follows
-the same rule: the frame you receive was written after the request arrived.
+the result names frame F ("3 actions applied at frame 12") and the call then
+asks for the frame that follows it. A capture follows the same rule: the frame
+you receive was written after the request arrived.
 
 ### What it is not
 
@@ -612,7 +614,7 @@ command line says".
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `transport` | `SDL3MCP_TRANSPORT_NONE` | `NONE` starts no server; `STDIO` starts the stdio MCP server; `CONNECT` dials `connect_host:connect_port` and serves over that socket. |
-| `frame_timeout_ms` | `2000` | Default `sdl_capture` timeout and the time `sdl_input` waits for its F+1 acknowledgement. |
+| `frame_timeout_ms` | `2000` | Default `sdl_capture` frame timeout and the time `sdl_input` waits for its F+1 acknowledgement; an `sdl_input` call without `timeout_ms` gets twice this as its overall budget. |
 | `max_frame_bytes` | `32 MiB` | Upper bound on a raw RGBA frame accepted by `SDL3MCP_WriteFrame`. 4K (`3840×2160×4`) fits; 5K and above need a larger value. |
 | `warp_cursor` | `true` | Move the OS cursor with `SDL_WarpMouseInWindow` on absolute mouse moves and positioned `mouse_button` actions. |
 | `log_level` | `-1` | Accepted and validated as -1..4 (`0` off, `1` error, `2` warn, `3` info, `4` debug). The library has no leveled logger yet, so today only command-line usage and errors are written to stderr. |
@@ -741,9 +743,11 @@ advertised is forwarded to it verbatim: the arguments go in unchanged, the
 child's content blocks and `isError` come back unchanged, and a JSON-RPC error
 from the child is returned unchanged. A name the child did not advertise is
 answered with `the application does not provide <name>` instead of being
-forwarded. `sdl_capture` is the one exception to the verbatim rule, because
-presentation belongs to the supervisor. `initialize`, `ping`, and `tools/list`
-are always answered by the supervisor.
+forwarded. A raw frame is the one result the supervisor presents rather than
+relays, because presentation belongs to the supervisor: `sdl_capture` and
+`sdl_input` both answer with pixels, and both leave here as text plus one
+`image/png` block. `initialize`, `ping`, and `tools/list` are always answered by
+the supervisor.
 If the child exits or crashes on its own, the exit handler returns the
 supervisor to `Idle` and puts `spawn` back; the advertised set is unchanged, so
 nothing is announced. `notifications/tools/list_changed` is sent only when the
@@ -758,6 +762,11 @@ image encoder. The supervisor owns presentation: it advertises its own
 tools, and keeps the client-facing `image/png` contract. The PNG carries the
 pixels at the app's native pixel size: captures are never resized, so a
 coordinate read in the image is the same coordinate in the app's pixel space.
+
+The frame `sdl_input` returns travels the same route: one raw frame, one native-
+size PNG, one `[text, image/png]` result. The difference is the text: a capture
+has none, so the supervisor summarises the PNG, while an input answer carries the
+library's own line naming the frame it was applied at.
 
 ```json
 {
@@ -802,9 +811,10 @@ coordinate read in the image is the same coordinate in the app's pixel space.
   before allocating the payload. A mismatched header or a short payload is a
   tool error.
 - It then encodes the frame as PNG, base64-encodes it, and answers with the usual
-  `[text, image/png]` content and `isError: false`. The text summary names the
-  size, the region when one was given, and the PNG size, for example
-  `960x540 PNG at 0,0, 41234 bytes`.
+  `[text, image/png]` content and `isError: false`. For a capture the text
+  summary names the size, the region when one was given, and the PNG size, for
+  example `960x540 PNG at 0,0, 41234 bytes`; for an input answer the library's
+  text is kept, for example `1 actions applied at frame 12`.
 - A JSON-RPC error object or a text error result from the child passes through
   unchanged, so a capture timeout still reports the library's own message.
 
@@ -1399,7 +1409,8 @@ cannot read a swapchain from another thread, and it does not want to know
 whether the app uses SDL_Renderer, OpenGL, Vulkan, Metal, or software. So it
 asks:
 
-1. The client calls `sdl_capture`.
+1. The client calls `sdl_capture`, or `sdl_input` once its batch has been
+   acknowledged.
 2. The server validates the arguments, checks that a window is bound, marks a
    request pending, and waits up to `timeout_ms`.
 3. On the next frame, the app's `SDL3MCP_FrameRequested()` returns true.
@@ -1425,8 +1436,8 @@ Rules that fall out of this design:
   are never served.
 - Only one capture is pending at a time. Tool calls are serialized on the server
   thread, so a slow capture delays the next tool call until it completes or
-  times out. Agents that need to act "between" two frames should call
-  `sdl_input`, then `sdl_capture`.
+  times out. `sdl_input` uses the same pipeline for the frame it returns, so an
+  action and its observation are one call.
 - A frame is dropped when `size` is not exactly `width * height * 4` for the
   supplied dimensions, when the data pointer is null, when a dimension is not
   positive, or when the frame exceeds `max_frame_bytes`. A drop leaves the
@@ -1597,10 +1608,11 @@ client asked for.
   before it fail with `-32600` ("tools are unavailable before initialize"), and
   a second `initialize` also fails with `-32600`. `ping` is answered at any time.
 - Requests are handled one at a time on the single server thread. A blocking
-  tool call delays every later request: `sdl_input` waits up to
-  `frame_timeout_ms` for its F+1 acknowledgement and `sdl_capture` waits up to
-  its timeout for a frame, so a `ping` queued behind one of them is answered
-  only after that call returns. Nothing is cancelled by the delay.
+  tool call delays every later request: `sdl_input` waits up to its
+  `timeout_ms` budget for the F+1 acknowledgement and then for the frame, and
+  `sdl_capture` waits up to its timeout for a frame, so a `ping` queued behind
+  one of them is answered only after that call returns. Nothing is cancelled by
+  the delay.
 - A JSON array is rejected as a batch with `-32600`; other malformed input is
   answered with a JSON-RPC error and the session continues. Invalid JSON is
   `-32700`, an unknown method is `-32601`, and bad parameters or an unknown tool
@@ -1667,14 +1679,16 @@ No arguments. Returns a pretty-printed JSON text block:
 - `heldKeys` are canonical lowercase scancode names in press order; a key held
   with `down` is listed until released. `heldButtons` use the same names as the
   `sdl_input` button enum.
-- `capture.pending` is true while a capture waits for a frame; `count` is
-  successful captures; `dropped` counts rejected `SDL3MCP_WriteFrame` attempts.
+- `capture.pending` is true while a frame request waits; `count` is
+  successful frames handed to a client (a `sdl_capture`, or the frame
+  `sdl_input` returned); `dropped` counts rejected `SDL3MCP_WriteFrame`
+  attempts.
   `lastWidth`/`lastHeight` describe the frame the library returned, after any
   region crop, and are the dimensions of the PNG the supervisor encodes,
   `lastBytes` is the raw RGBA payload size (`width * height * 4`), `lastMs`
   covers the wait for the frame plus the crop, and `lastError` is `null` when
-  the last capture succeeded (or none ran), otherwise the last drop or capture
-  error string.
+  the last frame request succeeded (or none ran), otherwise the last drop or
+  capture error string.
 - `limits` repeats the effective `frame_timeout_ms` and `max_frame_bytes`.
 - `frame` is the library's frame counter and `appliedFrame` is the last frame at
   which an input batch was applied (0 when none was).
@@ -1687,7 +1701,7 @@ makes it a useful first call after startup.
 ```json
 {
   "name": "sdl_input",
-  "description": "Queue a batch of synthetic key, text, mouse, scroll, or release-all actions. The batch is applied atomically at the next frame, and the call returns after the following frame, once the application has consumed the generated events. Follow with sdl_capture to observe the result.",
+  "description": "Queue a batch of synthetic key, text, mouse, scroll, or release-all actions, then return the frame that follows it. The batch is applied atomically at the next frame, the call returns after the following frame once the application has consumed the generated events, and the result is the text naming that frame plus that frame's pixels. The optional region crops the returned frame exactly like sdl_capture; timeout_ms bounds the whole call, apply and capture together, and defaults to twice the frame timeout.",
   "inputSchema": {
     "type": "object",
     "properties": {
@@ -1775,6 +1789,19 @@ makes it a useful first call after startup.
             }
           ]
         }
+      },
+      "timeout_ms": { "type": "integer", "minimum": 1, "maximum": 60000 },
+      "region": {
+        "type": "object",
+        "description": "Crop rectangle in pixels of the full frame, top-left origin.",
+        "properties": {
+          "x": { "type": "integer", "minimum": 0 },
+          "y": { "type": "integer", "minimum": 0 },
+          "width": { "type": "integer", "minimum": 1 },
+          "height": { "type": "integer", "minimum": 1 }
+        },
+        "required": ["x", "y", "width", "height"],
+        "additionalProperties": false
       }
     },
     "required": ["actions"],
@@ -1788,9 +1815,30 @@ makes it a useful first call after startup.
 }
 ```
 
-The result is a text summary such as `3 actions applied at frame 12`. Structural
-errors fail the call before queueing; key and chord errors fail it at F+1. See
-[Validation and error timing](#validation-and-error-timing).
+The result carries both halves of the observation in one message: the result
+line names the frame and the payload follows it exactly as it does for
+`sdl_capture`.
+
+```text
+← {"jsonrpc":"2.0","id":3,"result":{"format":"rgba8888","width":960,"height":540,"byteLength":2073600,"text":"1 actions applied at frame 12"}}
+<2073600 raw RGBA8888 bytes; no newline, no base64>
+```
+
+- `text` names the frame the batch was applied at, the same line a direct
+  client used to get as a text block.
+- `region` crops the returned frame with the same rules and the same parser
+  `sdl_capture` uses; the framed dimensions are the region's.
+- `timeout_ms` bounds the whole call: the wait for the F+1 acknowledgement plus
+  the wait for the frame. It defaults to twice `frame_timeout_ms` and is clamped
+  to the published 1–60000 range.
+- An input batch the app rejected, or a key it could not resolve, still returns
+  an `isError` content result with no frame.
+- When the input applies but no frame arrives in the remaining budget, the
+  result is an `isError` content result whose text names the applied frame and
+  why the frame is missing; the input is never reported as failed.
+
+Structural errors fail the call before queueing; key and chord errors fail it at
+F+1. See [Validation and error timing](#validation-and-error-timing).
 
 ### `sdl_capture`
 
@@ -1849,6 +1897,8 @@ content array:
   follow the result line before the next JSON-RPC message.
 - `width` and `height` describe the frame that was sent: the region when one was
   given, otherwise the dimensions the app passed to `SDL3MCP_WriteFrame`.
+- `sdl_input` uses the same framing for the frame it returns, and adds its own
+  `text` to the result line; `sdl_capture` never has one.
 - A client that wants a self-contained image should go through the supervisor,
   which turns this framing into the standard `image/png` block. See
   [Capture through the supervisor](#capture-through-the-supervisor).

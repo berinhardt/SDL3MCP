@@ -221,13 +221,23 @@ bool readInteger(const nlohmann::json &object, const char *name, int64_t &value)
     return true;
 }
 
-/* The budget for one forwarded call: the caller's tool timeout plus a grace. */
-int forwardTimeoutMs(const nlohmann::json &arguments)
+/*
+  The budget for one forwarded call. A call carrying its own timeout_ms gets
+  that budget plus a small grace so the application's own timeout answer arrives
+  first. Without one, sdl_input gets twice the default frame timeout because it
+  waits for the F+1 acknowledgement and then for the frame; every other call
+  gets one frame timeout. An application configured with a larger
+  frame_timeout_ms should pass timeout_ms explicitly.
+*/
+int forwardTimeoutMs(const std::string &name, const nlohmann::json &arguments)
 {
     int64_t requested = 0;
     if (arguments.is_object() && readInteger(arguments, "timeout_ms", requested) &&
         requested >= 1 && requested <= kMaxForwardTimeoutMs) {
         return static_cast<int>(requested) + kForwardGraceMs;
+    }
+    if (name == "sdl_input") {
+        return 2 * kForwardTimeoutMs + kForwardGraceMs;
     }
     return kForwardTimeoutMs;
 }
@@ -235,9 +245,11 @@ int forwardTimeoutMs(const nlohmann::json &arguments)
 /*
   Validates the child's raw-frame header before any payload byte is read, so a
   mismatched or oversized byteLength is rejected instead of allocated. The
-  expected size uses 64-bit math: width * height * 4 can overflow an int.
+  expected size uses 64-bit math: width * height * 4 can overflow an int. The
+  tool name is only there to make the error say which call was malformed.
 */
-bool parseCaptureHeader(const nlohmann::json &result,
+bool parseCaptureHeader(const std::string &name,
+                        const nlohmann::json &result,
                         int &width,
                         int &height,
                         size_t &byteLength,
@@ -246,7 +258,7 @@ bool parseCaptureHeader(const nlohmann::json &result,
     const auto format = result.find("format");
     if (format == result.end() || !format->is_string() ||
         format->get<std::string>() != "rgba8888") {
-        error = "the application sent a capture result without format rgba8888";
+        error = "the application sent an invalid " + name + " result: format is not rgba8888";
         return false;
     }
 
@@ -254,13 +266,15 @@ bool parseCaptureHeader(const nlohmann::json &result,
     int64_t heightValue = 0;
     if (!readInteger(result, "width", widthValue) || widthValue <= 0 ||
         !readInteger(result, "height", heightValue) || heightValue <= 0) {
-        error = "the application sent a capture result with invalid dimensions";
+        error = "the application sent an invalid " + name +
+                " result: dimensions must be positive";
         return false;
     }
 
     int64_t lengthValue = 0;
     if (!readInteger(result, "byteLength", lengthValue) || lengthValue < 0) {
-        error = "the application sent a capture result without a valid byteLength";
+        error = "the application sent an invalid " + name +
+                " result: byteLength is missing";
         return false;
     }
 
@@ -1353,11 +1367,7 @@ void Supervisor::handleToolsCall(const nlohmann::json &id, const nlohmann::json 
                             toolError("the application does not provide " + toolName));
             return;
         }
-        if (toolName == "sdl_capture") {
-            writeJson(forwardCapture(id, arguments));
-            return;
-        }
-        writeJson(forwardChildCall(id, toolName, arguments));
+        writeJson(forwardCall(id, toolName, arguments));
         return;
     }
 
@@ -1381,13 +1391,8 @@ void Supervisor::handleToolsCall(const nlohmann::json &id, const nlohmann::json 
                             toolError("the application does not provide " + toolName));
             return;
         }
-        /* sdl_capture keeps the same PNG presentation the child path gives it. */
-        if (toolName == "sdl_capture") {
-            writeJson(forwardCapture(id, arguments));
-            return;
-        }
         /* sdl_terminate is an ordinary forward: the app owns its own process. */
-        writeJson(forwardChildCall(id, toolName, arguments));
+        writeJson(forwardCall(id, toolName, arguments));
         return;
     }
 
@@ -1411,15 +1416,6 @@ void Supervisor::handleToolsCall(const nlohmann::json &id, const nlohmann::json 
     }
 
     /*
-      sdl_capture is the one tool the supervisor does not forward verbatim: the
-      child sends raw pixels, and the supervisor owns PNG encoding and base64.
-    */
-    if (toolName == "sdl_capture") {
-        writeJson(forwardCapture(id, arguments));
-        return;
-    }
-
-    /*
       sdl_terminate is forwarded like any other tool, but the supervisor then
       owns the exit: a quit request the app ignores must not leave a live child
       behind one stable MCP endpoint.
@@ -1429,7 +1425,7 @@ void Supervisor::handleToolsCall(const nlohmann::json &id, const nlohmann::json 
         return;
     }
 
-    writeJson(forwardChildCall(id, toolName, arguments));
+    writeJson(forwardCall(id, toolName, arguments));
 }
 
 SupervisorToolResult Supervisor::spawn()
@@ -1930,9 +1926,9 @@ bool Supervisor::requestPeer(Peer *peer,
     }
 }
 
-nlohmann::json Supervisor::forwardChildCall(const nlohmann::json &id,
-                                            const std::string &name,
-                                            const nlohmann::json &arguments)
+nlohmann::json Supervisor::forwardCall(const nlohmann::json &id,
+                                       const std::string &name,
+                                       const nlohmann::json &arguments)
 {
     Peer *peer = dataPath();
     if (peer == nullptr) {
@@ -1960,7 +1956,7 @@ nlohmann::json Supervisor::forwardChildCall(const nlohmann::json &id,
       tool instead of waiting forever.
     */
     const Deadline deadline = std::chrono::steady_clock::now() +
-                              std::chrono::milliseconds(forwardTimeoutMs(arguments));
+                              std::chrono::milliseconds(forwardTimeoutMs(name, arguments));
     for (;;) {
         std::string line;
         std::string error;
@@ -2006,91 +2002,7 @@ nlohmann::json Supervisor::forwardChildCall(const nlohmann::json &id,
         const auto result = message.find("result");
         if (result == message.end() || !result->is_object()) {
             return toolResultJson(
-                id, toolError("the application returned an invalid tools/call result"));
-        }
-
-        SupervisorToolResult forwarded;
-        const auto content = result->find("content");
-        forwarded.content =
-            content != result->end() ? *content : nlohmann::json::array();
-        const auto isError = result->find("isError");
-        forwarded.isError =
-            isError != result->end() && isError->is_boolean() && isError->get<bool>();
-
-        return toolResultJson(id, forwarded);
-    }
-}
-
-nlohmann::json Supervisor::forwardCapture(const nlohmann::json &id,
-                                          const nlohmann::json &arguments)
-{
-    Peer *peer = dataPath();
-    if (peer == nullptr) {
-        return toolResultJson(id, toolError("the application is not running"));
-    }
-
-    const long long requestId = nextRequestId_.fetch_add(1);
-    const nlohmann::json request{
-        {"jsonrpc", "2.0"},
-        {"id", requestId},
-        {"method", "tools/call"},
-        {"params", nlohmann::json{{"name", "sdl_capture"}, {"arguments", arguments}}},
-    };
-    if (!peer->writeLine(request.dump())) {
-        const int errorCode = errno;
-        detachPeer(peer);
-        return toolResultJson(
-            id, toolError(std::string("cannot send sdl_capture to the application: ") +
-                          std::strerror(errorCode)));
-    }
-
-    /* The same bound as every other forwarded call, from the capture timeout. */
-    const Deadline deadline = std::chrono::steady_clock::now() +
-                              std::chrono::milliseconds(forwardTimeoutMs(arguments));
-    for (;;) {
-        std::string line;
-        std::string error;
-        const ReadStatus status = peer->readLine(line, error, remainingMs(deadline));
-        if (status == ReadStatus::Timeout) {
-            detachPeer(peer);
-            return toolResultJson(
-                id, toolError("the application did not answer sdl_capture within the "
-                              "proxy timeout"));
-        }
-        if (status != ReadStatus::Line) {
-            if (status != ReadStatus::Stopped) {
-                detachPeer(peer);
-            }
-            return toolResultJson(
-                id, toolError("the application closed its connection during sdl_capture"));
-        }
-
-        const nlohmann::json message = nlohmann::json::parse(line, nullptr, false);
-        if (message.is_discarded() || !message.is_object()) {
-            continue;
-        }
-        if (message.contains("method")) {
-            observePeerMessage(message);
-            continue;
-        }
-        const auto responseId = message.find("id");
-        if (responseId == message.end() || *responseId != requestId) {
-            continue;
-        }
-
-        /* A JSON-RPC error from the child travels back unchanged. */
-        if (message.contains("error")) {
-            return nlohmann::json{
-                {"jsonrpc", "2.0"},
-                {"id", id},
-                {"error", message["error"]},
-            };
-        }
-
-        const auto result = message.find("result");
-        if (result == message.end() || !result->is_object()) {
-            return toolResultJson(
-                id, toolError("the application returned an invalid sdl_capture result"));
+                id, toolError("the application returned an invalid " + name + " result"));
         }
 
         /*
@@ -2111,11 +2023,17 @@ nlohmann::json Supervisor::forwardCapture(const nlohmann::json &id,
             return toolResultJson(id, forwarded);
         }
 
+        /*
+          Without content the result is the library's raw framing: one header
+          naming the payload, then exactly byteLength RGBA bytes. sdl_capture
+          and sdl_input both answer this way, so one presentation path serves
+          both and a tool that grows a frame needs no proxy change.
+        */
         int sourceWidth = 0;
         int sourceHeight = 0;
         size_t byteLength = 0;
         std::string headerError;
-        if (!parseCaptureHeader(*result, sourceWidth, sourceHeight, byteLength,
+        if (!parseCaptureHeader(name, *result, sourceWidth, sourceHeight, byteLength,
                                 headerError)) {
             return toolResultJson(id, toolError(std::move(headerError)));
         }
@@ -2127,9 +2045,10 @@ nlohmann::json Supervisor::forwardCapture(const nlohmann::json &id,
             detachPeer(peer);
             return toolResultJson(
                 id, toolError(timedOut
-                                  ? std::string("the application did not send the "
-                                                "sdl_capture frame within the proxy timeout")
-                                  : "cannot read the frame from the application: " + error));
+                                  ? "the application did not send the " + name +
+                                        " frame within the proxy timeout"
+                                  : "cannot read the " + name +
+                                        " frame from the application: " + error));
         }
 
         Frame frame;
@@ -2144,10 +2063,18 @@ nlohmann::json Supervisor::forwardCapture(const nlohmann::json &id,
                               "x" + std::to_string(frame.height)));
         }
 
+        /*
+          sdl_input names the frame it was applied at; a capture carries no text,
+          so the supervisor's summary describes the PNG it just encoded.
+        */
+        std::string text = result->value("text", std::string());
+        if (text.empty()) {
+            text = captureSummary(arguments, frame, png.size());
+        }
+
         SupervisorToolResult image;
         image.content = nlohmann::json::array({
-            nlohmann::json{{"type", "text"},
-                           {"text", captureSummary(arguments, frame, png.size())}},
+            nlohmann::json{{"type", "text"}, {"text", std::move(text)}},
             nlohmann::json{{"type", "image"},
                            {"mimeType", "image/png"},
                            {"data", base64Encode(png)}},

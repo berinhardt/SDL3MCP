@@ -44,13 +44,15 @@
   sdl_terminate is an ordinary forwarded call and the session ends when the
   socket closes.
 
-  sdl_capture is the one proxied call the supervisor does not pass through
-  verbatim: the library answers with a raw RGBA header and payload, and the
-  supervisor encodes that frame as PNG at exactly the dimensions it arrived
-  with, then base64s it so the client-facing image block stays standard. That
-  holds for a child and for a relayed session alike, so the application tool
-  block always carries the supervisor's own sdl_capture definition. Captures are
-  never resized, so image pixels map 1:1 to app pixels.
+  sdl_capture is the proxied call the supervisor presents itself: the library
+  answers with a raw RGBA header and payload, and the supervisor encodes that
+  frame as PNG at exactly the dimensions it arrived with, then base64s it so the
+  client-facing image block stays standard. sdl_input now returns the frame that
+  follows its batch through the same raw framing, so the proxy presents it the
+  same way and keeps the text naming the applied frame. That holds for a child
+  and for a relayed session alike, so the application tool block always carries
+  the supervisor's own sdl_capture definition. Captures are never resized, so
+  image pixels map 1:1 to app pixels.
 
   The supervisor never calls SDL. It only writes JSON to the application and
   reads its lines and raw frames.
@@ -230,17 +232,18 @@ private:
                      std::string &error);
     /* True when the attached peer advertised `name` in its latest tools/list. */
     bool peerAdvertises(const std::string &name);
-    nlohmann::json forwardChildCall(const nlohmann::json &id,
-                                    const std::string &name,
-                                    const nlohmann::json &arguments);
     /*
-      sdl_capture is forwarded specially: the app answers the raw header plus
-      pixel bytes, and the supervisor PNG-encodes the frame at the dimensions it
-      arrived with and base64-encodes it before replying with the usual image
-      block.
+      Forwards one tools/call and presents its answer. A result that already
+      carries `content` (a downstream supervisor encoded it) is relayed verbatim.
+      A result carrying `byteLength` is a raw frame: the payload is read and
+      PNG-encoded at the dimensions it arrived with, then answered as text plus
+      one image block. The text is the frame's own `text` when the tool supplied
+      one (sdl_input names the applied frame), otherwise the supervisor's capture
+      summary. Any other result shape is an error naming the tool.
     */
-    nlohmann::json forwardCapture(const nlohmann::json &id,
-                                  const nlohmann::json &arguments);
+    nlohmann::json forwardCall(const nlohmann::json &id,
+                               const std::string &name,
+                               const nlohmann::json &arguments);
 
     bool writeJson(const nlohmann::json &message);
     void sendToolsListChanged();

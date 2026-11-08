@@ -304,6 +304,22 @@ void testInputSchema()
     CHECK(schema["additionalProperties"] == false);
     CHECK(schema["required"] == nlohmann::json::array({"actions"}));
 
+    /* The observation half is the same region and timeout sdl_capture takes. */
+    CHECK(schema["properties"].size() == 3);
+    CHECK(schema["properties"].contains("timeout_ms"));
+    CHECK(schema["properties"]["timeout_ms"]["minimum"] == 1);
+    CHECK(schema["properties"]["timeout_ms"]["maximum"] == 60000);
+    const nlohmann::json &inputRegion = schema["properties"]["region"];
+    CHECK(inputRegion["type"] == "object");
+    CHECK(inputRegion["additionalProperties"] == false);
+    CHECK(inputRegion["required"] ==
+          nlohmann::json::array({"x", "y", "width", "height"}));
+
+    /* The description promises the frame, so a client need not follow with a capture. */
+    const std::string description =
+        std::string(sdl3mcp::findTool("sdl_input")->description);
+    CHECK(description.find("frame that follows") != std::string::npos);
+
     const nlohmann::json &actions = schema["properties"]["actions"];
     CHECK(actions["type"] == "array");
     CHECK(actions["minItems"] == 1);

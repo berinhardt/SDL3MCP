@@ -31,14 +31,19 @@ constexpr std::string_view kInfoAnnotations = R"({
 })";
 
 constexpr std::string_view kInputDescription =
-    "Queue a batch of synthetic key, text, mouse, scroll, or release-all actions. "
-    "The batch is applied atomically at the next frame, and the call returns after "
-    "the following frame, once the application has consumed the generated events. "
-    "Follow with sdl_capture to observe the result.";
+    "Queue a batch of synthetic key, text, mouse, scroll, or release-all actions, "
+    "then return the frame that follows it. The batch is applied atomically at the "
+    "next frame, the call returns after the following frame once the application "
+    "has consumed the generated events, and the result is the text naming that "
+    "frame plus that frame's pixels. The optional region crops the returned frame "
+    "exactly like sdl_capture; timeout_ms bounds the whole call, apply and capture "
+    "together, and defaults to twice the frame timeout.";
 
 /*
   A key action has no repeat property: repeat a press by sending another action
-  instead, which keeps the batch a plain ordered list of single events.
+  instead, which keeps the batch a plain ordered list of single events. The
+  region and timeout_ms members are the same objects sdl_capture takes, parsed by
+  the same helpers, so the schemas cannot drift from the accepted documents.
 */
 constexpr std::string_view kInputSchema = R"({
   "type": "object",
@@ -127,6 +132,19 @@ constexpr std::string_view kInputSchema = R"({
           }
         ]
       }
+    },
+    "timeout_ms": { "type": "integer", "minimum": 1, "maximum": 60000 },
+    "region": {
+      "type": "object",
+      "description": "Crop rectangle in pixels of the full frame, top-left origin.",
+      "properties": {
+        "x": { "type": "integer", "minimum": 0 },
+        "y": { "type": "integer", "minimum": 0 },
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 }
+      },
+      "required": ["x", "y", "width", "height"],
+      "additionalProperties": false
     }
   },
   "required": ["actions"],

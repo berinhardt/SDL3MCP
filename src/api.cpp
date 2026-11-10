@@ -56,6 +56,10 @@
 
 #include <nlohmann/json.hpp>
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten/emscripten.h>
+#endif
+
 #include <unistd.h>
 
 namespace
@@ -189,11 +193,106 @@ void writeToStderr(const std::string &text)
     std::fprintf(stderr, "%s\n", text.c_str());
 }
 
+#ifdef __EMSCRIPTEN__
+/*
+  A page has no command line, so the query string is the only place a server can
+  be named. Reading it yields the same --mcp=<value> argument the desktop build
+  would parse, which keeps one parser and one validator on both platforms.
+*/
+
+/* -1 for anything that is not a hexadecimal digit. */
+int hexDigitValue(char digit)
+{
+    if (digit >= '0' && digit <= '9') {
+        return digit - '0';
+    }
+    if (digit >= 'a' && digit <= 'f') {
+        return digit - 'a' + 10;
+    }
+    if (digit >= 'A' && digit <= 'F') {
+        return digit - 'A' + 10;
+    }
+    return -1;
+}
+
+/*
+  Decodes %XX escapes: a browser writes HOST:PORT as HOST%3APORT. An incomplete
+  escape is copied through unchanged, so the configuration parser rejects the
+  value with its own message instead of this helper inventing one.
+*/
+std::string percentDecode(std::string_view encoded)
+{
+    std::string decoded;
+    decoded.reserve(encoded.size());
+    for (std::size_t index = 0; index < encoded.size(); ++index) {
+        if (encoded[index] == '%' && index + 2 < encoded.size()) {
+            const int high = hexDigitValue(encoded[index + 1]);
+            const int low = hexDigitValue(encoded[index + 2]);
+            if (high >= 0 && low >= 0) {
+                decoded.push_back(static_cast<char>(high * 16 + low));
+                index += 2;
+                continue;
+            }
+        }
+        decoded.push_back(encoded[index]);
+    }
+    return decoded;
+}
+
+/* The decoded value of the query's mcp parameter; absent when the page has none. */
+std::optional<std::string> mcpQueryValue()
+{
+    const char *search = emscripten_run_script_string("window.location.search");
+    std::string_view query = search != nullptr ? std::string_view(search) : std::string_view();
+    if (!query.empty() && query.front() == '?') {
+        query.remove_prefix(1);
+    }
+
+    while (!query.empty()) {
+        const std::size_t separator = query.find('&');
+        const std::string_view parameter = query.substr(0, separator);
+        query = separator == std::string_view::npos ? std::string_view()
+                                                    : query.substr(separator + 1);
+
+        const std::size_t equals = parameter.find('=');
+        if (parameter.substr(0, equals) != "mcp") {
+            continue;
+        }
+        return equals == std::string_view::npos
+                   ? std::string()
+                   : percentDecode(parameter.substr(equals + 1));
+    }
+    return std::nullopt;
+}
+
+/*
+  Commits the page's configuration. No mcp parameter means the page asked for no
+  server, so the values the caller supplied are only validated.
+*/
+Configuration::Status applyPageQuery(Configuration &configuration)
+{
+    const std::optional<std::string> value = mcpQueryValue();
+    if (!value.has_value()) {
+        return configuration.validate();
+    }
+
+    char program[] = "catalyst";
+    std::string argument = "--mcp=" + *value;
+    std::array<char *, 2> argv{program, argument.data()};
+    return configuration.parseCommandLine(static_cast<int>(argv.size()), argv.data());
+}
+#endif
+
 void writeCommandLineError(const std::string &message)
 {
+#ifdef __EMSCRIPTEN__
+    /* The browser console gets the diagnosis; there is no usage listing there. */
+    std::fprintf(stderr, "SDL3MCP: %s\n", message.c_str());
+#else
     std::fprintf(stderr, "SDL3MCP: %s\n%s\n",
                  message.c_str(),
                  Configuration::usageText().c_str());
+#endif
 }
 
 /* "major.minor.micro" from the SDL the library was linked against. */
@@ -709,11 +808,22 @@ SDL3MCP_AppInit(SDL3MCP_Configuration *config, int argc, char **argv)
             return SDL_APP_FAILURE;
         }
 
-        const SDL3MCP_Configuration base =
+        SDL3MCP_Configuration base =
             config != nullptr ? *config : SDL3MCP_DefaultConfiguration();
+#ifdef __EMSCRIPTEN__
+        /*
+          A page has no command line, so a transport in the caller's value cannot
+          name a server: only the query string can, and its absence means none.
+        */
+        base.transport = SDL3MCP_TRANSPORT_NONE;
+#endif
 
         Configuration configuration(base);
+#ifdef __EMSCRIPTEN__
+        const Configuration::Status status = applyPageQuery(configuration);
+#else
         const Configuration::Status status = configuration.parseCommandLine(argc, argv);
+#endif
         if (status == Configuration::Status::Error) {
             writeCommandLineError(configuration.message());
             SDL_SetError("%s", configuration.message().c_str());

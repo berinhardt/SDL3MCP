@@ -180,6 +180,11 @@ Status Configuration::applyArgument(SDL3MCP_Configuration &candidate, std::strin
         candidate.warp_cursor = false;
         return Status::Continue;
     }
+    /*
+      A browser receives one synthesised --mcp=<value> argument and has no argv,
+      so neither flag can arrive there; only the desktop build carries them.
+    */
+#ifndef __EMSCRIPTEN__
     if (argument == "--mcp-help") {
         message_ = usageText();
         return Status::ExitSuccess;
@@ -188,6 +193,7 @@ Status Configuration::applyArgument(SDL3MCP_Configuration &candidate, std::strin
         message_ = versionText();
         return Status::ExitSuccess;
     }
+#endif
 
     const std::size_t separator = argument.find(kValueSeparator);
     if (separator == std::string_view::npos) {
@@ -357,6 +363,8 @@ Status Configuration::fail(std::string message)
     return Status::Error;
 }
 
+/* Desktop only: a browser has no argv, so this text has no reader there. */
+#ifndef __EMSCRIPTEN__
 std::string Configuration::usageText()
 {
     return "SDL3MCP command line options:\n"
@@ -378,5 +386,6 @@ std::string Configuration::versionText()
 {
     return "SDL3MCP " SDL3MCP_VERSION_STRING;
 }
+#endif
 
 } // namespace sdl3mcp

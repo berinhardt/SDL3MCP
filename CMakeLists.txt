@@ -162,6 +162,12 @@ add_library(sdl3mcp_wire_objects OBJECT
     src/stdio_isolation.cpp
     src/socket_connect.cpp
 )
+# A browser has no fd to read: the app dials a WebSocket and the bytes arrive in
+# callbacks. The peer that adapts those callbacks to ByteSink exists only there;
+# desktop keeps the POSIX Transport.
+if(EMSCRIPTEN)
+    target_sources(sdl3mcp_wire_objects PRIVATE src/websocket_peer.cpp)
+endif()
 add_library(sdl3mcp_app_objects OBJECT
     src/api.cpp
     src/capture_arguments.cpp
@@ -205,6 +211,12 @@ target_link_libraries(SDL3MCP
     PUBLIC SDL3::SDL3
     PRIVATE Threads::Threads
 )
+if(EMSCRIPTEN)
+    # emscripten_websocket_* lives in Emscripten's JS library, and the final link
+    # needs it named. As INTERFACE it reaches the application's link line, which
+    # is where the peer is pulled in from the static library.
+    target_link_libraries(SDL3MCP INTERFACE "-lwebsocket.js")
+endif()
 
 # The wire half includes the public header through configuration.hpp, which
 # pulls in <SDL3/SDL.h> for its types and macros, but references no SDL symbol.

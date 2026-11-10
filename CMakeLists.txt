@@ -156,6 +156,7 @@ add_library(sdl3mcp_wire_objects OBJECT
     src/json_rpc.cpp
     src/tools.cpp
     src/session.cpp
+    src/responder.cpp
     src/server.cpp
     src/transport.cpp
     src/stdio_isolation.cpp

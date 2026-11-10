@@ -21,10 +21,15 @@
   readLine buffered past the newline first, then reads exactly count bytes. The
   supervisor uses it on the child's end of the pipe, after the child's capture
   result line announced the pixel payload size.
+
+  Transport is also a ByteSink, so the code that answers requests can be handed
+  this fd transport or the browser peer without knowing which one it holds.
 */
 
 #ifndef SDL3MCP_TRANSPORT_HPP
 #define SDL3MCP_TRANSPORT_HPP
+
+#include "byte_sink.hpp"
 
 #include <atomic>
 #include <cstddef>
@@ -50,7 +55,7 @@ enum class ReadStatus
     Error
 };
 
-class Transport
+class Transport : public ByteSink
 {
 public:
     Transport(int readFd, int writeFd, size_t maxLineBytes = 1024 * 1024);
@@ -76,13 +81,13 @@ public:
                    int timeoutMs = -1);
 
     /* Appends '\n' and writes every byte. False on a write error, such as EPIPE. */
-    bool writeLine(std::string_view line);
+    bool writeLine(std::string_view line) override;
 
     /*
       Writes exactly `size` bytes with nothing appended. False on a write error;
       either every byte is written or the caller sees a failure.
     */
-    bool writeBytes(const uint8_t *data, size_t size);
+    bool writeBytes(const uint8_t *data, size_t size) override;
 
     /* Asynchronous and idempotent; safe to call from another thread. */
     void stop();

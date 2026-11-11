@@ -251,6 +251,66 @@ void testDeclinedPollKeepsRequestPending()
 }
 
 /*
+  The browser arm asks without waiting: a request the app has not answered yet
+  yields false, and the frame that answers it is handed back exactly once.
+*/
+void testTryTakeReturnsSubmittedFrameOnce()
+{
+    CaptureState capture;
+    std::string error;
+    CHECK(capture.begin(error));
+
+    Frame received;
+    CHECK(!capture.tryTake(received));
+    CHECK(capture.pending());
+    CHECK(received.pixels.empty());
+
+    capture.submit(solidFrame(3, 2, 11));
+    CHECK(!capture.pending());
+
+    CHECK(capture.tryTake(received));
+    CHECK(received.width == 3);
+    CHECK(received.height == 2);
+    CHECK(received.pixels.size() == 3u * 2u * 4u);
+    CHECK(received.pixels[0] == 11);
+    CHECK(received.pixels[3] == 255);
+    CHECK(!capture.pending());
+
+    Frame again;
+    CHECK(!capture.tryTake(again));
+    CHECK(again.pixels.empty());
+}
+
+/*
+  tryTake only reports a frame submit() delivered while a request was pending.
+  An idle state, a cancelled request, and a frame that arrived after either all
+  yield false and leave the state ready for the next request.
+*/
+void testTryTakeIgnoresIdleAndCancelledState()
+{
+    CaptureState capture;
+    Frame received;
+
+    CHECK(!capture.tryTake(received));
+
+    std::string error;
+    CHECK(capture.begin(error));
+    capture.cancel();
+    CHECK(!capture.tryTake(received));
+
+    /* A late frame cannot satisfy a cancelled request, so nothing is takeable. */
+    capture.submit(solidFrame(2, 2, 4));
+    CHECK(!capture.tryTake(received));
+
+    CHECK(capture.begin(error));
+    capture.submit(solidFrame(2, 1, 5));
+    CHECK(capture.tryTake(received));
+    CHECK(received.width == 2);
+    CHECK(received.height == 1);
+    CHECK(received.pixels[0] == 5);
+}
+
+/*
   The frame stamp is app state carried by value, so a crop must copy it. The
   library stamps at WriteFrame and crops on the server thread; losing the index
   there would make every cropped answer anonymous.
@@ -301,6 +361,8 @@ int main()
     testPendingTransitions();
     testServableFrameBoundary();
     testDeclinedPollKeepsRequestPending();
+    testTryTakeReturnsSubmittedFrameOnce();
+    testTryTakeIgnoresIdleAndCancelledState();
     testCropPreservesFrameStamp();
     testFrameOrderHelper();
 

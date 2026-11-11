@@ -8,6 +8,12 @@
   is what makes Applied honest: by then the app has consumed the events, and the
   text buffers those events borrow may be freed.
 
+  submit() is the desktop caller. A caller that shares its thread with the app
+  cannot block, so post() enqueues the same way and hands back a token, and
+  poll() reports the outcome on a later turn; a browser posts, polls once per
+  frame, and answers once the batch settles. Posted batches are the only ones
+  poll() can observe: submit() holds its own entry for the length of the wait.
+
   Timeouts have two shapes, because the queue may or may not still own the
   batch:
 
@@ -95,6 +101,23 @@ public:
     void submit(InputBatch batch, std::chrono::milliseconds timeout, InputOutcome &outcome);
 
     /*
+      Queues the batch without waiting and returns its sequence number in
+      `token`, which the caller later passes to poll(). Fails, with a one-line
+      message in `error`, only when the queue is stopped, and then queues
+      nothing. Safe to call from the thread that also drives the app.
+    */
+    bool post(InputBatch batch, uint64_t &token, std::string &error);
+
+    /*
+      Non-blocking outcome for a token from post(): true once the batch has
+      settled (Applied, Failed, or Stopped by shutdown) and consumes the
+      outcome; false while it is still queued, taken, or awaiting completion,
+      and for an unknown or already-consumed token. Entries submitted with
+      submit() are not observable here.
+    */
+    bool poll(uint64_t token, InputOutcome &outcome);
+
+    /*
       Hands the next queued batch to the app thread and moves its ownership
       there. Non-blocking. Returns nullopt when the queue is stopped, when no
       batch is queued, or while a previously taken batch is still awaiting
@@ -151,17 +174,28 @@ private:
         InputBatch batch;
         uint64_t appliedFrame = 0;
         std::string error;
+        /* True when post() created it, so poll() rather than a waiter reads it. */
+        bool posted = false;
     };
 
     using EntryPtr = std::shared_ptr<Entry>;
 
     static bool isSettled(const Entry &entry) noexcept;
 
+    /* The outcome of a settled entry: Applied for Completed, Failed otherwise. */
+    static InputOutcome settledOutcome(const Entry &entry);
+
+    /* Keeps a posted entry's settled outcome for poll() to collect. */
+    void settlePosted(const Entry &entry, InputStatus status);
+
     mutable std::mutex mutex_;
     std::condition_variable changed_;
 
     /* Entries the queue still owns, in submission order. */
     std::map<uint64_t, EntryPtr> pending_;
+
+    /* Settled outcomes of posted entries that poll() has not collected yet. */
+    std::map<uint64_t, InputOutcome> settled_;
 
     /* The one batch the app holds; null when nothing is awaiting completion. */
     EntryPtr inflight_;

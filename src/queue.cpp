@@ -11,6 +11,21 @@ bool InputQueue::isSettled(const Entry &entry) noexcept
     return entry.state == State::Completed || entry.state == State::Failed;
 }
 
+InputOutcome InputQueue::settledOutcome(const Entry &entry)
+{
+    const InputStatus status =
+        entry.state == State::Completed ? InputStatus::Applied : InputStatus::Failed;
+    return InputOutcome{status, entry.appliedFrame, entry.error};
+}
+
+void InputQueue::settlePosted(const Entry &entry, InputStatus status)
+{
+    if (!entry.posted) {
+        return;
+    }
+    settled_[entry.seq] = InputOutcome{status, entry.appliedFrame, entry.error};
+}
+
 void InputQueue::submit(InputBatch batch, std::chrono::milliseconds timeout,
                         InputOutcome &outcome)
 {
@@ -30,9 +45,7 @@ void InputQueue::submit(InputBatch batch, std::chrono::milliseconds timeout,
     });
 
     if (isSettled(*entry)) {
-        const InputStatus status =
-            entry->state == State::Completed ? InputStatus::Applied : InputStatus::Failed;
-        outcome = InputOutcome{status, entry->appliedFrame, entry->error};
+        outcome = settledOutcome(*entry);
         return;
     }
     if (stopped_) {
@@ -50,6 +63,38 @@ void InputQueue::submit(InputBatch batch, std::chrono::milliseconds timeout,
 
     /* The events are out; only the F+1 acknowledgement is missing. */
     outcome = InputOutcome{InputStatus::AppliedUnconfirmed, entry->appliedFrame, {}};
+}
+
+bool InputQueue::post(InputBatch batch, uint64_t &token, std::string &error)
+{
+    const std::lock_guard<std::mutex> lock(mutex_);
+    if (stopped_) {
+        error = "the input queue is stopped";
+        return false;
+    }
+
+    const EntryPtr entry = std::make_shared<Entry>();
+    entry->seq = nextSeq_++;
+    entry->batch = std::move(batch);
+    entry->posted = true;
+    pending_.emplace(entry->seq, entry);
+
+    token = entry->seq;
+    error.clear();
+    return true;
+}
+
+bool InputQueue::poll(uint64_t token, InputOutcome &outcome)
+{
+    const std::lock_guard<std::mutex> lock(mutex_);
+    const auto settled = settled_.find(token);
+    if (settled == settled_.end()) {
+        return false;
+    }
+
+    outcome = settled->second;
+    settled_.erase(settled);
+    return true;
 }
 
 std::optional<TakenBatch> InputQueue::takeBatch()
@@ -88,6 +133,7 @@ void InputQueue::markApplied(uint64_t seq, uint64_t frame, std::optional<std::st
         inflight_->state = State::Failed;
         inflight_->error = std::move(*error);
         lastError_ = inflight_->error;
+        settlePosted(*inflight_, InputStatus::Failed);
         inflight_.reset();
     } else {
         inflight_->state = State::Applied;
@@ -106,6 +152,7 @@ void InputQueue::complete(uint64_t seq)
     inflight_->state = State::Completed;
     lastAppliedFrame_ = inflight_->appliedFrame;
     ++completedCount_;
+    settlePosted(*inflight_, InputStatus::Applied);
     inflight_.reset();
     changed_.notify_all();
 }
@@ -120,6 +167,8 @@ void InputQueue::stop()
     stopped_ = true;
     for (auto &queued : pending_) {
         queued.second->state = State::Cancelled;
+        /* A posted batch will never be taken, so its poller has to be told. */
+        settlePosted(*queued.second, InputStatus::Stopped);
     }
     pending_.clear();
     changed_.notify_all();

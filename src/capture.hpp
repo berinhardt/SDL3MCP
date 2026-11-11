@@ -12,6 +12,12 @@
   - a submit() that arrives after any of those is ignored, so a late frame can
     never satisfy the next request.
 
+  tryTake() is wait()'s non-blocking counterpart for a caller that shares its
+  thread with the app: a browser event loop must never wait for the app to
+  render, because the wait would stall the very loop that renders. Such a caller
+  begins a request, keeps asking tryTake() each frame, and answers once a frame
+  arrives. On desktop the server keeps using wait().
+
   recordFailure() is for rejected SDL3MCP_WriteFrame data: it keeps the first
   reason, counts one drop, and leaves the request pending so the app may retry
   on the next frame. recordError() only publishes a reason for sdl_info, which is
@@ -78,6 +84,14 @@ public:
       first recorded drop reason, or empty if WriteFrame was never called.
     */
     bool wait(std::chrono::milliseconds timeout, Frame &frame, std::string &failure);
+
+    /*
+      Non-blocking companion to wait(): true when submit() has delivered a frame
+      since the last take, in which case `frame` receives it and the request is
+      cleared; false otherwise, leaving `frame` and the state untouched. A
+      request that is still waiting for the app simply yields false.
+    */
+    bool tryTake(Frame &frame);
 
     /* True while begin() has a request that has not been answered or cleared. */
     bool pending() const;

@@ -126,16 +126,18 @@ and `examples/minimal` is a complete host.
   requested only after the F+1 completion that frame is always rendered after
   the actions were delivered (one acknowledgement frame and at least one capture
   frame later), so an unchanged frame means the actions had no effect. The
-  browser keeps the F+1 rule but not the frame: a batch there ends with its own
-  answer, and a frame is a separate `sdl_capture` (see the one-thread bullet).
+  browser keeps the rule and the frame: settling the batch there begins the
+  same capture request, and a later frame answers the one call (see the
+  one-thread bullet).
 - **Capture framing: raw in the library, image/png at the MCP edge.**
-  On desktop `sdl_capture` and `sdl_input` are the two tools whose library
-  result is not a content array: they write one result line
+  `sdl_capture` and `sdl_input` are the two tools, on both platforms, whose
+  library result is not a content array: they write one result line
   `{"format":"rgba8888","width":W,"height":H,"byteLength":B,"frame":F}`
   (`sdl_input` adds `"text"`, the line naming the applied and attached frames;
   `F` is the attached frame) and then exactly `B`
-  tightly packed RGBA bytes, with no newline and no base64. Only `sdl_capture`
-  does that on the browser, because a batch there attaches no frame.
+  tightly packed RGBA bytes, with no newline and no base64. The browser writes
+  the same framing for both: an answered `sdl_input` there carries the frame
+  its batch settled at.
   `region` stays in the library; PNG and base64 are supervisor policy, and the
   supervisor encodes the frame at exactly the dimensions it received, so frames
   are never resized. The supervisor reads that framing, validates the header
@@ -210,7 +212,12 @@ and `examples/minimal` is a complete host.
   and return a result marked deferred, which `Responder` leaves unanswered. A
   later frame settles it and writes the answer through `Responder::answer`, with
   `frame_timeout_ms` as the deadline, and one deferred call at a time so a
-  capture and a batch never race for the same frame. The reason is structural
+  capture and a batch never race for the same frame. `sdl_input` spends two of
+  those turns: the settled batch begins the acknowledgement capture, and the
+  frame that follows answers the call, with the budget restarting at the
+  settle. A capture already pending refuses that second stage and the input
+  call answers with the refusal instead of dropping the other request. The
+  reason is structural
   and it is the point of the design: there is one thread, so waiting for the app
   to render or apply would be waiting for itself. Nothing on this path may
   block — not the pump, not a handler, not a write.

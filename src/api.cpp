@@ -115,12 +115,16 @@ constexpr const char *kToolStubMessage = "tool execution is not implemented yet"
 #ifdef __EMSCRIPTEN__
 /*
   What a deferred tool call is waiting for. The browser answers one call at a
-  time, because a capture and a batch both borrow the same frame loop.
+  time, because a capture and a batch both borrow the same frame loop. An input
+  call takes two stages: the batch has to settle, and only then can the frame
+  that proves it be requested, so it moves from Input to InputFrame.
 */
 enum class DeferredRequest
 {
     Capture,
-    Input
+    Input,
+    /* The batch settled; its acknowledgement frame has been requested. */
+    InputFrame
 };
 
 /*
@@ -137,6 +141,9 @@ struct DeferredCall
     std::optional<CaptureRegion> region;
     /* InputQueue::post()'s sequence number; input requests only. */
     uint64_t token = 0;
+    /* The batch's size and the frame it applied at; input requests only. */
+    std::size_t actionCount = 0;
+    uint64_t appliedFrame = 0;
     std::chrono::steady_clock::time_point started;
     std::chrono::steady_clock::time_point deadline;
 };
@@ -886,6 +893,8 @@ ToolResult deferToolCall(LibraryState &state, const ToolCall &call)
             return textResult(std::move(error), true);
         }
         deferred.request = DeferredRequest::Input;
+        deferred.actionCount = request->batch.actions.size();
+        deferred.region = request->region;
         if (!state.inputQueue.post(std::move(request->batch), deferred.token, error)) {
             return textResult(std::move(error), true);
         }
@@ -938,44 +947,66 @@ void pumpPeer(LibraryState &state)
     /*
       The endpoint is gone. A browser app outlives its debug client, so this is
       not an application failure; nothing can be answered any more, and a frame
-      request left pending would keep asking for frames nobody reads.
+      request left pending would keep asking for frames nobody reads. An input
+      call in its batch stage owns no frame request.
     */
-    if (state.deferred.has_value() && state.deferred->request == DeferredRequest::Capture) {
+    if (state.deferred.has_value() && state.deferred->request != DeferredRequest::Input) {
         state.capture.cancel();
     }
     state.deferred.reset();
 }
 
 /*
-  App thread. One settled batch, as the browser answers it. There is no frame to
-  attach: the deferred call ends with the batch, and a frame is a separate
-  sdl_capture.
+  App thread. The line every acknowledgement opens with: what the batch did and
+  the frame it applied at.
 */
-ToolResult inputOutcomeResult(const InputOutcome &outcome)
+std::string appliedText(std::size_t actionCount, uint64_t appliedFrame)
+{
+    return std::to_string(actionCount) + " actions applied at frame " +
+           std::to_string(appliedFrame);
+}
+
+/*
+  App thread. Names the applied frame in a text answer whose frame is missing,
+  so the caller learns the actions landed even though the observation did not.
+  `applied` is empty for a plain sdl_capture, which has no batch to name.
+*/
+std::string lostFrameText(std::string_view applied, const std::string &failure)
+{
+    if (applied.empty()) {
+        return failure;
+    }
+    return std::string(applied) + " but no frame was taken: " + failure;
+}
+
+/* App thread. Why a batch that did not reach Applied answers with no frame. */
+std::string inputFailureText(const InputOutcome &outcome)
 {
     switch (outcome.status) {
     case InputStatus::Applied:
-        return textResult("input applied at frame " + std::to_string(outcome.appliedFrame) +
-                              " but no frame was taken: the browser transport answers a frame "
-                              "with a separate sdl_capture call",
-                          false);
+        return "input applied at frame " + std::to_string(outcome.appliedFrame) +
+               " but no frame was taken";
     case InputStatus::AppliedUnconfirmed:
-        return textResult("applied at frame " + std::to_string(outcome.appliedFrame) +
-                              " but not confirmed before the timeout; no frame was taken",
-                          true);
+        return "applied at frame " + std::to_string(outcome.appliedFrame) +
+               " but not confirmed before the timeout; no frame was taken";
     case InputStatus::Cancelled:
-        return textResult("input not applied; is SDL3MCP_AppIterate called every loop?", true);
+        return "input not applied; is SDL3MCP_AppIterate called every loop?";
     case InputStatus::Failed:
-        return textResult(outcome.error, true);
+        return outcome.error;
     case InputStatus::Stopped:
-        return textResult("SDL3MCP is shutting down", true);
+        return "SDL3MCP is shutting down";
     }
-    return textResult("input ended in an unknown state", true);
+    return "input ended in an unknown state";
 }
 
-/* True when the deferred capture was answered, with `result` filled in. */
+/*
+  True when the deferred capture was answered, with `result` filled in. `applied`
+  names the batch whose frame this is when the request came from sdl_input; only
+  a lost frame uses it, because a delivered one carries the frame.
+*/
 bool completeDeferredCapture(LibraryState &state,
                              const DeferredCall &deferred,
+                             std::string_view applied,
                              ToolResult &result)
 {
     Frame frame;
@@ -986,7 +1017,7 @@ bool completeDeferredCapture(LibraryState &state,
                 sdl3mcp::cropFrame(frame, *deferred.region, error);
             if (!cropped.has_value()) {
                 state.capture.recordError(error);
-                result = textResult(std::move(error), true);
+                result = textResult(lostFrameText(applied, error), true);
                 return true;
             }
             frame = std::move(*cropped);
@@ -1011,7 +1042,41 @@ bool completeDeferredCapture(LibraryState &state,
     state.capture.cancel();
     const std::string timeout = frameTimeoutText(budget, std::string());
     state.capture.recordError(timeout);
-    result = textResult(timeout, true);
+    result = textResult(lostFrameText(applied, timeout), true);
+    return true;
+}
+
+/*
+  App thread. The batch settled at `outcome.appliedFrame`; request the frame that
+  proves it and keep the call deferred. False when the call must be answered now
+  instead, with `result` naming why: another capture already owns the request,
+  or no frame can be asked for. The budget restarts here, because the frame only
+  becomes owed once the batch has settled.
+*/
+bool beginInputAcknowledgement(LibraryState &state,
+                               DeferredCall &deferred,
+                               const InputOutcome &outcome,
+                               ToolResult &result)
+{
+    const std::string applied = appliedText(deferred.actionCount, outcome.appliedFrame);
+    if (!state.snapshotInfo().window.bound) {
+        result = textResult(lostFrameText(applied, "no window bound"), true);
+        return false;
+    }
+
+    const std::chrono::milliseconds budget{state.configuration.value().frame_timeout_ms};
+    deferred.started = std::chrono::steady_clock::now();
+    deferred.deadline = deferred.started + budget;
+
+    std::string error;
+    if (!state.capture.begin(error)) {
+        /* A client capture owns the request: name it rather than lose the frame. */
+        result = textResult(lostFrameText(applied, error), true);
+        return false;
+    }
+
+    deferred.appliedFrame = outcome.appliedFrame;
+    deferred.request = DeferredRequest::InputFrame;
     return true;
 }
 
@@ -1019,6 +1084,10 @@ bool completeDeferredCapture(LibraryState &state,
   App thread. Answers the deferred call once its request can be met: a frame
   taken after it was registered, or a batch that has settled. Nothing here
   waits; an unfinished request simply stays deferred for the next frame.
+
+  An input call is answered in two stages, both driven from here: the settle
+  requests the acknowledgement frame, and a later frame delivers it. The answer
+  is one result with the frame attached, exactly as on the desktop.
 */
 void completeDeferredCall(LibraryState &state)
 {
@@ -1026,18 +1095,47 @@ void completeDeferredCall(LibraryState &state)
         return;
     }
 
-    const DeferredCall &deferred = *state.deferred;
+    DeferredCall &deferred = *state.deferred;
     ToolResult result;
-    if (deferred.request == DeferredRequest::Capture) {
-        if (!completeDeferredCapture(state, deferred, result)) {
+    switch (deferred.request) {
+    case DeferredRequest::Capture:
+        if (!completeDeferredCapture(state, deferred, std::string_view(), result)) {
             return;
         }
-    } else {
+        break;
+    case DeferredRequest::Input: {
         InputOutcome outcome;
         if (!state.inputQueue.poll(deferred.token, outcome)) {
             return;
         }
-        result = inputOutcomeResult(outcome);
+        if (outcome.status != InputStatus::Applied) {
+            result = textResult(inputFailureText(outcome), true);
+            break;
+        }
+        if (!beginInputAcknowledgement(state, deferred, outcome, result)) {
+            break;
+        }
+        /* The frame that proves the batch is rendered after this iterate. */
+        return;
+    }
+    case DeferredRequest::InputFrame: {
+        const std::string applied = appliedText(deferred.actionCount, deferred.appliedFrame);
+        if (!completeDeferredCapture(state, deferred, applied, result)) {
+            return;
+        }
+        if (result.frame.has_value()) {
+            if (const std::optional<std::string> order =
+                    sdl3mcp::checkFrameOrder(deferred.appliedFrame, result.frame->frame);
+                order.has_value()) {
+                result = textResult(*order, true);
+            } else {
+                result.frameText = applied + "; frame " +
+                                   std::to_string(result.frame->frame) +
+                                   " attached, rendered after the actions were delivered";
+            }
+        }
+        break;
+    }
     }
 
     /* Clear the stored call before writing, so no reference into it survives. */

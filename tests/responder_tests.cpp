@@ -184,6 +184,45 @@ void testFrameResultWithText()
     CHECK(header["result"]["text"] == "frame 42");
 }
 
+/*
+  A handler that registered the call has no answer yet: handleLine must put
+  nothing on the wire, and the call is answered exactly once later through
+  answer(). Anything else would send two responses for one id.
+*/
+void testDeferredResultWritesNothing()
+{
+    Session session;
+    initializeSession(session);
+    FakeSink sink;
+    Responder responder(sink, session, [](const ToolCall &) {
+        ToolResult result;
+        result.deferred = true;
+        return result;
+    });
+
+    std::string error;
+    CHECK(responder.handleLine(kCaptureLine, error));
+    CHECK(error.empty());
+    CHECK(sink.wire.empty());
+
+    Session parsingSession;
+    initializeSession(parsingSession);
+    const ToolCall call = parsedCall(parsingSession, kCaptureLine);
+
+    ToolResult registered;
+    registered.frame = Frame{1, 1, {1, 2, 3, 4}, 3};
+    CHECK(responder.answer(call, registered, error));
+    CHECK(error.empty());
+
+    /* One response for id 7, then exactly the four pixel bytes. */
+    const std::size_t newline = sink.wire.find('\n');
+    CHECK(newline != std::string::npos);
+    const nlohmann::json header = nlohmann::json::parse(sink.wire.substr(0, newline));
+    CHECK(header["id"] == 7);
+    CHECK(header["result"]["byteLength"] == 4);
+    CHECK(sink.wire.size() == newline + 1 + 4);
+}
+
 void testWriteFailure()
 {
     Session parsingSession;
@@ -216,6 +255,7 @@ int main()
     testErrorResult();
     testFrameResult();
     testFrameResultWithText();
+    testDeferredResultWritesNothing();
     testWriteFailure();
     return 0;
 }

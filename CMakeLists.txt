@@ -143,13 +143,18 @@ endif()
 # the private src/ headers can link them directly: a shared library hides those
 # symbols from its dynamic symbol table.
 #
-# They are split in two so the supervisor can link the wire half alone:
+# The sources are split in two so the supervisor can link the wire half alone:
 #   * wire: protocol, session, framing, transports and configuration; the relay
 #     needs these and references no SDL symbol.
 #   * app: everything that calls SDL (input, replay, capture plumbing, info).
 # SDL3MCP keeps both halves, so the application sees no difference. The split is
 # enforced by the link: if a wire unit starts calling SDL, sdl3mcp stops linking.
-add_library(sdl3mcp_wire_objects OBJECT
+#
+# The wire half itself has a platform arm: the POSIX server, fd transport, stdio
+# isolation and socket dial exist only on desktop, because a browser has no fd
+# and no second thread. There the WebSocket peer takes their place, so both arms
+# answer through the same Responder over ByteSink.
+set(sdl3mcp_wire_sources
     src/configuration.cpp
     src/frame.cpp
     src/capture.cpp
@@ -157,17 +162,20 @@ add_library(sdl3mcp_wire_objects OBJECT
     src/tools.cpp
     src/session.cpp
     src/responder.cpp
-    src/server.cpp
-    src/transport.cpp
-    src/stdio_isolation.cpp
-    src/socket_connect.cpp
 )
-# A browser has no fd to read: the app dials a WebSocket and the bytes arrive in
-# callbacks. The peer that adapts those callbacks to ByteSink exists only there;
-# desktop keeps the POSIX Transport.
 if(EMSCRIPTEN)
-    target_sources(sdl3mcp_wire_objects PRIVATE src/websocket_peer.cpp)
+    # The browser dials a WebSocket and the bytes arrive in callbacks on the
+    # app's own thread; the peer turns them into the lines the responder reads.
+    list(APPEND sdl3mcp_wire_sources src/websocket_peer.cpp)
+else()
+    list(APPEND sdl3mcp_wire_sources
+        src/server.cpp
+        src/transport.cpp
+        src/stdio_isolation.cpp
+        src/socket_connect.cpp
+    )
 endif()
+add_library(sdl3mcp_wire_objects OBJECT ${sdl3mcp_wire_sources})
 add_library(sdl3mcp_app_objects OBJECT
     src/api.cpp
     src/capture_arguments.cpp
@@ -256,9 +264,11 @@ if(SDL3MCP_BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()
 
-if(SDL3MCP_BUILD_CLI)
+if(SDL3MCP_BUILD_CLI AND NOT EMSCRIPTEN)
     # The supervisor is POSIX-only: the top-level WIN32 guard above already
-    # rejects Windows, and the implementation uses fork/exec and private pipes.
+    # rejects Windows, the implementation uses fork/exec and private pipes, and
+    # a browser build has neither a process to spawn nor the POSIX transport the
+    # relay is built on.
     # The supervisor owns presentation: the library-to-supervisor link carries
     # raw pixels, so PNG and base64 are compiled here only. stb is a private
     # include of the supervisor objects, never of the library.

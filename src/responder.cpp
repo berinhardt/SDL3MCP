@@ -55,6 +55,16 @@ bool Responder::answer(const ToolCall &call, const ToolResult &result,
                        std::string &error)
 {
     /*
+      A deferred result is a request the handler registered, not an answer: the
+      frame or the input outcome it waits for does not exist yet, and only the
+      caller that registered it knows when it does. Writing nothing here is what
+      keeps one tool call to exactly one response.
+    */
+    if (result.deferred) {
+        return true;
+    }
+
+    /*
       A raw frame is one JSON-RPC result line naming the payload, immediately
       followed by the pixels with no newline: the header's byteLength is the only
       framing the supervisor needs. `text` names the frame for tools that report

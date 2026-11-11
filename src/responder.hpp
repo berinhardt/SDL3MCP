@@ -52,6 +52,13 @@ struct ToolResult
     /* The text block that accompanies a raw frame; empty when there is none. */
     std::string frameText;
     std::optional<Frame> frame;
+    /*
+      Set by a handler that registered the call instead of producing its answer:
+      the frame or the batch it waits for does not exist yet, so nothing is
+      written now and the caller answers later through answer(). A browser has
+      one thread, so waiting for the app to render would be waiting for itself.
+    */
+    bool deferred = false;
 };
 
 using ToolHandler = std::function<ToolResult(const ToolCall &)>;
@@ -76,8 +83,11 @@ public:
       Writes the answer to an already-parsed call. handleLine uses this the
       moment the handler returns, but a browser build answers frames later, so
       the same framing is public: a content result line, or the raw-frame header
-      line followed by exactly byteLength pixels. False on a write failure, with
-      `error` naming it, exactly as handleLine reports it.
+      line followed by exactly byteLength pixels. A result marked deferred has no
+      answer yet, so nothing is written and the call returns true; the caller
+      that registered the request answers it once the frame or outcome exists.
+      False on a write failure, with `error` naming it, exactly as handleLine
+      reports it.
     */
     bool answer(const ToolCall &call, const ToolResult &result,
                 std::string &error);

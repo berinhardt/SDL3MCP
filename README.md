@@ -2203,7 +2203,8 @@ Test suite (all registered with CTest): `header_c`, `header_cpp`,
 `replay_tests`, `mouse_tests`, `queue_tests`, `app_input_tests`,
 `input_tool_tests`, `capture_tests`, `capture_tool_tests`, `terminate_tests`,
 `json_rpc_tests`, `session_tests`, `frame_tests`, `info_tests`, `server_tests`,
-and six `lifecycle_*` scenarios. With `SDL3MCP_BUILD_CLI=ON` it also adds
+`responder_tests`, and six `lifecycle_*` scenarios. With
+`SDL3MCP_BUILD_CLI=ON` it also adds
 `supervisor_png_tests` for the moved presentation code, `supervisor_tests`,
 which drives the real supervisor binary against a fake MCP child, `relay_tests`,
 which drives `--listen` against a fake application over TCP, `spawner_tests`,

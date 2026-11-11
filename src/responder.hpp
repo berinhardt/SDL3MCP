@@ -72,9 +72,19 @@ public:
     */
     bool handleLine(std::string_view line, std::string &error);
 
+    /*
+      Writes the answer to an already-parsed call. handleLine uses this the
+      moment the handler returns, but a browser build answers frames later, so
+      the same framing is public: a content result line, or the raw-frame header
+      line followed by exactly byteLength pixels. False on a write failure, with
+      `error` naming it, exactly as handleLine reports it.
+    */
+    bool answer(const ToolCall &call, const ToolResult &result,
+                std::string &error);
+
 private:
     bool writeResponse(const nlohmann::json &response, std::string &error);
-    /* Runs the handler; the frame path writes the header line then the pixels. */
+    /* Runs the handler, then hands its result to answer(). */
     bool writeToolCall(const ToolCall &call, std::string &error);
 
     ByteSink &sink_;

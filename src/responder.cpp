@@ -48,8 +48,12 @@ bool Responder::writeResponse(const nlohmann::json &response, std::string &error
 
 bool Responder::writeToolCall(const ToolCall &call, std::string &error)
 {
-    const ToolResult result = handler_(call);
+    return answer(call, handler_(call), error);
+}
 
+bool Responder::answer(const ToolCall &call, const ToolResult &result,
+                       std::string &error)
+{
     /*
       A raw frame is one JSON-RPC result line naming the payload, immediately
       followed by the pixels with no newline: the header's byteLength is the only

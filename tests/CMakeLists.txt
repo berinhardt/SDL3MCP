@@ -273,6 +273,18 @@ target_link_libraries(sdl3mcp_test_server PRIVATE
 )
 add_test(NAME server_tests COMMAND sdl3mcp_test_server)
 
+add_executable(sdl3mcp_test_responder responder_tests.cpp)
+target_compile_features(sdl3mcp_test_responder PRIVATE cxx_std_20)
+target_include_directories(sdl3mcp_test_responder PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+)
+target_link_libraries(sdl3mcp_test_responder PRIVATE
+    ${SDL3MCP_TEST_INTERNAL_LIBRARY}
+    SDL3::SDL3
+    nlohmann_json::nlohmann_json
+)
+add_test(NAME responder_tests COMMAND sdl3mcp_test_responder)
+
 add_executable(sdl3mcp_test_lifecycle lifecycle_tests.cpp)
 target_compile_features(sdl3mcp_test_lifecycle PRIVATE cxx_std_20)
 target_include_directories(sdl3mcp_test_lifecycle PRIVATE

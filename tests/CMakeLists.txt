@@ -14,10 +14,27 @@ target_compile_features(sdl3mcp_test_header_c PRIVATE c_std_11)
 target_link_libraries(sdl3mcp_test_header_c PRIVATE SDL3MCP::SDL3MCP)
 add_test(NAME header_c COMMAND sdl3mcp_test_header_c)
 
-add_executable(sdl3mcp_test_header_cpp header_cpp.cpp)
-target_compile_features(sdl3mcp_test_header_cpp PRIVATE cxx_std_20)
-target_link_libraries(sdl3mcp_test_header_cpp PRIVATE SDL3MCP::SDL3MCP)
-add_test(NAME header_cpp COMMAND sdl3mcp_test_header_cpp)
+# One doctest suite is one executable and one CTest, so a failing case is
+# reported by doctest and the remaining cases still run, unlike a hand-rolled
+# main that aborts at the first assertion. The private src/ include and the
+# object-library link let a suite reach the implementation the public header
+# hides.
+function(sdl3mcp_add_test sdl3mcp_test_name sdl3mcp_test_source)
+    set(sdl3mcp_test_target "sdl3mcp_test_${sdl3mcp_test_name}")
+    add_executable(${sdl3mcp_test_target} ${sdl3mcp_test_source})
+    target_compile_features(${sdl3mcp_test_target} PRIVATE cxx_std_20)
+    target_include_directories(${sdl3mcp_test_target} PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+    )
+    target_link_libraries(${sdl3mcp_test_target} PRIVATE
+        ${SDL3MCP_TEST_INTERNAL_LIBRARY}
+        SDL3::SDL3
+        doctest::doctest
+    )
+    add_test(NAME ${sdl3mcp_test_name} COMMAND ${sdl3mcp_test_target})
+endfunction()
+
+sdl3mcp_add_test(header_cpp header_cpp.cpp)
 
 add_executable(sdl3mcp_test_configuration configuration_tests.cpp)
 target_compile_features(sdl3mcp_test_configuration PRIVATE cxx_std_20)

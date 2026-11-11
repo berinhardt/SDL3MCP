@@ -10,8 +10,20 @@ include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
 option(SDL3MCP_BUILD_SHARED "Build SDL3MCP as a shared library" OFF)
-option(SDL3MCP_BUILD_TESTS "Build the SDL3MCP smoke tests" ${PROJECT_IS_TOP_LEVEL})
+option(SDL3MCP_BUILD_TESTS "Build the SDL3MCP tests" ${PROJECT_IS_TOP_LEVEL})
 option(SDL3MCP_BUILD_EXAMPLES "Build the SDL3MCP examples" OFF)
+
+# A parent project that vendors doctest through add_subdirectory already defines
+# the target, so the check comes first and the package lookup only runs for a
+# standalone configure. Without doctest the suite would silently register no
+# tests, which reads like a passing run, so this stops instead.
+if(SDL3MCP_BUILD_TESTS AND NOT TARGET doctest::doctest)
+    find_package(doctest CONFIG QUIET)
+endif()
+if(SDL3MCP_BUILD_TESTS AND NOT TARGET doctest::doctest)
+    message(FATAL_ERROR "SDL3MCP: SDL3MCP_BUILD_TESTS is ON but doctest was not found; install doctest (Arch: pacman -S doctest) or configure with -DSDL3MCP_BUILD_TESTS=OFF")
+endif()
+
 option(SDL3MCP_BUILD_CLI "Build the sdl3mcp executable" OFF)
 option(SDL3MCP_USE_SYSTEM_JSON "Resolve nlohmann_json from the system before vendoring" ON)
 

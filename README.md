@@ -1299,9 +1299,12 @@ sdl3mcp --web-root=DIR [--web-entry=NAME] [--web-port=N] [--bridge-port=N] [--co
 `--listen` or `--targets`; `--web-entry`, `--web-port`, `--bridge-port` and
 `--print-plan` require it. Here `--connect` names the relay behind the bridge
 rather than a spawner connection, so no targets file is involved.
-`--print-plan` runs the same preflight, browser resolution and profile seeding
-as a launch, prints `browser=`, `profile=` and one `command:` line per child,
-and starts none of them.
+`--print-plan` runs the same preflight and browser resolution as a launch,
+prints `browser=`, `profile=` and one `command:` line per child, and starts none
+of them. It creates no profile: the `profile=` line names the
+`sdl3mcp-web-XXXXXX` template a launch would fill, because the directory belongs
+to the run that starts children and removes it, and a printing process has no
+run to clean up.
 
 ```sh
 build/sdl3mcp --web-root=build/web --connect=127.0.0.1:7777
@@ -1355,13 +1358,16 @@ when the run ends.
 
 The application starts the chain: `sdl_terminate` reaches it through the relay
 and the bridge, its loop handles the `SDL_EVENT_QUIT` that produces, and
-`SDL3MCP_AppShutdown` closes the page, which exits the browser. The launcher,
-which polls all three children and treats the first exit as the end of the run,
-then stops the rest with SIGTERM to their process groups, waits one grace
-period, sends SIGKILL to anything still alive, and removes the throwaway
-profile. When Firefox refuses to close the window the run does not end on its
-own; a stop request then takes the browser down through that same
-grace-then-SIGKILL path. SIGINT and SIGTERM take the stop path too.
+`SDL3MCP_AppShutdown` closes the page, which exits the browser. The launcher
+polls all three children; a browser that exits with status 0 has closed its own
+page, so that ends the run cleanly. The launcher then stops the rest with SIGTERM
+to their process groups, waits one grace period, sends SIGKILL to anything still
+alive, and removes the throwaway profile. A browser that exits with a non-zero
+status, and a page server or bridge that exits at any point, fail the run with a
+message naming the child and its status; the same stop and removal follow, and
+the launcher exits 1. When Firefox refuses to close the window the run does not
+end on its own; a stop request then takes the browser down through that same
+grace-then-SIGKILL path. SIGINT and SIGTERM take the stop path too, and exit 0.
 
 ### The page query
 

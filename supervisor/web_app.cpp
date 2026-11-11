@@ -304,4 +304,9 @@ bool seedProfile(std::string &directory, std::string &error)
     return true;
 }
 
+std::string plannedProfilePath()
+{
+    return profileParent() + "/" + kProfileTemplate;
+}
+
 } // namespace sdl3mcp

@@ -3,9 +3,10 @@
   endpoint to the Supervisor. With --target the app is a child behind private
   pipes; with --listen the app dials in; with --connect --targets the supervisor
   dials a relay and spawns the configured applications on demand; with
-  --web-root it resolves the browser and a throwaway profile, seeds the profile,
+  --web-root it resolves the browser, seeds the throwaway profile a run owns,
   and launches the page server, the WebSocket bridge and an isolated browser for
-  a browser-hosted build. --print-plan prints that plan instead of starting it.
+  a browser-hosted build. --print-plan prints that plan, and the profile path it
+  would seed, instead of creating or starting anything.
 
   SIGINT and SIGTERM stop either half the same way the client leaving does: the
   run loop returns and shutdown terminates any child with SIGTERM, a grace
@@ -175,8 +176,19 @@ int main(int argc, char **argv)
         std::string webError;
         /* Preflight first: a missing tool must not leave a half-launched stack. */
         if (!sdl3mcp::preflightWebLaunch(web, webError) ||
-            !sdl3mcp::resolveBrowser(web.browser, webError) ||
-            !sdl3mcp::seedProfile(web.profileDir, webError)) {
+            !sdl3mcp::resolveBrowser(web.browser, webError)) {
+            std::fprintf(stderr, "sdl3mcp: --web-root: %s\n", webError.c_str());
+            return 2;
+        }
+
+        /*
+          A plan print names the profile a launch would seed and creates
+          nothing: the directory belongs to the run that starts children, and a
+          printing process has none to remove it.
+        */
+        if (parsed.options.printPlan) {
+            web.profileDir = sdl3mcp::plannedProfilePath();
+        } else if (!sdl3mcp::seedProfile(web.profileDir, webError)) {
             std::fprintf(stderr, "sdl3mcp: --web-root: %s\n", webError.c_str());
             return 2;
         }

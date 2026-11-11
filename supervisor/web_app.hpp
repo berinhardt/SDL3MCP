@@ -25,7 +25,9 @@
   mandatory, and dom.allow_scripts_to_close_windows — what lets the page close
   itself when the application terminates — can only be set in a profile we own,
   never in the user's settings. Both functions report through `error` and leave
-  their out parameter untouched when they fail.
+  their out parameter untouched when they fail. plannedProfilePath names the
+  directory a launch would seed without creating it, because a plan print has no
+  run to clean one up.
 */
 
 #ifndef SDL3MCP_SUPERVISOR_WEB_APP_HPP
@@ -88,6 +90,14 @@ bool resolveBrowser(std::string &path, std::string &error);
   untouched and names what could not be created.
 */
 bool seedProfile(std::string &directory, std::string &error);
+
+/*
+  Names the directory a launch would seed, without creating it: the mkdtemp()
+  template under the same parent, sdl3mcp-web-XXXXXX. A plan print reports this
+  so the output still says which profile a launch would use, while the directory
+  itself stays owned by the run that starts children and removes it.
+*/
+std::string plannedProfilePath();
 
 } // namespace sdl3mcp
 

@@ -13,10 +13,13 @@
   slow must not hold the browser back forever; a child that exits while it runs
   is a real failure and names itself.
 
-  Supervising is a poll loop: the first child to exit on its own ends the run,
-  the others are stopped, and the caller learns which child it was. SIGINT and
-  SIGTERM take the same path with a clean outcome, matching how the supervisor
-  treats a client that leaves.
+  Supervising is a poll loop. A browser that exits with status 0 has closed its
+  own page after the application shut down, which is the normal end of a run: the
+  others are stopped and the outcome is clean. Every other exit — a browser with
+  a non-zero status, or a page server or bridge leaving at any point, because
+  those are tools whose death is never the intended end — fails the run and
+  names the child. SIGINT and SIGTERM take the same stop path with a clean
+  outcome, matching how the supervisor treats a client that leaves.
 
   Stopping is SIGTERM to every group, one grace period, SIGKILL for whatever is
   still alive, a wait for every child, and removal of the throwaway profile. A
@@ -42,9 +45,9 @@ constexpr int kWebReadyWindowMs = 1000;
 
 struct WebRunOutcome
 {
-    /* 0 for a clean stop (a signal), 1 for a failure. */
+    /* 0 for a clean end (a stop request or the page closing), 1 for a failure. */
     int exitCode = 0;
-    /* The failure that ended the run, empty on a clean stop. */
+    /* The failure that ended the run, empty on a clean end. */
     std::string failure;
     /* True when a stop needed SIGKILL rather than SIGTERM. */
     bool escalated = false;

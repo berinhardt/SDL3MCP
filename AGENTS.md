@@ -60,7 +60,8 @@ and `examples/minimal` is a complete host.
   composes, starts and supervises the page server, the WebSocket bridge and an
   isolated browser, owns no MCP session of its own and cannot be combined with
   `--target`, `--listen` or `--targets`. `--print-plan` prints the plan it would
-  run and starts nothing. The three peer modes vary only how the data-path `Peer`
+  run, including the profile path a launch would seed, and starts nothing and
+  creates no profile. The three peer modes vary only how the data-path `Peer`
   (`supervisor/peer.hpp`) is created: `stdio_peer.*` for the client's own pipes,
   `child_peer.*` for a `--target` child, and `socket_peer.*` for an accepted
   application connection (`--listen`) or the dialed relay (`--connect`). The
@@ -311,6 +312,9 @@ and `examples/minimal` is a complete host.
   the query the page's configuration reads. `--print-plan` prints `browser=`,
   `profile=` and one `command:` line per child and starts nothing; the same
   `makeLaunchPlan` composes both, so what a review prints is what a launch runs.
+  It seeds no profile: `plannedProfilePath` reports the `sdl3mcp-web-XXXXXX`
+  template a launch would fill, because only the run that starts children owns a
+  directory to remove.
   Starting follows the plan: page server and bridge first, then up to a
   one-second wait for both loopback ports to accept a connection, then the
   browser. A child that exits during that wait fails the run and is named; an
@@ -337,14 +341,17 @@ and `examples/minimal` is a complete host.
 - **A web run ends in one chain, and the application starts it.**
   `sdl_terminate` reaches the app through the relay and the bridge, the app's
   loop handles the `SDL_EVENT_QUIT` it produces, and `SDL3MCP_AppShutdown` runs
-  `window.close()`; the browser then exits, and the launcher — which polls all
-  three children and treats the first exit as the end of the run, naming the
-  child — stops the rest with SIGTERM to their process groups, waits one grace
-  period, escalates to SIGKILL for anything still alive, and removes the
-  throwaway profile. When Firefox refuses to close the window, the run does not
-  end on its own; a stop request then takes the browser down through that same
-  grace-then-SIGKILL path. The preference above is what makes the normal case a
-  page that closes itself. SIGINT and SIGTERM take the same stop path.
+  `window.close()`; the browser then exits with status 0, which the launcher
+  reads as a clean end — the page closed itself, so nothing failed. It stops the
+  rest with SIGTERM to their process groups, waits one grace period, escalates
+  to SIGKILL for anything still alive, removes the throwaway profile, and exits
+  0. A browser that exits non-zero, and a page server or bridge that exits at
+  any point, fail the run with a message naming the child, and exit 1 after the
+  same stop and removal; a tool's death is never the intended end. When Firefox
+  refuses to close the window, the run does not end on its own; a stop request
+  then takes the browser down through that same grace-then-SIGKILL path. The
+  preference above is what makes the normal case a page that closes itself.
+  SIGINT and SIGTERM take the same stop path with a clean outcome.
 - **fd ownership.** `NONE` leaves stdin/stdout untouched. `STDIO` duplicates the
   originals for MCP, redirects the host stdin to `/dev/null` and the host stdout
   to stderr, and restores both at shutdown. `CONNECT` dials one socket and

@@ -291,15 +291,26 @@ WebRunOutcome runWebApp(const WebAppOptions &options,
         }
 
         bool ended = false;
-        for (ChildRun &child : children) {
-            if (child.process.hasExited()) {
-                outcome.exitCode = 1;
-                outcome.failure = exitReport(child);
-                std::fprintf(stderr, "sdl3mcp: web: %s; stopping the rest\n",
-                             outcome.failure.c_str());
-                ended = true;
+        for (size_t index = 0; index < kChildCount; ++index) {
+            ChildRun &child = children[index];
+            if (!child.process.hasExited()) {
+                continue;
+            }
+            ended = true;
+            if (index == kBrowserIndex && child.process.exitCode() == 0) {
+                /*
+                  The page closed itself after the app shut down. That is the
+                  normal end of a run, so the rest is stopped and the caller
+                  sees a clean outcome rather than a failure.
+                */
+                std::fprintf(stderr, "sdl3mcp: web: the browser closed; stopping the rest\n");
                 break;
             }
+            outcome.exitCode = 1;
+            outcome.failure = exitReport(child);
+            std::fprintf(stderr, "sdl3mcp: web: %s; stopping the rest\n",
+                         outcome.failure.c_str());
+            break;
         }
         if (ended) {
             break;

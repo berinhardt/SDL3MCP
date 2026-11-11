@@ -13,9 +13,9 @@
   binds 127.0.0.1:0. --web-entry defaults to catalyst.html and requires
   --web-root; the web mode owns the whole launch and cannot be combined with
   --target, --listen or --targets. In web mode --connect names the relay the
-  bridge dials and --web-port/--bridge-port pin the page and bridge ports;
-  --print-plan asks for the plan instead of the launch, and until the launcher
-  lands the web mode always prints and starts nothing.
+  bridge dials and --web-port/--bridge-port pin the page and bridge ports; the
+  web mode launches and supervises the three processes, and --print-plan asks for
+  the plan instead of the launch.
 
   Splitting the parse from argv keeps the grammar testable without a process:
   parseCommandLine() takes the plain argument list and returns a value. Everything

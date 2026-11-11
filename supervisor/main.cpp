@@ -4,10 +4,11 @@
   pipes; with --listen the app dials in; with --connect --targets the supervisor
   dials a relay and spawns the configured applications on demand; with
   --web-root it resolves the browser and a throwaway profile, seeds the profile,
-  and prints the launch plan for a browser-hosted build instead of launching it.
+  and launches the page server, the WebSocket bridge and an isolated browser for
+  a browser-hosted build. --print-plan prints that plan instead of starting it.
 
-  SIGINT and SIGTERM stop the supervisor the same way the client leaving does:
-  the run loop returns and shutdown terminates any child with SIGTERM, a grace
+  SIGINT and SIGTERM stop either half the same way the client leaving does: the
+  run loop returns and shutdown terminates any child with SIGTERM, a grace
   period, and SIGKILL if it is still alive. A dedicated thread parks in sigwait()
   because the signal handler cannot do the mutex-protected work itself.
 */
@@ -18,7 +19,9 @@
 #include "stdio_peer.hpp"
 #include "supervisor.hpp"
 #include "web_app.hpp"
+#include "web_runner.hpp"
 
+#include <atomic>
 #include <csignal>
 #include <cstdint>
 #include <cstdio>
@@ -169,22 +172,54 @@ int main(int argc, char **argv)
 
     if (parsed.options.web()) {
         sdl3mcp::WebAppOptions web = webOptions(parsed.options);
+        std::string webError;
+        /* Preflight first: a missing tool must not leave a half-launched stack. */
+        if (!sdl3mcp::preflightWebLaunch(web, webError) ||
+            !sdl3mcp::resolveBrowser(web.browser, webError) ||
+            !sdl3mcp::seedProfile(web.profileDir, webError)) {
+            std::fprintf(stderr, "sdl3mcp: --web-root: %s\n", webError.c_str());
+            return 2;
+        }
+
         std::vector<std::vector<std::string>> plan;
-        std::string planError;
-        if (!sdl3mcp::resolveBrowser(web.browser, planError)) {
-            std::fprintf(stderr, "sdl3mcp: --web-root: %s\n", planError.c_str());
+        if (!sdl3mcp::makeLaunchPlan(web, plan, webError)) {
+            std::fprintf(stderr, "sdl3mcp: --web-root: %s\n", webError.c_str());
             return 2;
         }
-        if (!sdl3mcp::seedProfile(web.profileDir, planError)) {
-            std::fprintf(stderr, "sdl3mcp: --web-root: %s\n", planError.c_str());
-            return 2;
+
+        if (parsed.options.printPlan) {
+            printLaunchPlan(web, plan);
+            return 0;
         }
-        if (!sdl3mcp::makeLaunchPlan(web, plan, planError)) {
-            std::fprintf(stderr, "sdl3mcp: --web-root: %s\n", planError.c_str());
-            return 2;
+
+        /*
+          Block before the launcher forks so every child inherits a mask that
+          only the stopper thread empties, and stop() becomes a flag the
+          supervisor half polls instead of a handler it cannot install.
+        */
+        sigset_t webStopSignals;
+        if (!blockStopSignals(webStopSignals)) {
+            std::fprintf(stderr, "sdl3mcp: cannot block stop signals\n");
+            return 1;
         }
-        printLaunchPlan(web, plan);
-        return 0;
+
+        std::atomic<bool> stopRequested{false};
+        std::thread webStopper([&stopRequested, &webStopSignals] {
+            int received = 0;
+            if (sigwait(&webStopSignals, &received) == 0) {
+                stopRequested.store(true, std::memory_order_relaxed);
+            }
+        });
+
+        const sdl3mcp::WebRunOutcome outcome =
+            sdl3mcp::runWebApp(web, plan, stopRequested);
+
+        /* Wake a stopper still parked in sigwait(): the signal is blocked, so it
+           stays pending until the thread consumes it, then the process exits. */
+        ::kill(::getpid(), SIGTERM);
+        webStopper.join();
+
+        return outcome.exitCode;
     }
 
     std::string upstreamError;

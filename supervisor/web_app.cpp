@@ -16,7 +16,6 @@ namespace sdl3mcp
 namespace
 {
 
-constexpr const char *kLoopbackHost = "127.0.0.1";
 constexpr const char *kPythonExecutable = "python3";
 constexpr const char *kWebSocatExecutable = "websocat";
 constexpr const char *kBrowserWidth = "1280";
@@ -156,6 +155,34 @@ bool writePreferences(const std::string &directory, std::string &error)
 
 } // namespace
 
+bool preflightWebLaunch(WebAppOptions &options, std::string &error)
+{
+    std::string websocat;
+    if (!findOnPath(kWebSocatExecutable, websocat)) {
+        return fail("websocat not found: install websocat (cargo install websocat)", error);
+    }
+
+    std::string python;
+    if (!findOnPath(kPythonExecutable, python)) {
+        return fail("python3 not found: install python3", error);
+    }
+
+    struct stat status {};
+    if (::stat(options.pageRoot.c_str(), &status) != 0 || !S_ISDIR(status.st_mode)) {
+        return fail("page root " + options.pageRoot + " is not a directory", error);
+    }
+    const std::string entryPath = options.pageRoot + "/" + options.entry;
+    if (::stat(entryPath.c_str(), &status) != 0) {
+        return fail("page root " + options.pageRoot + " does not contain " +
+                        options.entry,
+                    error);
+    }
+
+    options.websocat = std::move(websocat);
+    options.python = std::move(python);
+    return true;
+}
+
 bool makeLaunchPlan(const WebAppOptions &options,
                     std::vector<std::vector<std::string>> &plan,
                     std::string &error)
@@ -167,6 +194,12 @@ bool makeLaunchPlan(const WebAppOptions &options,
     }
     if (options.entry.empty()) {
         return fail("entry must not be empty", error);
+    }
+    if (!isExecutable(options.python)) {
+        return fail("python must name an executable", error);
+    }
+    if (!isExecutable(options.websocat)) {
+        return fail("websocat must name an executable", error);
     }
     if (options.browser.empty()) {
         return fail("browser must not be empty", error);
@@ -186,23 +219,23 @@ bool makeLaunchPlan(const WebAppOptions &options,
 
     const std::string pagePort = std::to_string(options.pagePort);
     const std::string bridgePort = std::to_string(options.bridgePort);
-    const std::string bridgeEndpoint = endpointText(kLoopbackHost, options.bridgePort);
+    const std::string bridgeEndpoint = endpointText(kWebLoopbackHost, options.bridgePort);
 
     std::vector<std::string> pageServer{
-        kPythonExecutable,
+        options.python,
         "-m",
         "http.server",
         pagePort,
         "--bind",
-        kLoopbackHost,
+        kWebLoopbackHost,
         "--directory",
         options.pageRoot,
     };
 
     std::vector<std::string> bridge{
-        kWebSocatExecutable,
+        options.websocat,
         "--binary",
-        "ws-l:" + std::string(kLoopbackHost) + ":" + bridgePort,
+        "ws-l:" + std::string(kWebLoopbackHost) + ":" + bridgePort,
         "tcp:" + endpointText(options.relayHost, options.relayPort),
     };
 
@@ -216,7 +249,7 @@ bool makeLaunchPlan(const WebAppOptions &options,
         kBrowserWidth,
         "--height",
         kBrowserHeight,
-        "http://" + std::string(kLoopbackHost) + ":" + pagePort + "/" + options.entry +
+        "http://" + std::string(kWebLoopbackHost) + ":" + pagePort + "/" + options.entry +
             "?mcp=" + bridgeEndpoint,
     };
 

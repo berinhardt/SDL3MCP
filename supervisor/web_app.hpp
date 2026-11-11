@@ -7,9 +7,16 @@
   their argv vectors is a pure value operation, kept apart from launching so the
   command shapes are reviewable and testable before anything forks or binds.
 
+  preflightWebLaunch is the check that runs before anything is created: the two
+  tools the plan names must be on PATH, and the page root must exist and hold the
+  entry. Each failure names the fix, so a missing websocat is one sentence
+  instead of a half-launched stack with a server already bound to a port. It also
+  resolves the two tools into the options, so the commands it launches are the
+  ones it checked.
+
   makeLaunchPlan validates the whole set before it writes a plan: a missing page
-  root, entry, browser or relay address, a port still left at zero, or a page
-  and bridge port that collide all fail with a message naming the field. The
+  root, entry, tool, browser or relay address, a port still left at zero, or a
+  page and bridge port that collide all fail with a message naming the field. The
   launcher fills the two ephemeral ports before calling this, so a zero port
   means the launcher skipped that step instead of asking for one.
 
@@ -31,17 +38,30 @@
 namespace sdl3mcp
 {
 
+/* The loopback host every web-mode endpoint is bound to and probed on. */
+constexpr const char *kWebLoopbackHost = "127.0.0.1";
+
 struct WebAppOptions
 {
     std::string pageRoot;        /* directory served as the page */
     std::string entry;           /* e.g. catalyst.html */
     std::string relayHost;       /* relay the bridge dials */
     std::uint16_t relayPort = 0;
+    std::string python;          /* resolved python3 executable */
+    std::string websocat;        /* resolved websocat executable */
     std::string browser;         /* resolved browser executable */
     std::string profileDir;      /* throwaway profile directory */
     std::uint16_t pagePort = 0;  /* 0 until the launcher picks one */
     std::uint16_t bridgePort = 0;
 };
+
+/*
+  The launch preflight, in the order the plan depends on it: websocat and
+  python3 on PATH (resolved into `options`), then a page root that is a directory
+  holding `options.entry`. Nothing is created; a failure leaves the filesystem
+  and the previously resolved fields alone.
+*/
+bool preflightWebLaunch(WebAppOptions &options, std::string &error);
 
 /*
   Fills `plan` with exactly three argv vectors in launch order: the page server,

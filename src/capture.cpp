@@ -43,6 +43,19 @@ bool CaptureState::wait(std::chrono::milliseconds timeout, Frame &frame, std::st
     return false;
 }
 
+bool CaptureState::tryTake(Frame &frame)
+{
+    const std::lock_guard<std::mutex> lock(mutex_);
+    if (!frame_.has_value()) {
+        return false;
+    }
+
+    frame = std::move(*frame_);
+    frame_.reset();
+    stats_.pending = false;
+    return true;
+}
+
 bool CaptureState::pending() const
 {
     const std::lock_guard<std::mutex> lock(mutex_);

@@ -14,9 +14,10 @@
   at every point the app can observe proves the state was restored.
 */
 
-#include <SDL3MCP/SDL3MCP.h>
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include <doctest/doctest.h>
 
-#include "test_util.hpp"
+#include <SDL3MCP/SDL3MCP.h>
 
 #include <nlohmann/json.hpp>
 
@@ -236,7 +237,7 @@ void runClient(int requestsFd, MessageReader &reader)
 
 } // namespace
 
-int main()
+TEST_CASE("a text action starts and restores text input")
 {
     /* The CTest environment sets this too; the hint makes a manual run work. */
     (void)SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "dummy");
@@ -318,7 +319,4 @@ int main()
 
     SDL_DestroyWindow(window);
     SDL_Quit();
-
-    std::printf("text_input_tests passed\n");
-    return 0;
 }

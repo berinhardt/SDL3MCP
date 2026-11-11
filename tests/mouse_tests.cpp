@@ -1,6 +1,7 @@
-#include "mouse.hpp"
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include <doctest/doctest.h>
 
-#include "test_util.hpp"
+#include "mouse.hpp"
 
 #include <SDL3/SDL.h>
 
@@ -118,7 +119,7 @@ void expectButtonRejected(MouseReplayer &replayer, const MouseButtonInput &input
     CHECK(error == message);
 }
 
-void testAbsoluteMoveWarps()
+TEST_CASE("absolute move warps")
 {
     MouseReplayer replayer = makeReplayer();
     replayer.setCursor(10.0F, 10.0F);
@@ -137,7 +138,7 @@ void testAbsoluteMoveWarps()
     CHECK(replayer.cursorY() == 15.0F);
 }
 
-void testAbsoluteMoveWithoutWarp()
+TEST_CASE("absolute move without warp")
 {
     MouseReplayer replayer = makeNonWarpingReplayer();
     replayer.setCursor(10.0F, 10.0F);
@@ -153,7 +154,7 @@ void testAbsoluteMoveWithoutWarp()
     CHECK(replayer.cursorY() == 15.0F);
 }
 
-void testAbsoluteMoveInRelativeMode()
+TEST_CASE("absolute move in relative mode")
 {
     MouseReplayer replayer = makeRelativeModeReplayer();
     replayer.setCursor(10.0F, 10.0F);
@@ -170,7 +171,7 @@ void testAbsoluteMoveInRelativeMode()
     CHECK(replayer.cursorY() == 15.0F);
 }
 
-void testRelativeMove()
+TEST_CASE("relative move")
 {
     MouseReplayer replayer = makeReplayer();
     replayer.setCursor(10.0F, 10.0F);
@@ -188,7 +189,7 @@ void testRelativeMove()
     CHECK(replayer.cursorY() == 7.0F);
 }
 
-void testClamping()
+TEST_CASE("clamping")
 {
     MouseReplayer replayer = makeReplayer();
     std::vector<SDL_Event> events;
@@ -216,7 +217,7 @@ void testClamping()
     CHECK(emptyWindow.cursorY() == 0.0F);
 }
 
-void testMotionCarriesHeldButtons()
+TEST_CASE("motion carries held buttons")
 {
     MouseReplayer replayer = makeReplayer();
     replayer.setCursor(10.0F, 10.0F);
@@ -240,7 +241,7 @@ void testMotionCarriesHeldButtons()
     expectMotion(rightOnly, 10.0F, 10.0F, 0.0F, 0.0F, kRightMask);
 }
 
-void testClickMovesCursorAndEmitsPair()
+TEST_CASE("click moves cursor and emits pair")
 {
     MouseReplayer replayer = makeReplayer();
     replayer.setCursor(10.0F, 10.0F);
@@ -275,7 +276,7 @@ void testClickMovesCursorAndEmitsPair()
     expectButton(events[1], SDL_BUTTON_LEFT, false, 1, 30.0F, 20.0F);
 }
 
-void testPositionedDownMovesFirst()
+TEST_CASE("positioned down moves first")
 {
     MouseReplayer replayer = makeReplayer();
     replayer.setCursor(10.0F, 10.0F);
@@ -300,7 +301,7 @@ void testPositionedDownMovesFirst()
     CHECK(warp->y == 0.0F);
 }
 
-void testPositionedButtonInRelativeMode()
+TEST_CASE("positioned button in relative mode")
 {
     MouseReplayer replayer = makeRelativeModeReplayer();
     replayer.setCursor(10.0F, 10.0F);
@@ -319,7 +320,7 @@ void testPositionedButtonInRelativeMode()
     expectButton(events[2], SDL_BUTTON_LEFT, false, 1, 25.0F, 30.0F);
 }
 
-void testPositionedButtonWithoutWarp()
+TEST_CASE("positioned button without warp")
 {
     MouseReplayer replayer = makeNonWarpingReplayer();
     replayer.setCursor(10.0F, 10.0F);
@@ -338,7 +339,7 @@ void testPositionedButtonWithoutWarp()
     expectButton(events[2], SDL_BUTTON_LEFT, false, 1, 20.0F, 15.0F);
 }
 
-void testButtonDownUpAndHeldState()
+TEST_CASE("button down up and held state")
 {
     MouseReplayer replayer = makeReplayer();
     std::vector<SDL_Event> events;
@@ -370,7 +371,7 @@ void testButtonDownUpAndHeldState()
                          events, warp, error, "mouse button is already held");
 }
 
-void testButtonMapping()
+TEST_CASE("button mapping")
 {
     MouseReplayer replayer = makeReplayer();
     std::vector<SDL_Event> events;
@@ -399,7 +400,7 @@ void testButtonMapping()
     expectButton(events[5], SDL_BUTTON_X2, false, 1, 0.0F, 0.0F);
 }
 
-void testScroll()
+TEST_CASE("scroll")
 {
     MouseReplayer replayer = makeReplayer();
     replayer.setCursor(12.0F, 8.0F);
@@ -424,7 +425,7 @@ void testScroll()
     CHECK(event.wheel.mouse_y == 8.0F);
 }
 
-void testReleaseAllButtons()
+TEST_CASE("release all buttons")
 {
     MouseReplayer replayer = makeReplayer();
     std::vector<SDL_Event> events;
@@ -452,7 +453,7 @@ void testReleaseAllButtons()
     CHECK(events.size() == 2);
 }
 
-void testReset()
+TEST_CASE("reset")
 {
     MouseReplayer replayer = makeReplayer();
     std::vector<SDL_Event> events;
@@ -474,7 +475,7 @@ void testReset()
     CHECK(events.empty());
 }
 
-void testNoWindowBound()
+TEST_CASE("no window bound")
 {
     MouseReplayer replayer(0, MouseMetrics{100.0F, 50.0F, false, true});
     std::vector<SDL_Event> events;
@@ -502,7 +503,7 @@ void testNoWindowBound()
   A batch applies to a copy and commits it only on success, so a copy that walks
   a valid action and then fails must leave the original's state and events alone.
 */
-void testCopyRollsBack()
+TEST_CASE("copy rolls back")
 {
     MouseReplayer original = makeReplayer();
     original.setCursor(10.0F, 10.0F);
@@ -536,25 +537,3 @@ void testCopyRollsBack()
 }
 
 } // namespace
-
-int main()
-{
-    testAbsoluteMoveWarps();
-    testAbsoluteMoveWithoutWarp();
-    testAbsoluteMoveInRelativeMode();
-    testRelativeMove();
-    testClamping();
-    testMotionCarriesHeldButtons();
-    testClickMovesCursorAndEmitsPair();
-    testPositionedDownMovesFirst();
-    testPositionedButtonInRelativeMode();
-    testPositionedButtonWithoutWarp();
-    testButtonDownUpAndHeldState();
-    testButtonMapping();
-    testScroll();
-    testReleaseAllButtons();
-    testReset();
-    testNoWindowBound();
-    testCopyRollsBack();
-    return 0;
-}

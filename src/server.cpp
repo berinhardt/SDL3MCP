@@ -1,10 +1,7 @@
 #include "server.hpp"
 
-#include <cerrno>
 #include <csignal>
-#include <cstring>
 #include <exception>
-#include <string_view>
 #include <system_error>
 #include <utility>
 
@@ -19,8 +16,7 @@ Server::Server(int readFd,
                ToolHandler handler,
                size_t maxLineBytes)
     : transport_(readFd, writeFd, maxLineBytes),
-      session_(session),
-      handler_(std::move(handler))
+      responder_(transport_, session, std::move(handler))
 {
 }
 
@@ -94,7 +90,9 @@ void Server::run()
         }
 
         try {
-            if (!handleLine(line)) {
+            std::string handleError;
+            if (!responder_.handleLine(line, handleError)) {
+                setFailure(std::move(handleError));
                 return;
             }
         } catch (const std::exception &exception) {
@@ -118,77 +116,6 @@ void Server::blockSigpipe()
       surfaces as EPIPE from write() instead of killing the app.
     */
     (void)pthread_sigmask(SIG_BLOCK, &blocked, nullptr);
-}
-
-bool Server::handleLine(std::string_view line)
-{
-    RpcMessage message;
-    nlohmann::json parseError;
-    if (!parseMessage(line, message, parseError)) {
-        /* Malformed input is answered, not fatal: the session continues. */
-        return writeResponse(parseError);
-    }
-
-    const SessionResult result = session_.handle(message);
-    if (result.response) {
-        return writeResponse(*result.response);
-    }
-    if (result.toolCall) {
-        return writeToolCall(*result.toolCall);
-    }
-    /* A notification: nothing to write, nothing to do. */
-    return true;
-}
-
-bool Server::writeResponse(const nlohmann::json &response)
-{
-    if (transport_.writeLine(response.dump())) {
-        return true;
-    }
-
-    const int errorCode = errno;
-    setFailure(std::string("cannot write to the client: ") + std::strerror(errorCode));
-    return false;
-}
-
-bool Server::writeToolCall(const ToolCall &call)
-{
-    const ToolResult result = handler_(call);
-
-    /*
-      A raw frame is one JSON-RPC result line naming the payload, immediately
-      followed by the pixels with no newline: the header's byteLength is the only
-      framing the supervisor needs. `text` names the frame for tools that report
-      one (sdl_input); sdl_capture leaves it out.
-    */
-    if (result.frame.has_value()) {
-        nlohmann::json header{
-            {"format", "rgba8888"},
-            {"width", result.frame->width},
-            {"height", result.frame->height},
-            {"byteLength", result.frame->pixels.size()},
-            {"frame", result.frame->frame},
-        };
-        if (!result.frameText.empty()) {
-            header["text"] = result.frameText;
-        }
-        if (!writeResponse(makeResult(call.id, header))) {
-            return false;
-        }
-        if (!transport_.writeBytes(result.frame->pixels.data(),
-                                   result.frame->pixels.size())) {
-            const int errorCode = errno;
-            setFailure(std::string("cannot write the frame payload to the client: ") +
-                       std::strerror(errorCode));
-            return false;
-        }
-        return true;
-    }
-
-    return writeResponse(makeResult(call.id, nlohmann::json{
-                                             {"content", result.content},
-                                             {"isError", result.isError},
-                                         }));
 }
 
 void Server::setFailure(std::string message)

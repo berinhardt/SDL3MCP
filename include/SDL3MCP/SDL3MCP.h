@@ -28,7 +28,8 @@ typedef enum SDL3MCP_Transport
 {
     SDL3MCP_TRANSPORT_NONE = 0,
     SDL3MCP_TRANSPORT_STDIO,
-    SDL3MCP_TRANSPORT_CONNECT
+    SDL3MCP_TRANSPORT_CONNECT,
+    SDL3MCP_TRANSPORT_WEBSOCKET
 } SDL3MCP_Transport;
 
 typedef struct SDL3MCP_Configuration
@@ -38,7 +39,7 @@ typedef struct SDL3MCP_Configuration
     uint32_t max_frame_bytes;
     bool warp_cursor;
     int log_level;
-    /* CONNECT only: the client endpoint the app dials, HOST:PORT. */
+    /* CONNECT and WEBSOCKET: the client endpoint the app dials, HOST:PORT. */
     char connect_host[64];
     uint16_t connect_port;
 } SDL3MCP_Configuration;

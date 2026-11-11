@@ -21,9 +21,10 @@
   string at poll time, which is the contract every app has to follow too.
 */
 
-#include <SDL3MCP/SDL3MCP.h>
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include <doctest/doctest.h>
 
-#include "test_util.hpp"
+#include <SDL3MCP/SDL3MCP.h>
 
 #include <nlohmann/json.hpp>
 
@@ -457,7 +458,7 @@ void writeFrameIfRequested(std::atomic<bool> &answerFrames)
 
 } // namespace
 
-int main()
+TEST_CASE("the input tool returns the frame after the applied batch")
 {
     /* The CTest environment sets this too; the hint makes a manual run work. */
     (void)SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "dummy");
@@ -543,7 +544,4 @@ int main()
     SDL_StopTextInput(window);
     SDL_DestroyWindow(window);
     SDL_Quit();
-
-    std::printf("input_tool_tests passed\n");
-    return 0;
 }

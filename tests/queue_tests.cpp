@@ -3,12 +3,14 @@
   the blocking submit on a worker and plays the app on the main thread.
 */
 
-#include "queue.hpp"
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include <doctest/doctest.h>
 
-#include "test_util.hpp"
+#include "queue.hpp"
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <future>
 #include <optional>
@@ -104,7 +106,7 @@ std::optional<TakenBatch> takeEventually(InputQueue &queue)
     return taken;
 }
 
-void appliedOnlyAfterCompletion()
+TEST_CASE("applied only after completion")
 {
     InputQueue queue;
     SubmitWorker worker(queue, batchWith(2), 5000ms);
@@ -130,7 +132,7 @@ void appliedOnlyAfterCompletion()
     CHECK(queue.lastAppliedFrame() == 12);
 }
 
-void timeoutBeforeTakeCancels()
+TEST_CASE("timeout before take cancels")
 {
     InputQueue queue;
     SubmitWorker worker(queue, batchWith(1), 50ms);
@@ -142,7 +144,7 @@ void timeoutBeforeTakeCancels()
     CHECK(queue.lastAppliedFrame() == 0);
 }
 
-void timeoutAfterApplyIsUnconfirmed()
+TEST_CASE("timeout after apply is unconfirmed")
 {
     InputQueue queue;
     SubmitWorker worker(queue, batchWith(1), 300ms);
@@ -163,7 +165,7 @@ void timeoutAfterApplyIsUnconfirmed()
     CHECK(queue.lastAppliedFrame() == 4);
 }
 
-void applyErrorFails()
+TEST_CASE("apply error fails")
 {
     InputQueue queue;
     SubmitWorker worker(queue, batchWith(1), 5000ms);
@@ -189,7 +191,7 @@ void applyErrorFails()
     CHECK(queue.lastError().empty());
 }
 
-void takeWaitsForOutstandingBatch()
+TEST_CASE("take waits for outstanding batch")
 {
     InputQueue queue;
     SubmitWorker first(queue, batchWith(1), 5000ms);
@@ -215,7 +217,7 @@ void takeWaitsForOutstandingBatch()
     CHECK(outcome.appliedFrame == 2);
 }
 
-void cancelledBatchIsNeverTaken()
+TEST_CASE("cancelled batch is never taken")
 {
     InputQueue queue;
     SubmitWorker cancelled(queue, batchWith(1), 30ms);
@@ -231,7 +233,7 @@ void cancelledBatchIsNeverTaken()
     CHECK(awaitResult(next.future()).status == InputStatus::Applied);
 }
 
-void nextBatchQueuesBehindUnconfirmed()
+TEST_CASE("next batch queues behind unconfirmed")
 {
     InputQueue queue;
     SubmitWorker first(queue, batchWith(1), 300ms);
@@ -257,7 +259,7 @@ void nextBatchQueuesBehindUnconfirmed()
     CHECK(outcome.appliedFrame == 5);
 }
 
-void stopWakesWaitersAndRefusesSubmits()
+TEST_CASE("stop wakes waiters and refuses submits")
 {
     InputQueue queue;
     SubmitWorker worker(queue, batchWith(1), 10000ms);
@@ -277,7 +279,7 @@ void stopWakesWaitersAndRefusesSubmits()
     CHECK(queue.completedCount() == 0);
 }
 
-void stopLeavesTakenBatchCompletable()
+TEST_CASE("stop leaves taken batch completable")
 {
     InputQueue queue;
     SubmitWorker worker(queue, batchWith(1), 10000ms);
@@ -293,7 +295,7 @@ void stopLeavesTakenBatchCompletable()
     CHECK(queue.lastAppliedFrame() == 8);
 }
 
-void countersAdvanceOnCompletion()
+TEST_CASE("counters advance on completion")
 {
     InputQueue queue;
     SubmitWorker worker(queue, batchWith(1), 5000ms);
@@ -312,21 +314,94 @@ void countersAdvanceOnCompletion()
     CHECK(awaitResult(worker.future()).status == InputStatus::Applied);
 }
 
-} // namespace
-
-int main()
+/*
+  The browser arm shares its thread with the app, so it posts without waiting and
+  polls each frame: queued and Applied are not settled, completion is, and the
+  outcome is consumed once it is reported.
+*/
+TEST_CASE("post polls until completion")
 {
-    appliedOnlyAfterCompletion();
-    timeoutBeforeTakeCancels();
-    timeoutAfterApplyIsUnconfirmed();
-    applyErrorFails();
-    takeWaitsForOutstandingBatch();
-    cancelledBatchIsNeverTaken();
-    nextBatchQueuesBehindUnconfirmed();
-    stopWakesWaitersAndRefusesSubmits();
-    stopLeavesTakenBatchCompletable();
-    countersAdvanceOnCompletion();
+    InputQueue queue;
+    uint64_t token = 0;
+    std::string error = "stale";
+    CHECK(queue.post(batchWith(2), token, error));
+    CHECK(token == 1);
+    CHECK(error.empty());
 
-    std::printf("queue_tests passed\n");
-    return 0;
+    InputOutcome outcome;
+    CHECK(!queue.poll(token, outcome));
+    /* A false poll leaves the caller's outcome alone. */
+    CHECK(outcome.status == InputStatus::Cancelled);
+
+    const std::optional<TakenBatch> taken = queue.takeBatch();
+    CHECK(taken.has_value());
+    CHECK(taken->seq == token);
+    CHECK(taken->batch.actions.size() == 2);
+
+    queue.markApplied(taken->seq, 6, std::nullopt);
+    /* Applied alone is not a settlement: the app has not published F+1 yet. */
+    CHECK(!queue.poll(token, outcome));
+
+    queue.complete(taken->seq);
+    CHECK(queue.poll(token, outcome));
+    CHECK(outcome.status == InputStatus::Applied);
+    CHECK(outcome.appliedFrame == 6);
+    CHECK(outcome.error.empty());
+    CHECK(queue.completedCount() == 1);
+    CHECK(queue.lastAppliedFrame() == 6);
+
+    CHECK(!queue.poll(token, outcome));
 }
+
+TEST_CASE("post polls failure")
+{
+    InputQueue queue;
+    uint64_t token = 0;
+    std::string error;
+    CHECK(queue.post(batchWith(1), token, error));
+
+    const std::optional<TakenBatch> taken = queue.takeBatch();
+    CHECK(taken.has_value());
+
+    InputOutcome outcome;
+    CHECK(!queue.poll(token, outcome));
+
+    queue.markApplied(taken->seq, 9, std::string("no window bound"));
+    CHECK(queue.poll(token, outcome));
+    CHECK(outcome.status == InputStatus::Failed);
+    CHECK(outcome.error == "no window bound");
+    CHECK(outcome.appliedFrame == 9);
+    CHECK(queue.lastError() == "no window bound");
+    CHECK(!queue.poll(token, outcome));
+}
+
+TEST_CASE("post refused after stop")
+{
+    InputQueue queue;
+    queue.stop();
+
+    uint64_t token = 42;
+    std::string error;
+    CHECK(!queue.post(batchWith(1), token, error));
+    CHECK(!error.empty());
+    CHECK(token == 42);
+    CHECK(!queue.takeBatch().has_value());
+}
+
+/* A posted batch that shutdown cancels still has to reach its poller. */
+TEST_CASE("stop settles posted batch")
+{
+    InputQueue queue;
+    uint64_t token = 0;
+    std::string error;
+    CHECK(queue.post(batchWith(1), token, error));
+
+    queue.stop();
+
+    InputOutcome outcome;
+    CHECK(queue.poll(token, outcome));
+    CHECK(outcome.status == InputStatus::Stopped);
+    CHECK(!queue.poll(token, outcome));
+}
+
+} // namespace

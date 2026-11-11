@@ -20,6 +20,15 @@ constexpr std::string_view kConnectOption = "--connect";
 constexpr std::string_view kConnectPrefix = "--connect=";
 constexpr std::string_view kTargetsOption = "--targets";
 constexpr std::string_view kTargetsPrefix = "--targets=";
+constexpr std::string_view kWebRootOption = "--web-root";
+constexpr std::string_view kWebRootPrefix = "--web-root=";
+constexpr std::string_view kWebEntryOption = "--web-entry";
+constexpr std::string_view kWebEntryPrefix = "--web-entry=";
+constexpr std::string_view kWebPortOption = "--web-port";
+constexpr std::string_view kWebPortPrefix = "--web-port=";
+constexpr std::string_view kBridgePortOption = "--bridge-port";
+constexpr std::string_view kBridgePortPrefix = "--bridge-port=";
+constexpr std::string_view kPrintPlanOption = "--print-plan";
 
 bool parsePositiveInteger(std::string_view text, int &value)
 {
@@ -39,11 +48,33 @@ bool parsePositiveInteger(std::string_view text, int &value)
     return true;
 }
 
+bool parsePort(std::string_view text, std::uint16_t &port)
+{
+    if (text.empty()) {
+        return false;
+    }
+
+    unsigned parsed = 0;
+    const char *begin = text.data();
+    const char *end = text.data() + text.size();
+    const auto result = std::from_chars(begin, end, parsed);
+    if (result.ec != std::errc{} || result.ptr != end || parsed < 1 || parsed > 65535) {
+        return false;
+    }
+
+    port = static_cast<std::uint16_t>(parsed);
+    return true;
+}
+
 } // namespace
 
 CliParseResult parseCommandLine(const std::vector<std::string> &arguments)
 {
     CliParseResult result;
+    bool webEntryGiven = false;
+    bool webPortGiven = false;
+    bool bridgePortGiven = false;
+    bool printPlanGiven = false;
 
     size_t index = 0;
     while (index < arguments.size()) {
@@ -77,6 +108,10 @@ CliParseResult parseCommandLine(const std::vector<std::string> &arguments)
         }
 
         if (argument == kTargetOption) {
+            if (result.options.web()) {
+                result.error = "--web-root and --target cannot be combined";
+                return result;
+            }
             if (result.options.relay()) {
                 result.error = "--listen and --target cannot be combined";
                 return result;
@@ -102,6 +137,10 @@ CliParseResult parseCommandLine(const std::vector<std::string> &arguments)
         }
 
         if (argument.rfind(kListenPrefix, 0) == 0) {
+            if (result.options.web()) {
+                result.error = "--web-root and --listen cannot be combined";
+                return result;
+            }
             if (!result.options.listenHost.empty()) {
                 result.error = "--listen may be given only once";
                 return result;
@@ -155,6 +194,10 @@ CliParseResult parseCommandLine(const std::vector<std::string> &arguments)
         }
 
         if (argument.rfind(kTargetsPrefix, 0) == 0) {
+            if (result.options.web()) {
+                result.error = "--web-root and --targets cannot be combined";
+                return result;
+            }
             const std::size_t valueStart = kTargetsOption.size() + 1;
             const std::string_view value(argument.data() + valueStart,
                                          argument.size() - valueStart);
@@ -168,7 +211,145 @@ CliParseResult parseCommandLine(const std::vector<std::string> &arguments)
             continue;
         }
 
+        if (argument == kWebRootOption) {
+            result.error = "--web-root requires a directory written as --web-root=DIR";
+            return result;
+        }
+
+        if (argument.rfind(kWebRootPrefix, 0) == 0) {
+            if (!result.options.targetsPaths.empty()) {
+                result.error = "--web-root and --targets cannot be combined";
+                return result;
+            }
+            if (result.options.relay()) {
+                result.error = "--web-root and --listen cannot be combined";
+                return result;
+            }
+            if (!result.options.target.empty()) {
+                result.error = "--web-root and --target cannot be combined";
+                return result;
+            }
+            if (!result.options.webRoot.empty()) {
+                result.error = "--web-root may be given only once";
+                return result;
+            }
+
+            const std::size_t valueStart = kWebRootOption.size() + 1;
+            const std::string_view value(argument.data() + valueStart,
+                                         argument.size() - valueStart);
+            if (value.empty()) {
+                result.error = "--web-root requires a directory written as --web-root=DIR";
+                return result;
+            }
+            result.options.webRoot.assign(value);
+            index += 1;
+            continue;
+        }
+
+        if (argument == kWebEntryOption) {
+            result.error = "--web-entry requires a page name written as --web-entry=NAME";
+            return result;
+        }
+
+        if (argument.rfind(kWebEntryPrefix, 0) == 0) {
+            if (webEntryGiven) {
+                result.error = "--web-entry may be given only once";
+                return result;
+            }
+
+            const std::size_t valueStart = kWebEntryOption.size() + 1;
+            const std::string_view value(argument.data() + valueStart,
+                                         argument.size() - valueStart);
+            if (value.empty()) {
+                result.error = "--web-entry requires a page name written as --web-entry=NAME";
+                return result;
+            }
+            result.options.webEntry.assign(value);
+            webEntryGiven = true;
+            index += 1;
+            continue;
+        }
+
+        if (argument == kWebPortOption) {
+            result.error = "--web-port requires a port written as --web-port=PORT";
+            return result;
+        }
+
+        if (argument.rfind(kWebPortPrefix, 0) == 0) {
+            if (webPortGiven) {
+                result.error = "--web-port may be given only once";
+                return result;
+            }
+
+            const std::size_t valueStart = kWebPortOption.size() + 1;
+            const std::string_view value(argument.data() + valueStart,
+                                         argument.size() - valueStart);
+            if (!parsePort(value, result.options.webPort)) {
+                result.error = "invalid value for --web-port: expected 1..65535";
+                return result;
+            }
+            webPortGiven = true;
+            index += 1;
+            continue;
+        }
+
+        if (argument == kBridgePortOption) {
+            result.error = "--bridge-port requires a port written as --bridge-port=PORT";
+            return result;
+        }
+
+        if (argument.rfind(kBridgePortPrefix, 0) == 0) {
+            if (bridgePortGiven) {
+                result.error = "--bridge-port may be given only once";
+                return result;
+            }
+
+            const std::size_t valueStart = kBridgePortOption.size() + 1;
+            const std::string_view value(argument.data() + valueStart,
+                                         argument.size() - valueStart);
+            if (!parsePort(value, result.options.bridgePort)) {
+                result.error = "invalid value for --bridge-port: expected 1..65535";
+                return result;
+            }
+            bridgePortGiven = true;
+            index += 1;
+            continue;
+        }
+
+        if (argument == kPrintPlanOption) {
+            if (printPlanGiven) {
+                result.error = "--print-plan may be given only once";
+                return result;
+            }
+            result.options.printPlan = true;
+            printPlanGiven = true;
+            index += 1;
+            continue;
+        }
+
         result.error = "unexpected argument: " + argument;
+        return result;
+    }
+
+    if (webEntryGiven && result.options.webRoot.empty()) {
+        result.error = "--web-entry requires --web-root=DIR";
+        return result;
+    }
+    if (webPortGiven && !result.options.web()) {
+        result.error = "--web-port requires --web-root=DIR";
+        return result;
+    }
+    if (bridgePortGiven && !result.options.web()) {
+        result.error = "--bridge-port requires --web-root=DIR";
+        return result;
+    }
+    if (printPlanGiven && !result.options.web()) {
+        result.error = "--print-plan requires --web-root=DIR";
+        return result;
+    }
+
+    if (result.options.web()) {
+        result.ok = true;
         return result;
     }
 
@@ -195,8 +376,8 @@ CliParseResult parseCommandLine(const std::vector<std::string> &arguments)
         return result;
     }
 
-    result.error = "missing --target <executable>, --listen=HOST:PORT or "
-                   "--connect=HOST:PORT --targets=PATH";
+    result.error = "missing --target <executable>, --listen=HOST:PORT, "
+                   "--connect=HOST:PORT --targets=PATH or --web-root=DIR";
     return result;
 }
 
@@ -205,7 +386,9 @@ std::string usageLine()
     return "usage: sdl3mcp [--startup-timeout-ms N] [--terminate-timeout-ms N] "
            "(--target <executable> [app args...] | --listen=HOST:PORT | "
            "--connect=HOST:PORT --targets=PATH [--targets=PATH ...] "
-           "[--listen=HOST:PORT])";
+           "[--listen=HOST:PORT] | --web-root=DIR [--web-entry=NAME] "
+           "[--web-port=PORT] [--bridge-port=PORT] [--connect=HOST:PORT] "
+           "[--print-plan])";
 }
 
 } // namespace sdl3mcp

@@ -30,6 +30,7 @@ events into the queue and hands the pixels you give it back to the agent.
 - [Supervisor](#supervisor)
 - [Relay](#relay)
 - [Spawner](#spawner)
+- [Web spawner](#web-spawner)
 - [Public API](#public-api)
 - [Frame pipeline](#frame-pipeline)
 - [Input model](#input-model)
@@ -1270,6 +1271,113 @@ pair: a relay on 7333 and a spawner on the same machine.
 build/sdl3mcp --connect=127.0.0.1:7333 --targets=./targets.json
 ```
 
+## Web spawner
+
+A browser build cannot open a TCP socket, so a web run is a page server, a
+WebSocket bridge and a browser. `sdl3mcp --web-root=DIR` is the executable's
+fourth mode: it composes those three processes from one launch plan, starts them
+in order, and supervises them. It owns no MCP session of its own — the client
+still points at a relay, and the page reaches that relay through the local
+bridge.
+
+### Web spawner command line
+
+```text
+sdl3mcp --web-root=DIR [--web-entry=NAME] [--web-port=N] [--bridge-port=N] [--connect=HOST:PORT] [--print-plan]
+```
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--web-root=DIR` | *(required)* | Directory served as the page root; it must hold the entry. |
+| `--web-entry=NAME` | `catalyst.html` | Page inside the root, appended to the spawned URL. |
+| `--web-port=N` | `18080` | Port the page server binds on `127.0.0.1`. |
+| `--bridge-port=N` | `18081` | Port the WebSocket bridge binds on `127.0.0.1`; it must differ from `--web-port`. |
+| `--connect=HOST:PORT` | `127.0.0.1:7777` | Relay the bridge dials. |
+| `--print-plan` | off | Print the resolved plan and start nothing. |
+
+`--web-root` may be given once and cannot be combined with `--target`,
+`--listen` or `--targets`; `--web-entry`, `--web-port`, `--bridge-port` and
+`--print-plan` require it. Here `--connect` names the relay behind the bridge
+rather than a spawner connection, so no targets file is involved.
+`--print-plan` runs the same preflight and browser resolution as a launch,
+prints `browser=`, `profile=` and one `command:` line per child, and starts none
+of them. It creates no profile: the `profile=` line names the
+`sdl3mcp-web-XXXXXX` template a launch would fill, because the directory belongs
+to the run that starts children and removes it, and a printing process has no
+run to clean up.
+
+```sh
+build/sdl3mcp --web-root=build/web --connect=127.0.0.1:7777
+```
+
+### What it launches
+
+The plan holds exactly three commands, in launch order:
+
+1. the page server, over the build tree:
+   `python3 -m http.server PAGE_PORT --bind 127.0.0.1 --directory ROOT`;
+2. the WebSocket bridge:
+   `websocat --binary ws-l:127.0.0.1:BRIDGE_PORT tcp:RELAY`;
+3. the browser:
+   `FIREFOX --no-remote --new-instance --profile PROFILE --width 1280 --height 800 http://127.0.0.1:PAGE_PORT/ENTRY?mcp=127.0.0.1:BRIDGE_PORT`.
+
+The page server and the bridge start first, then the launcher waits up to one
+second for both loopback ports to accept a connection, and only then starts the
+browser. A child that exits during that wait fails the run and is named; an
+expired wait only warns, and the browser is started against a server that is
+still coming up. Every child is forked into its own process group, so one
+signal reaches whatever it forks as well.
+
+### Prerequisites
+
+All of these are checked before anything is forked or bound, so a missing piece
+is one sentence instead of a half-launched stack holding a port:
+
+- `websocat` on `PATH` — install it with `cargo install websocat`;
+- `python3` on `PATH` — install python3, which serves the page with
+  `-m http.server`;
+- `--web-root` that is a directory containing `--web-entry`;
+- a Firefox binary: `$BROWSER` when it names `firefox` or `firefox-esr`,
+  otherwise `firefox` then `firefox-esr` on `PATH` — install firefox. There is
+  no fallback browser, because any other browser would open the page in the
+  user's own session instead of the isolated one.
+
+### Isolation
+
+The browser is started with `--no-remote --new-instance` and `--profile`
+pointing at a fresh `sdl3mcp-web-XXXXXX` directory under `$XDG_RUNTIME_DIR` (or
+`/tmp` when that is unset or not writable), so the run can neither inherit nor
+join a browser the user already has open. The profile's `user.js` carries
+`dom.allow_scripts_to_close_windows`, which is what lets the page close its own
+window when the application shuts down, plus the preferences that keep a fresh
+profile from stopping on first-run prompts. That preference can only be set in a
+profile we own, never in the user's own settings, and the directory is removed
+when the run ends.
+
+### Ending a web run
+
+The application starts the chain: `sdl_terminate` reaches it through the relay
+and the bridge, its loop handles the `SDL_EVENT_QUIT` that produces, and
+`SDL3MCP_AppShutdown` closes the page, which exits the browser. The launcher
+polls all three children; a browser that exits with status 0 has closed its own
+page, so that ends the run cleanly. The launcher then stops the rest with SIGTERM
+to their process groups, waits one grace period, sends SIGKILL to anything still
+alive, and removes the throwaway profile. A browser that exits with a non-zero
+status, and a page server or bridge that exits at any point, fail the run with a
+message naming the child and its status; the same stop and removal follow, and
+the launcher exits 1. When Firefox refuses to close the window the run does not
+end on its own; a stop request then takes the browser down through that same
+grace-then-SIGKILL path. SIGINT and SIGTERM take the stop path too, and exit 0.
+
+### The page query
+
+The spawned URL carries `?mcp=127.0.0.1:BRIDGE_PORT`: the bridge's WebSocket
+endpoint, which is how the browser build is told where to dial. The page reads
+the `mcp` parameter from `window.location.search`, percent-decodes it, and hands
+the same `--mcp=<value>` argument to the configuration parser every other build
+uses, so the endpoint keeps one grammar (`HOST:PORT`, or `[V6]:PORT`) on both
+platforms. A page opened without the parameter starts no MCP server at all.
+
 ## Public API
 
 The complete public surface:
@@ -2203,7 +2311,8 @@ Test suite (all registered with CTest): `header_c`, `header_cpp`,
 `replay_tests`, `mouse_tests`, `queue_tests`, `app_input_tests`,
 `input_tool_tests`, `capture_tests`, `capture_tool_tests`, `terminate_tests`,
 `json_rpc_tests`, `session_tests`, `frame_tests`, `info_tests`, `server_tests`,
-and six `lifecycle_*` scenarios. With `SDL3MCP_BUILD_CLI=ON` it also adds
+`responder_tests`, and six `lifecycle_*` scenarios. With
+`SDL3MCP_BUILD_CLI=ON` it also adds
 `supervisor_png_tests` for the moved presentation code, `supervisor_tests`,
 which drives the real supervisor binary against a fake MCP child, `relay_tests`,
 which drives `--listen` against a fake application over TCP, `spawner_tests`,

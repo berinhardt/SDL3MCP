@@ -8,9 +8,10 @@
   CRLF stripping, the Stopped status, and the 50 ms poll wake-up after stop().
 */
 
-#include "server.hpp"
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include <doctest/doctest.h>
 
-#include "test_util.hpp"
+#include "server.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -177,7 +178,7 @@ void waitForFailure(const Server &server, int timeoutMs = kFailureTimeoutMs)
     CHECK(server.failed());
 }
 
-void testInitialize()
+TEST_CASE("initialize")
 {
     Harness harness;
     harness.send(R"({"jsonrpc":"2.0","id":1,"method":"initialize",)"
@@ -196,7 +197,7 @@ void testInitialize()
     CHECK(!harness.server.failed());
 }
 
-void testNotificationsAndToolList()
+TEST_CASE("notifications and tool list")
 {
     Harness harness;
     harness.initialize();
@@ -223,7 +224,7 @@ void testNotificationsAndToolList()
     CHECK(!harness.server.failed());
 }
 
-void testInvalidInputThenContinues()
+TEST_CASE("invalid input then continues")
 {
     Harness harness;
     harness.initialize();
@@ -246,7 +247,7 @@ void testInvalidInputThenContinues()
     CHECK(!harness.server.failed());
 }
 
-void testUnknownMethod()
+TEST_CASE("unknown method")
 {
     Harness harness;
     harness.initialize();
@@ -258,7 +259,7 @@ void testUnknownMethod()
     CHECK(!harness.server.failed());
 }
 
-void testToolCall()
+TEST_CASE("tool call")
 {
     Harness harness;
     harness.initialize();
@@ -279,7 +280,7 @@ void testToolCall()
     CHECK(!harness.server.failed());
 }
 
-void testEofExitsCleanly()
+TEST_CASE("eof exits cleanly")
 {
     Harness harness;
     harness.initialize();
@@ -291,7 +292,7 @@ void testEofExitsCleanly()
     CHECK(harness.server.lastError().empty());
 }
 
-void testLineLimit()
+TEST_CASE("line limit")
 {
     constexpr size_t kMaxLineBytes = 64;
     Harness harness(kMaxLineBytes);
@@ -306,7 +307,7 @@ void testLineLimit()
     CHECK(error.find("64") != std::string::npos);
 }
 
-void testWriteFailure()
+TEST_CASE("write failure")
 {
     Harness harness;
     harness.initialize();
@@ -320,7 +321,7 @@ void testWriteFailure()
     CHECK(!harness.server.lastError().empty());
 }
 
-void testTransportFraming()
+TEST_CASE("transport framing")
 {
     Pipe input;
     Pipe output;
@@ -343,7 +344,7 @@ void testTransportFraming()
     CHECK(std::string_view(written, 6) == "hello\n");
 }
 
-void testTransportEofAndStop()
+TEST_CASE("transport eof and stop")
 {
     Pipe input;
     Pipe output;
@@ -381,21 +382,3 @@ void testTransportEofAndStop()
 }
 
 } // namespace
-
-int main()
-{
-    testTransportFraming();
-    testTransportEofAndStop();
-
-    testInitialize();
-    testNotificationsAndToolList();
-    testInvalidInputThenContinues();
-    testUnknownMethod();
-    testToolCall();
-    testEofExitsCleanly();
-    testLineLimit();
-    testWriteFailure();
-
-    std::puts("server_tests passed");
-    return 0;
-}

@@ -15,9 +15,10 @@
   conversion, or a stray newline cannot hide behind a valid-looking header.
 */
 
-#include <SDL3MCP/SDL3MCP.h>
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include <doctest/doctest.h>
 
-#include "test_util.hpp"
+#include <SDL3MCP/SDL3MCP.h>
 
 #include <nlohmann/json.hpp>
 
@@ -348,7 +349,7 @@ void writeFrameIfRequested(SDL_Renderer *renderer, SDL_Window *window)
 
 } // namespace
 
-int main()
+TEST_CASE("the capture tool returns the app's frame end to end")
 {
     /* The CTest environment sets this too; the hint makes a manual run work. */
     (void)SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "dummy");
@@ -415,7 +416,4 @@ int main()
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_Quit();
-
-    std::printf("capture_tool_tests passed\n");
-    return 0;
 }

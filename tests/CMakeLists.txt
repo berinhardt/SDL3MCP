@@ -14,277 +14,133 @@ target_compile_features(sdl3mcp_test_header_c PRIVATE c_std_11)
 target_link_libraries(sdl3mcp_test_header_c PRIVATE SDL3MCP::SDL3MCP)
 add_test(NAME header_c COMMAND sdl3mcp_test_header_c)
 
-add_executable(sdl3mcp_test_header_cpp header_cpp.cpp)
-target_compile_features(sdl3mcp_test_header_cpp PRIVATE cxx_std_20)
-target_link_libraries(sdl3mcp_test_header_cpp PRIVATE SDL3MCP::SDL3MCP)
-add_test(NAME header_cpp COMMAND sdl3mcp_test_header_cpp)
-
-add_executable(sdl3mcp_test_configuration configuration_tests.cpp)
-target_compile_features(sdl3mcp_test_configuration PRIVATE cxx_std_20)
-target_include_directories(sdl3mcp_test_configuration PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/../src"
-)
-target_link_libraries(sdl3mcp_test_configuration PRIVATE
-    ${SDL3MCP_TEST_INTERNAL_LIBRARY}
-    SDL3::SDL3
-)
-add_test(NAME configuration_tests COMMAND sdl3mcp_test_configuration)
-
-add_executable(sdl3mcp_test_keymap keymap_tests.cpp)
-target_compile_features(sdl3mcp_test_keymap PRIVATE cxx_std_20)
-target_include_directories(sdl3mcp_test_keymap PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/../src"
-)
-target_link_libraries(sdl3mcp_test_keymap PRIVATE
-    ${SDL3MCP_TEST_INTERNAL_LIBRARY}
-    SDL3::SDL3
-)
-add_test(NAME keymap_tests COMMAND sdl3mcp_test_keymap)
-
-add_executable(sdl3mcp_test_input input_tests.cpp)
-target_compile_features(sdl3mcp_test_input PRIVATE cxx_std_20)
-target_include_directories(sdl3mcp_test_input PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/../src"
-)
-target_link_libraries(sdl3mcp_test_input PRIVATE
-    ${SDL3MCP_TEST_INTERNAL_LIBRARY}
-    SDL3::SDL3
-)
-add_test(NAME input_tests COMMAND sdl3mcp_test_input)
-
-add_executable(sdl3mcp_test_input_json input_json_tests.cpp)
-target_compile_features(sdl3mcp_test_input_json PRIVATE cxx_std_20)
-target_include_directories(sdl3mcp_test_input_json PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/../src"
-)
-target_link_libraries(sdl3mcp_test_input_json PRIVATE
-    ${SDL3MCP_TEST_INTERNAL_LIBRARY}
-    SDL3::SDL3
-    nlohmann_json::nlohmann_json
-)
-add_test(NAME input_json_tests COMMAND sdl3mcp_test_input_json)
-
-add_executable(sdl3mcp_test_replay replay_tests.cpp)
-target_compile_features(sdl3mcp_test_replay PRIVATE cxx_std_20)
-target_include_directories(sdl3mcp_test_replay PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/../src"
-)
-target_link_libraries(sdl3mcp_test_replay PRIVATE
-    ${SDL3MCP_TEST_INTERNAL_LIBRARY}
-    SDL3::SDL3
-)
-add_test(NAME replay_tests COMMAND sdl3mcp_test_replay)
-
-add_executable(sdl3mcp_test_mouse mouse_tests.cpp)
-target_compile_features(sdl3mcp_test_mouse PRIVATE cxx_std_20)
-target_include_directories(sdl3mcp_test_mouse PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/../src"
-)
-target_link_libraries(sdl3mcp_test_mouse PRIVATE
-    ${SDL3MCP_TEST_INTERNAL_LIBRARY}
-    SDL3::SDL3
-)
-add_test(NAME mouse_tests COMMAND sdl3mcp_test_mouse)
-
 find_package(Threads REQUIRED)
 
-add_executable(sdl3mcp_test_connect connect_tests.cpp)
-target_compile_features(sdl3mcp_test_connect PRIVATE cxx_std_20)
-target_include_directories(sdl3mcp_test_connect PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/../src"
-)
-target_link_libraries(sdl3mcp_test_connect PRIVATE
-    ${SDL3MCP_TEST_INTERNAL_LIBRARY}
-    SDL3::SDL3
-    Threads::Threads
-)
-add_test(NAME connect_tests COMMAND sdl3mcp_test_connect)
+# One doctest suite is one executable, so a failing case is reported by doctest
+# and the remaining cases still run, unlike a hand-rolled main that aborts at
+# the first assertion. The private src/ include and the object-library link let
+# a suite reach the implementation the public header hides. A suite named
+# <family>_tests builds the executable sdl3mcp_test_<family>; the name without
+# the suffix, as for header_cpp, keeps the executable name as it is.
+#
+# Options:
+#   LIBRARY <target>  library or object library to link instead of the internal
+#                     one, for suites that only use the public C API.
+#   LIBS <targets>    extra link libraries such as nlohmann_json or Threads.
+#   INCLUDES <dirs>   extra include directories beyond ../src.
+#   NO_TEST           create the executable without registering a test, for a
+#                     suite that needs its own CTest command or registers
+#                     several tests, as lifecycle_tests does.
+function(sdl3mcp_add_test sdl3mcp_test_name sdl3mcp_test_source)
+    cmake_parse_arguments(sdl3mcp_test "NO_TEST" "LIBRARY" "LIBS;INCLUDES" ${ARGN})
 
-add_executable(sdl3mcp_test_queue queue_tests.cpp)
-target_compile_features(sdl3mcp_test_queue PRIVATE cxx_std_20)
-target_include_directories(sdl3mcp_test_queue PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/../src"
-)
-target_link_libraries(sdl3mcp_test_queue PRIVATE
-    ${SDL3MCP_TEST_INTERNAL_LIBRARY}
-    SDL3::SDL3
-    Threads::Threads
-)
-add_test(NAME queue_tests COMMAND sdl3mcp_test_queue)
+    string(REGEX REPLACE "_tests$" "" sdl3mcp_test_family "${sdl3mcp_test_name}")
+    set(sdl3mcp_test_target "sdl3mcp_test_${sdl3mcp_test_family}")
 
-add_executable(sdl3mcp_test_app_input app_input_tests.cpp)
-target_compile_features(sdl3mcp_test_app_input PRIVATE cxx_std_20)
-target_include_directories(sdl3mcp_test_app_input PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/../src"
-)
-target_link_libraries(sdl3mcp_test_app_input PRIVATE
-    ${SDL3MCP_TEST_INTERNAL_LIBRARY}
-    SDL3::SDL3
-    nlohmann_json::nlohmann_json
-    Threads::Threads
-)
-add_test(NAME app_input_tests COMMAND sdl3mcp_test_app_input)
+    if(NOT sdl3mcp_test_LIBRARY)
+        set(sdl3mcp_test_LIBRARY ${SDL3MCP_TEST_INTERNAL_LIBRARY})
+    endif()
 
-add_executable(sdl3mcp_test_input_tool input_tool_tests.cpp)
-target_compile_features(sdl3mcp_test_input_tool PRIVATE cxx_std_20)
-target_include_directories(sdl3mcp_test_input_tool PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/../src"
-)
-target_link_libraries(sdl3mcp_test_input_tool PRIVATE
-    SDL3MCP::SDL3MCP
-    SDL3::SDL3
-    nlohmann_json::nlohmann_json
-    Threads::Threads
-)
-add_test(NAME input_tool_tests COMMAND sdl3mcp_test_input_tool)
+    add_executable(${sdl3mcp_test_target} ${sdl3mcp_test_source})
+    target_compile_features(${sdl3mcp_test_target} PRIVATE cxx_std_20)
+    target_include_directories(${sdl3mcp_test_target} PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+        ${sdl3mcp_test_INCLUDES}
+    )
+    target_link_libraries(${sdl3mcp_test_target} PRIVATE
+        ${sdl3mcp_test_LIBRARY}
+        SDL3::SDL3
+        doctest::doctest
+        ${sdl3mcp_test_LIBS}
+    )
+    if(NOT sdl3mcp_test_NO_TEST)
+        add_test(NAME ${sdl3mcp_test_name} COMMAND ${sdl3mcp_test_target})
+    endif()
+endfunction()
+
+sdl3mcp_add_test(header_cpp header_cpp.cpp)
+
+sdl3mcp_add_test(configuration_tests configuration_tests.cpp)
+
+sdl3mcp_add_test(keymap_tests keymap_tests.cpp)
+
+sdl3mcp_add_test(input_tests input_tests.cpp)
+
+sdl3mcp_add_test(input_json_tests input_json_tests.cpp
+    LIBS nlohmann_json::nlohmann_json)
+
+sdl3mcp_add_test(replay_tests replay_tests.cpp)
+
+sdl3mcp_add_test(mouse_tests mouse_tests.cpp)
+
+sdl3mcp_add_test(connect_tests connect_tests.cpp
+    LIBS Threads::Threads)
+
+sdl3mcp_add_test(queue_tests queue_tests.cpp
+    LIBS Threads::Threads)
+
+sdl3mcp_add_test(app_input_tests app_input_tests.cpp
+    LIBS nlohmann_json::nlohmann_json Threads::Threads)
+
+sdl3mcp_add_test(input_tool_tests input_tool_tests.cpp
+    LIBRARY SDL3MCP::SDL3MCP
+    LIBS nlohmann_json::nlohmann_json Threads::Threads)
 # SDL's dummy video driver keeps process-wide allocations the test cannot free,
 # so leak detection is scoped off for the dummy-driver integration tests only.
 # Every other test runs with ASan leak detection on.
 set_tests_properties(input_tool_tests PROPERTIES ENVIRONMENT
     "SDL_VIDEODRIVER=dummy;ASAN_OPTIONS=detect_leaks=0:halt_on_error=1")
 
-add_executable(sdl3mcp_test_text_input text_input_tests.cpp)
-target_compile_features(sdl3mcp_test_text_input PRIVATE cxx_std_20)
-target_include_directories(sdl3mcp_test_text_input PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/../src"
-)
-target_link_libraries(sdl3mcp_test_text_input PRIVATE
-    SDL3MCP::SDL3MCP
-    SDL3::SDL3
-    nlohmann_json::nlohmann_json
-    Threads::Threads
-)
-add_test(NAME text_input_tests COMMAND sdl3mcp_test_text_input)
+sdl3mcp_add_test(text_input_tests text_input_tests.cpp
+    LIBRARY SDL3MCP::SDL3MCP
+    LIBS nlohmann_json::nlohmann_json Threads::Threads)
 set_tests_properties(text_input_tests PROPERTIES ENVIRONMENT
     "SDL_VIDEODRIVER=dummy;ASAN_OPTIONS=detect_leaks=0:halt_on_error=1")
 
-add_executable(sdl3mcp_test_capture capture_tests.cpp)
-target_compile_features(sdl3mcp_test_capture PRIVATE cxx_std_20)
-target_include_directories(sdl3mcp_test_capture PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/../src"
-)
-target_link_libraries(sdl3mcp_test_capture PRIVATE
-    ${SDL3MCP_TEST_INTERNAL_LIBRARY}
-    SDL3::SDL3
-    nlohmann_json::nlohmann_json
-    Threads::Threads
-)
-add_test(NAME capture_tests COMMAND sdl3mcp_test_capture)
+sdl3mcp_add_test(capture_tests capture_tests.cpp
+    LIBS nlohmann_json::nlohmann_json Threads::Threads)
 
-add_executable(sdl3mcp_test_capture_tool capture_tool_tests.cpp)
-target_compile_features(sdl3mcp_test_capture_tool PRIVATE cxx_std_20)
-target_include_directories(sdl3mcp_test_capture_tool PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/../src"
-)
-target_link_libraries(sdl3mcp_test_capture_tool PRIVATE
-    SDL3MCP::SDL3MCP
-    SDL3::SDL3
-    nlohmann_json::nlohmann_json
-    Threads::Threads
-)
-add_test(NAME capture_tool_tests COMMAND sdl3mcp_test_capture_tool)
+sdl3mcp_add_test(capture_tool_tests capture_tool_tests.cpp
+    LIBRARY SDL3MCP::SDL3MCP
+    LIBS nlohmann_json::nlohmann_json Threads::Threads)
 set_tests_properties(capture_tool_tests PROPERTIES ENVIRONMENT
     "SDL_VIDEODRIVER=dummy;ASAN_OPTIONS=detect_leaks=0:halt_on_error=1")
 
-add_executable(sdl3mcp_test_frame_size frame_size_tests.cpp)
-target_compile_features(sdl3mcp_test_frame_size PRIVATE cxx_std_20)
-target_link_libraries(sdl3mcp_test_frame_size PRIVATE
-    SDL3MCP::SDL3MCP
-    SDL3::SDL3
-    nlohmann_json::nlohmann_json
-    Threads::Threads
-)
-add_test(NAME frame_size_tests COMMAND sdl3mcp_test_frame_size)
+sdl3mcp_add_test(frame_size_tests frame_size_tests.cpp
+    LIBRARY SDL3MCP::SDL3MCP
+    LIBS nlohmann_json::nlohmann_json Threads::Threads)
 set_tests_properties(frame_size_tests PROPERTIES ENVIRONMENT
     "SDL_VIDEODRIVER=dummy;ASAN_OPTIONS=detect_leaks=0:halt_on_error=1")
 
-add_executable(sdl3mcp_test_terminate terminate_tests.cpp)
-target_compile_features(sdl3mcp_test_terminate PRIVATE cxx_std_20)
-target_include_directories(sdl3mcp_test_terminate PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/../src"
-)
-target_link_libraries(sdl3mcp_test_terminate PRIVATE
-    SDL3MCP::SDL3MCP
-    SDL3::SDL3
-    nlohmann_json::nlohmann_json
-    Threads::Threads
-)
-add_test(NAME terminate_tests COMMAND sdl3mcp_test_terminate)
+sdl3mcp_add_test(terminate_tests terminate_tests.cpp
+    LIBRARY SDL3MCP::SDL3MCP
+    LIBS nlohmann_json::nlohmann_json Threads::Threads)
 set_tests_properties(terminate_tests PROPERTIES ENVIRONMENT
     "SDL_VIDEODRIVER=dummy;ASAN_OPTIONS=detect_leaks=0:halt_on_error=1")
 
-add_executable(sdl3mcp_test_json_rpc json_rpc_tests.cpp)
-target_compile_features(sdl3mcp_test_json_rpc PRIVATE cxx_std_20)
-target_include_directories(sdl3mcp_test_json_rpc PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/../src"
-)
-target_link_libraries(sdl3mcp_test_json_rpc PRIVATE
-    ${SDL3MCP_TEST_INTERNAL_LIBRARY}
-    SDL3::SDL3
-    nlohmann_json::nlohmann_json
-)
-add_test(NAME json_rpc_tests COMMAND sdl3mcp_test_json_rpc)
+sdl3mcp_add_test(json_rpc_tests json_rpc_tests.cpp
+    LIBS nlohmann_json::nlohmann_json)
 
-add_executable(sdl3mcp_test_session session_tests.cpp)
-target_compile_features(sdl3mcp_test_session PRIVATE cxx_std_20)
-target_include_directories(sdl3mcp_test_session PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/../src"
-)
-target_link_libraries(sdl3mcp_test_session PRIVATE
-    ${SDL3MCP_TEST_INTERNAL_LIBRARY}
-    SDL3::SDL3
-    nlohmann_json::nlohmann_json
-)
-add_test(NAME session_tests COMMAND sdl3mcp_test_session)
+sdl3mcp_add_test(session_tests session_tests.cpp
+    LIBS nlohmann_json::nlohmann_json)
 
-add_executable(sdl3mcp_test_frame frame_tests.cpp)
-target_compile_features(sdl3mcp_test_frame PRIVATE cxx_std_20)
-target_include_directories(sdl3mcp_test_frame PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/../src"
-)
-target_link_libraries(sdl3mcp_test_frame PRIVATE
-    ${SDL3MCP_TEST_INTERNAL_LIBRARY}
-    SDL3::SDL3
-)
-add_test(NAME frame_tests COMMAND sdl3mcp_test_frame)
+sdl3mcp_add_test(frame_tests frame_tests.cpp)
 
-add_executable(sdl3mcp_test_info info_tests.cpp)
-target_compile_features(sdl3mcp_test_info PRIVATE cxx_std_20)
-target_include_directories(sdl3mcp_test_info PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/../src"
-)
-target_link_libraries(sdl3mcp_test_info PRIVATE
-    ${SDL3MCP_TEST_INTERNAL_LIBRARY}
-    SDL3::SDL3
-    nlohmann_json::nlohmann_json
-)
-add_test(NAME info_tests COMMAND sdl3mcp_test_info)
+sdl3mcp_add_test(info_tests info_tests.cpp
+    LIBS nlohmann_json::nlohmann_json)
 
-add_executable(sdl3mcp_test_server server_tests.cpp)
-target_compile_features(sdl3mcp_test_server PRIVATE cxx_std_20)
-target_include_directories(sdl3mcp_test_server PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/../src"
-)
-target_link_libraries(sdl3mcp_test_server PRIVATE
-    ${SDL3MCP_TEST_INTERNAL_LIBRARY}
-    SDL3::SDL3
-    nlohmann_json::nlohmann_json
-    Threads::Threads
-)
-add_test(NAME server_tests COMMAND sdl3mcp_test_server)
+sdl3mcp_add_test(server_tests server_tests.cpp
+    LIBS nlohmann_json::nlohmann_json Threads::Threads)
 
-add_executable(sdl3mcp_test_lifecycle lifecycle_tests.cpp)
-target_compile_features(sdl3mcp_test_lifecycle PRIVATE cxx_std_20)
-target_include_directories(sdl3mcp_test_lifecycle PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/../src"
-)
-target_link_libraries(sdl3mcp_test_lifecycle PRIVATE
-    SDL3MCP::SDL3MCP
-    SDL3::SDL3
-    Threads::Threads
-    nlohmann_json::nlohmann_json
-)
-# One lifecycle per process, so every scenario is its own CTest.
+sdl3mcp_add_test(responder_tests responder_tests.cpp
+    LIBS nlohmann_json::nlohmann_json)
+
+# One lifecycle per process, so every scenario is its own CTest. The executable
+# selects its case from the scenario argument.
+sdl3mcp_add_test(lifecycle_tests lifecycle_tests.cpp
+    LIBRARY SDL3MCP::SDL3MCP
+    LIBS Threads::Threads nlohmann_json::nlohmann_json
+    NO_TEST)
 foreach(scenario none help version error uninitialized stdio_pipes)
     add_test(NAME lifecycle_${scenario}
              COMMAND sdl3mcp_test_lifecycle ${scenario})
@@ -303,20 +159,10 @@ endif()
 # The supervisor tests drive the real executable over pipes, with a fake child
 # that speaks MCP without SDL, so no window or video driver is involved.
 if(SDL3MCP_BUILD_CLI)
-    add_executable(sdl3mcp_test_supervisor_png supervisor_png_tests.cpp)
-    target_compile_features(sdl3mcp_test_supervisor_png PRIVATE cxx_std_20)
-    target_include_directories(sdl3mcp_test_supervisor_png PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/../src"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../supervisor"
-    )
-    target_link_libraries(sdl3mcp_test_supervisor_png PRIVATE
-        sdl3mcp_supervisor_objects
-        sdl3mcp_wire_objects
-        sdl3mcp_app_objects
-        SDL3::SDL3
-        Threads::Threads
-    )
-    add_test(NAME supervisor_png_tests COMMAND sdl3mcp_test_supervisor_png)
+    sdl3mcp_add_test(supervisor_png_tests supervisor_png_tests.cpp
+        LIBRARY sdl3mcp_supervisor_objects
+        LIBS sdl3mcp_wire_objects sdl3mcp_app_objects SDL3::SDL3 Threads::Threads
+        INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/../supervisor")
 
     add_executable(sdl3mcp_fake_child supervisor_fake_child.cpp)
     target_compile_features(sdl3mcp_fake_child PRIVATE cxx_std_20)
@@ -329,19 +175,11 @@ if(SDL3MCP_BUILD_CLI)
         Threads::Threads
     )
 
-    add_executable(sdl3mcp_test_supervisor supervisor_tests.cpp)
-    target_compile_features(sdl3mcp_test_supervisor PRIVATE cxx_std_20)
-    target_include_directories(sdl3mcp_test_supervisor PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/../src"
-    )
-    target_link_libraries(sdl3mcp_test_supervisor PRIVATE
-        sdl3mcp_supervisor_objects
-        sdl3mcp_wire_objects
-        sdl3mcp_app_objects
-        SDL3::SDL3
-        nlohmann_json::nlohmann_json
-        Threads::Threads
-    )
+    sdl3mcp_add_test(supervisor_tests supervisor_tests.cpp
+        LIBRARY sdl3mcp_supervisor_objects
+        LIBS sdl3mcp_wire_objects sdl3mcp_app_objects SDL3::SDL3
+             nlohmann_json::nlohmann_json Threads::Threads
+        NO_TEST)
     add_test(NAME supervisor_tests
              COMMAND sdl3mcp_test_supervisor
                      $<TARGET_FILE:sdl3mcp>
@@ -349,19 +187,11 @@ if(SDL3MCP_BUILD_CLI)
 
     # The relay drives the same executable with --listen and a fake application
     # that dials in over TCP, so no child process and no SDL are involved.
-    add_executable(sdl3mcp_test_relay relay_tests.cpp)
-    target_compile_features(sdl3mcp_test_relay PRIVATE cxx_std_20)
-    target_include_directories(sdl3mcp_test_relay PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/../src"
-    )
-    target_link_libraries(sdl3mcp_test_relay PRIVATE
-        sdl3mcp_supervisor_objects
-        sdl3mcp_wire_objects
-        sdl3mcp_app_objects
-        SDL3::SDL3
-        nlohmann_json::nlohmann_json
-        Threads::Threads
-    )
+    sdl3mcp_add_test(relay_tests relay_tests.cpp
+        LIBRARY sdl3mcp_supervisor_objects
+        LIBS sdl3mcp_wire_objects sdl3mcp_app_objects SDL3::SDL3
+             nlohmann_json::nlohmann_json Threads::Threads
+        NO_TEST)
     add_test(NAME relay_tests
              COMMAND sdl3mcp_test_relay
                      $<TARGET_FILE:sdl3mcp>)
@@ -369,20 +199,12 @@ if(SDL3MCP_BUILD_CLI)
     # The spawner dials a relay the test itself listens on, then spawns the fake
     # child through its own per-spawn listener; the fake child dials back with
     # --mcp=<endpoint> and speaks MCP like the real app.
-    add_executable(sdl3mcp_test_spawner spawner_tests.cpp)
-    target_compile_features(sdl3mcp_test_spawner PRIVATE cxx_std_20)
-    target_include_directories(sdl3mcp_test_spawner PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/../src"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../supervisor"
-    )
-    target_link_libraries(sdl3mcp_test_spawner PRIVATE
-        sdl3mcp_supervisor_objects
-        sdl3mcp_wire_objects
-        sdl3mcp_app_objects
-        SDL3::SDL3
-        nlohmann_json::nlohmann_json
-        Threads::Threads
-    )
+    sdl3mcp_add_test(spawner_tests spawner_tests.cpp
+        LIBRARY sdl3mcp_supervisor_objects
+        LIBS sdl3mcp_wire_objects sdl3mcp_app_objects SDL3::SDL3
+             nlohmann_json::nlohmann_json Threads::Threads
+        INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/../supervisor"
+        NO_TEST)
     add_test(NAME spawner_tests
              COMMAND sdl3mcp_test_spawner
                      $<TARGET_FILE:sdl3mcp>

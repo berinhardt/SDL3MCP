@@ -13,13 +13,14 @@
   dial-back-child loopback that a manual run exercises.
 */
 
+#define DOCTEST_CONFIG_IMPLEMENT
+#include <doctest/doctest.h>
+
 #include "cli.hpp"
 #include "socket_peer.hpp"
 #include "supervisor.hpp"
 #include "targets.hpp"
 #include "transport.hpp"
-
-#include "test_util.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -46,6 +47,10 @@
 
 namespace
 {
+
+/* The CTest registration supplies both binaries as argv[1] and argv[2]. */
+std::string g_spawner;
+std::string g_fakeChild;
 
 using namespace std::chrono_literals;
 using sdl3mcp::ReadStatus;
@@ -890,7 +895,7 @@ void testRelayLoopback(const std::string &sdl3mcp, const std::string &fakeChild)
     const std::size_t separator = line.rfind(':');
     CHECK(separator != std::string::npos);
     const long parsed = std::strtol(line.c_str() + separator + 1, nullptr, 10);
-    CHECK(parsed > 0 && parsed <= 65535);
+    CHECK((parsed > 0 && parsed <= 65535));
     const std::uint16_t port = static_cast<std::uint16_t>(parsed);
 
     /* The spawner must not inherit the client's ends of the relay's pipes. */
@@ -1031,20 +1036,51 @@ void testExplicitListenBindFailure(const std::string &spawner, const std::string
 
 } // namespace
 
+TEST_CASE("targets validation")
+{
+    testTargetsValidation();
+}
+
+TEST_CASE("command line and tool list")
+{
+    testCommandLineAndToolList();
+}
+
+TEST_CASE("targets sources")
+{
+    testTargetsSources();
+}
+
+TEST_CASE("spawner round trip")
+{
+    testSpawnerRoundTrip(g_spawner, g_fakeChild);
+}
+
+TEST_CASE("relay loopback")
+{
+    testRelayLoopback(g_spawner, g_fakeChild);
+}
+
+TEST_CASE("the app peer goes away")
+{
+    testAppPeerGone(g_spawner, g_fakeChild);
+}
+
+TEST_CASE("explicit listen bind failure")
+{
+    testExplicitListenBindFailure(g_spawner, g_fakeChild);
+}
+
 int main(int argc, char **argv)
 {
+    /* Doctest owns argv once it runs, so it is given only the binary name. The
+       context also makes a failing argument check outside a case abort, as the
+       hand-rolled harness did. */
+    doctest::Context context(1, argv);
+    context.setAsDefaultForAssertsOutOfTestCases();
     CHECK(argc >= 3);
-    const std::string spawner = argv[1];
-    const std::string fakeChild = argv[2];
 
-    testTargetsValidation();
-    testCommandLineAndToolList();
-    testTargetsSources();
-    testSpawnerRoundTrip(spawner, fakeChild);
-    testRelayLoopback(spawner, fakeChild);
-    testAppPeerGone(spawner, fakeChild);
-    testExplicitListenBindFailure(spawner, fakeChild);
-
-    std::printf("spawner_tests: all checks passed\n");
-    return 0;
+    g_spawner = argv[1];
+    g_fakeChild = argv[2];
+    return context.run();
 }

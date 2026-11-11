@@ -4,9 +4,10 @@
   the PNG header must match the frame and base64 must round-trip.
 */
 
-#include "png.hpp"
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include <doctest/doctest.h>
 
-#include "test_util.hpp"
+#include "png.hpp"
 
 #include <array>
 #include <cstddef>
@@ -54,7 +55,7 @@ uint32_t readBigEndian(const std::vector<uint8_t> &bytes, size_t offset)
            static_cast<uint32_t>(bytes[offset + 3]);
 }
 
-void testEncodePngSignatureAndHeader()
+TEST_CASE("encode png signature and header")
 {
     const Frame frame = gradientFrame(4, 5);
     const std::vector<uint8_t> png = sdl3mcp::encodePng(frame);
@@ -77,7 +78,7 @@ void testEncodePngSignatureAndHeader()
     CHECK(png[25] == 6); /* colour type: RGBA */
 }
 
-void testEncodePngRejectsMalformedFrame()
+TEST_CASE("encode png rejects malformed frame")
 {
     Frame frame;
     frame.width = 2;
@@ -132,7 +133,7 @@ std::vector<uint8_t> decodeBase64(const std::string &text)
     return bytes;
 }
 
-void testBase64KnownVectors()
+TEST_CASE("base64 known vectors")
 {
     const std::vector<uint8_t> empty;
     CHECK(sdl3mcp::base64Encode(empty).empty());
@@ -147,7 +148,7 @@ void testBase64KnownVectors()
     CHECK(sdl3mcp::base64Encode(std::vector<uint8_t>{0xFB, 0xFF}) == "+/8=");
 }
 
-void testBase64RoundTrip()
+TEST_CASE("base64 round trip")
 {
     std::vector<uint8_t> allBytes;
     allBytes.reserve(256);
@@ -176,14 +177,3 @@ void testBase64RoundTrip()
 }
 
 } // namespace
-
-int main()
-{
-    testEncodePngSignatureAndHeader();
-    testEncodePngRejectsMalformedFrame();
-    testBase64KnownVectors();
-    testBase64RoundTrip();
-
-    std::fprintf(stderr, "supervisor png tests passed\n");
-    return 0;
-}

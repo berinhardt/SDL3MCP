@@ -1,6 +1,7 @@
-#include "input.hpp"
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include <doctest/doctest.h>
 
-#include "test_util.hpp"
+#include "input.hpp"
 
 #include <SDL3/SDL.h>
 
@@ -96,7 +97,7 @@ void expectChordError(const KeyMap &map,
     CHECK(error.find(fragment) != std::string::npos);
 }
 
-void testParseModifier()
+TEST_CASE("parse modifier")
 {
     expectModifier("ctrl", Modifier::Ctrl);
     expectModifier("CTRL", Modifier::Ctrl);
@@ -115,7 +116,7 @@ void testParseModifier()
     expectNotModifier("hyper");
 }
 
-void testModifierBit()
+TEST_CASE("modifier bit")
 {
     CHECK(sdl3mcp::modifierBit(Modifier::Ctrl) == SDL_KMOD_LCTRL);
     CHECK(sdl3mcp::modifierBit(Modifier::Shift) == SDL_KMOD_LSHIFT);
@@ -123,7 +124,7 @@ void testModifierBit()
     CHECK(sdl3mcp::modifierBit(Modifier::Gui) == SDL_KMOD_LGUI);
 }
 
-void testResolveKey()
+TEST_CASE("resolve key")
 {
     const KeyMap map;
     expectKey(map, "s", SDL_SCANCODE_S);
@@ -139,7 +140,7 @@ void testResolveKey()
   Symbols such as '!' are layout-dependent, so no US scancode is assumed: the
   binding only has to reproduce its character from the returned mask.
 */
-void testResolveKeyCharacter()
+TEST_CASE("resolve key character")
 {
     const KeyMap map;
     std::string error;
@@ -149,7 +150,7 @@ void testResolveKeyCharacter()
     CHECK(SDL_GetKeyFromScancode(bang->scancode, bang->modifiers, false) == '!');
 }
 
-void testResolveKeyRejectsChords()
+TEST_CASE("resolve key rejects chords")
 {
     const KeyMap map;
     expectKeyError(map, "ctrl+s", "only valid for press");
@@ -158,7 +159,7 @@ void testResolveKeyRejectsChords()
     expectKeyError(map, "notakey", "notakey");
 }
 
-void testResolveKeyChordKeys()
+TEST_CASE("resolve key chord keys")
 {
     const KeyMap map;
     expectChord(map, "s", {}, SDL_SCANCODE_S);
@@ -174,7 +175,7 @@ void testResolveKeyChordKeys()
     expectChord(map, "ctrl+shift", {}, SDL_SCANCODE_LSHIFT, SDL_KMOD_LCTRL);
 }
 
-void testResolveKeyChordKeypadPlus()
+TEST_CASE("resolve key chord keypad plus")
 {
     const KeyMap map;
     expectChord(map, "keypad plus", {}, SDL_SCANCODE_KP_PLUS);
@@ -183,7 +184,7 @@ void testResolveKeyChordKeypadPlus()
     expectChord(map, "keypad +", {}, SDL_SCANCODE_KP_PLUS);
 }
 
-void testExplicitModifiers()
+TEST_CASE("explicit modifiers")
 {
     const KeyMap map;
     constexpr Modifier ctrlShift[] = {Modifier::Ctrl, Modifier::Shift};
@@ -203,7 +204,7 @@ void testExplicitModifiers()
   The binding for '!' carries whichever modifier the layout needs; the chord
   adds Ctrl on top of it and the mask must still produce '!'.
 */
-void testCharacterChord()
+TEST_CASE("character chord")
 {
     const KeyMap map;
     std::string error;
@@ -220,7 +221,7 @@ void testCharacterChord()
     CHECK(SDL_GetKeyFromScancode(chord->scancode, chord->modifiers, false) == '!');
 }
 
-void testChordErrors()
+TEST_CASE("chord errors")
 {
     const KeyMap map;
     expectChordError(map, "", {}, "empty");
@@ -235,7 +236,7 @@ void testChordErrors()
 }
 
 /* Whatever the spec, the mask only ever holds the four left-side bits. */
-void testOnlyLeftSideBits()
+TEST_CASE("only left side bits")
 {
     const KeyMap map;
     constexpr std::string_view specs[] = {
@@ -272,7 +273,7 @@ std::string encodeUtf8(std::uint32_t codepoint)
   does report such a bit, require the documented refusal; a layout that never
   produces one simply skips the case.
 */
-void testUnsupportedModifierIfProducible()
+TEST_CASE("unsupported modifier if producible")
 {
     const KeyMap map;
     for (std::uint32_t codepoint = 0xA0; codepoint <= 0x2FF; ++codepoint) {
@@ -323,7 +324,7 @@ void expectIndexedError(const InputBatch &batch, std::size_t index, std::string_
     CHECK(error->find(fragment) != std::string::npos);
 }
 
-void testValidBatch()
+TEST_CASE("valid batch")
 {
     InputBatch batch;
     batch.actions = {
@@ -337,7 +338,7 @@ void testValidBatch()
     expectValidBatch(batch);
 }
 
-void testActionCountLimits()
+TEST_CASE("action count limits")
 {
     const InputBatch empty;
     expectBatchError(empty, "at least one action");
@@ -354,7 +355,7 @@ void testActionCountLimits()
     CHECK(sdl3mcp::validateStructure(maxBatch)->rfind("actions[", 0) != 0);
 }
 
-void testKeyValidation()
+TEST_CASE("key validation")
 {
     expectBatchError(batchWith(KeyInput{"", KeyAction::Press, {}}), "empty");
     expectBatchError(batchWith(KeyInput{std::string(65, 'k'), KeyAction::Press, {}}),
@@ -384,7 +385,7 @@ void testKeyValidation()
     expectValidBatch(batchWith(KeyInput{"notakey", KeyAction::Press, {}}));
 }
 
-void testTextValidation()
+TEST_CASE("text validation")
 {
     expectBatchError(batchWith(TextInput{""}), "empty");
     expectBatchError(batchWith(TextInput{std::string(1025, 'a')}), "maximum is 1024");
@@ -401,7 +402,7 @@ void testTextValidation()
                      "maximum is 1024");
 }
 
-void testMouseMoveValidation()
+TEST_CASE("mouse move validation")
 {
     constexpr float nan = std::numeric_limits<float>::quiet_NaN();
     constexpr float infinity = std::numeric_limits<float>::infinity();
@@ -418,7 +419,7 @@ void testMouseMoveValidation()
                      "unknown mouse move mode");
 }
 
-void testMouseButtonValidation()
+TEST_CASE("mouse button validation")
 {
     constexpr float nan = std::numeric_limits<float>::quiet_NaN();
 
@@ -462,7 +463,7 @@ void testMouseButtonValidation()
                      "unknown mouse button action");
 }
 
-void testScrollValidation()
+TEST_CASE("scroll validation")
 {
     constexpr float nan = std::numeric_limits<float>::quiet_NaN();
     constexpr float infinity = std::numeric_limits<float>::infinity();
@@ -473,10 +474,10 @@ void testScrollValidation()
     expectBatchError(batchWith(ScrollInput{0.0F, infinity}), "scroll y must be finite");
 }
 
-void testReleaseAllValidation() { expectValidBatch(batchWith(ReleaseAllInput{})); }
+TEST_CASE("release all validation") { expectValidBatch(batchWith(ReleaseAllInput{})); }
 
 /* Each action type reports its own index, using the 0-based array position. */
-void testActionIndexes()
+TEST_CASE("action indexes")
 {
     InputBatch batch;
     batch.actions.assign(5, InputAction{ReleaseAllInput{}});
@@ -512,29 +513,3 @@ void testActionIndexes()
 }
 
 } // namespace
-
-int main()
-{
-    testParseModifier();
-    testModifierBit();
-    testResolveKey();
-    testResolveKeyCharacter();
-    testResolveKeyRejectsChords();
-    testResolveKeyChordKeys();
-    testResolveKeyChordKeypadPlus();
-    testExplicitModifiers();
-    testCharacterChord();
-    testChordErrors();
-    testOnlyLeftSideBits();
-    testUnsupportedModifierIfProducible();
-    testValidBatch();
-    testActionCountLimits();
-    testKeyValidation();
-    testTextValidation();
-    testMouseMoveValidation();
-    testMouseButtonValidation();
-    testScrollValidation();
-    testReleaseAllValidation();
-    testActionIndexes();
-    return 0;
-}

@@ -2,11 +2,11 @@
   The server thread: the bridge between the validated JSON layer and the app
   thread.
 
-  It owns a Transport and a Session and nothing else. Each loop iteration reads
-  one line, parses it, lets the session decide, and either writes the response or
-  hands a ToolCall to the injected handler. That means the server can be run
+  It owns the thread, the Transport, a Responder and the failure state. Each loop
+  iteration reads one line and hands it to the responder, which parses it, lets
+  the session decide, and writes the answer. The server can therefore be run
   against pipes in a test exactly as it runs against stdin/stdout in the app, and
-  no tool execution lives here.
+  the dispatch that a browser needs is not tied to this thread or to fds.
 
   The session is passed by reference because it is per connection and its
   lifetime belongs to whoever created both; the handler is a value so the app can
@@ -32,42 +32,16 @@
 #ifndef SDL3MCP_SERVER_HPP
 #define SDL3MCP_SERVER_HPP
 
-#include "frame.hpp"
-#include "json_rpc.hpp"
-#include "session.hpp"
+#include "responder.hpp"
 #include "transport.hpp"
 
-#include <nlohmann/json.hpp>
-
 #include <cstddef>
-#include <functional>
 #include <mutex>
-#include <optional>
 #include <string>
-#include <string_view>
 #include <thread>
 
 namespace sdl3mcp
 {
-
-/*
-  What a tool handler returns. Most tools answer with MCP content blocks plus
-  the error flag. A handler that fills `frame` returns raw pixels instead:
-  sdl_capture writes one result line carrying the raw framing header followed
-  by exactly the pixel bytes, and sdl_input adds `frameText` so the same line
-  names the frame its batch was applied at. A frame is never a content array:
-  it is one line plus B bytes.
-*/
-struct ToolResult
-{
-    nlohmann::json content;
-    bool isError = false;
-    /* The text block that accompanies a raw frame; empty when there is none. */
-    std::string frameText;
-    std::optional<Frame> frame;
-};
-
-using ToolHandler = std::function<ToolResult(const ToolCall &)>;
 
 class Server
 {
@@ -101,14 +75,11 @@ public:
 private:
     void run();
     void blockSigpipe();
-    bool handleLine(std::string_view line);
-    bool writeResponse(const nlohmann::json &response);
-    bool writeToolCall(const ToolCall &call);
     void setFailure(std::string message);
 
+    /* The responder is built on the transport, so transport_ must come first. */
     Transport transport_;
-    Session &session_;
-    ToolHandler handler_;
+    Responder responder_;
 
     mutable std::mutex mutex_;
     std::string lastError_;

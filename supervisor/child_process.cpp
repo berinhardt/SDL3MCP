@@ -170,6 +170,15 @@ bool ChildProcess::start(const ChildCommand &command, std::string &error)
         sigemptyset(&empty);
         ::sigprocmask(SIG_SETMASK, &empty, nullptr);
 
+        /*
+          A leader of its own group is what lets the launcher stop everything
+          the child forks with one signal. The parent sets the same group below,
+          so a signal arriving before this line still reaches the whole group.
+        */
+        if (command.newProcessGroup) {
+            ::setpgid(0, 0);
+        }
+
         ::execvp(argv[0], argv.data());
 
         const ssize_t ignored =
@@ -179,6 +188,15 @@ bool ChildProcess::start(const ChildCommand &command, std::string &error)
     }
 
     pid_ = pid;
+    if (command.newProcessGroup) {
+        /*
+          Racing the child's own setpgid() is fine: whichever call lands first
+          wins and the other is a no-op for the same group. EACCES means the
+          child already exec'd, so its group is in place.
+        */
+        processGroup_ = true;
+        (void)::setpgid(pid_, pid_);
+    }
     if (inheritStdio) {
         errorFd_ = errorPipe[0];
         ::close(errorPipe[1]);
@@ -308,21 +326,40 @@ std::string ChildProcess::stderrTail() const
     return text;
 }
 
-void ChildProcess::terminate(int graceMs)
+void ChildProcess::requestStop()
 {
     if (pid_ > 0 && !hasExited()) {
-        ::kill(pid_, SIGTERM);
+        (void)::kill(signalTarget(), SIGTERM);
+    }
+}
+
+void ChildProcess::forceStop()
+{
+    if (pid_ > 0 && !hasExited()) {
+        (void)::kill(signalTarget(), SIGKILL);
+    }
+}
+
+void ChildProcess::finish()
+{
+    stderrStop_.store(true, std::memory_order_relaxed);
+    joinThreads();
+    closeIfOpen(errorFd_);
+}
+
+void ChildProcess::terminate(int graceMs)
+{
+    requestStop();
+    if (pid_ > 0 && !hasExited()) {
         if (!waitForExit(graceMs)) {
-            ::kill(pid_, SIGKILL);
+            forceStop();
             /* A SIGKILLed child is reaped immediately; the bound only guards a
                monitor thread that cannot make progress. */
             (void)waitForExit(5000);
         }
     }
 
-    stderrStop_.store(true, std::memory_order_relaxed);
-    joinThreads();
-    closeIfOpen(errorFd_);
+    finish();
 }
 
 void ChildProcess::monitorLoop()

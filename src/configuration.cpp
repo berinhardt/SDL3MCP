@@ -73,6 +73,16 @@ bool isValueFlag(std::string_view name)
 
 constexpr std::size_t kConnectHostCapacity = 64;
 
+/*
+  Dialling the client is one concept, implemented with a socket on desktop and
+  with a WebSocket in the browser.
+*/
+#ifdef __EMSCRIPTEN__
+constexpr SDL3MCP_Transport kDialTransport = SDL3MCP_TRANSPORT_WEBSOCKET;
+#else
+constexpr SDL3MCP_Transport kDialTransport = SDL3MCP_TRANSPORT_CONNECT;
+#endif
+
 } // namespace
 
 bool parseEndpoint(std::string_view value,
@@ -170,6 +180,11 @@ Status Configuration::applyArgument(SDL3MCP_Configuration &candidate, std::strin
         candidate.warp_cursor = false;
         return Status::Continue;
     }
+    /*
+      A browser receives one synthesised --mcp=<value> argument and has no argv,
+      so neither flag can arrive there; only the desktop build carries them.
+    */
+#ifndef __EMSCRIPTEN__
     if (argument == "--mcp-help") {
         message_ = usageText();
         return Status::ExitSuccess;
@@ -178,6 +193,7 @@ Status Configuration::applyArgument(SDL3MCP_Configuration &candidate, std::strin
         message_ = versionText();
         return Status::ExitSuccess;
     }
+#endif
 
     const std::size_t separator = argument.find(kValueSeparator);
     if (separator == std::string_view::npos) {
@@ -209,10 +225,13 @@ Status Configuration::applyTransport(std::string_view argument,
                                      std::string_view value,
                                      SDL3MCP_Configuration &candidate)
 {
+    /* A browser has no stdio server, so the value does not exist there. */
+#ifndef __EMSCRIPTEN__
     if (equalsIgnoringCase(value, "stdio")) {
         candidate.transport = SDL3MCP_TRANSPORT_STDIO;
         return Status::Continue;
     }
+#endif
     if (equalsIgnoringCase(value, "off")) {
         candidate.transport = SDL3MCP_TRANSPORT_NONE;
         return Status::Continue;
@@ -224,12 +243,17 @@ Status Configuration::applyTransport(std::string_view argument,
         std::memset(candidate.connect_host, 0, sizeof(candidate.connect_host));
         std::memcpy(candidate.connect_host, host.data(), host.size());
         candidate.connect_port = port;
-        candidate.transport = SDL3MCP_TRANSPORT_CONNECT;
+        candidate.transport = kDialTransport;
         return Status::Continue;
     }
 
+#ifdef __EMSCRIPTEN__
+    return fail("invalid value for '" + std::string(argument)
+                + "': expected 'off' or HOST:PORT");
+#else
     return fail("invalid value for '" + std::string(argument)
                 + "': expected 'stdio', 'off', HOST:PORT or [V6]:PORT");
+#endif
 }
 
 Status Configuration::applyFrameTimeout(std::string_view argument,
@@ -289,13 +313,20 @@ Status Configuration::applyLogLevel(std::string_view argument,
 
 Status Configuration::validateValues(const SDL3MCP_Configuration &candidate)
 {
+#ifdef __EMSCRIPTEN__
+    if (candidate.transport != SDL3MCP_TRANSPORT_NONE
+        && candidate.transport != SDL3MCP_TRANSPORT_WEBSOCKET) {
+        return fail("transport must be SDL3MCP_TRANSPORT_NONE or SDL3MCP_TRANSPORT_WEBSOCKET");
+    }
+#else
     if (candidate.transport != SDL3MCP_TRANSPORT_NONE
         && candidate.transport != SDL3MCP_TRANSPORT_STDIO
         && candidate.transport != SDL3MCP_TRANSPORT_CONNECT) {
         return fail("transport must be SDL3MCP_TRANSPORT_NONE, SDL3MCP_TRANSPORT_STDIO or "
                     "SDL3MCP_TRANSPORT_CONNECT");
     }
-    if (candidate.transport == SDL3MCP_TRANSPORT_CONNECT) {
+#endif
+    if (candidate.transport == kDialTransport) {
         const void *terminator =
             std::memchr(candidate.connect_host, '\0', sizeof(candidate.connect_host));
         if (terminator == nullptr) {
@@ -332,6 +363,8 @@ Status Configuration::fail(std::string message)
     return Status::Error;
 }
 
+/* Desktop only: a browser has no argv, so this text has no reader there. */
+#ifndef __EMSCRIPTEN__
 std::string Configuration::usageText()
 {
     return "SDL3MCP command line options:\n"
@@ -353,5 +386,6 @@ std::string Configuration::versionText()
 {
     return "SDL3MCP " SDL3MCP_VERSION_STRING;
 }
+#endif
 
 } // namespace sdl3mcp

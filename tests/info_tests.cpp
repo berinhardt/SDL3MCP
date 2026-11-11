@@ -5,9 +5,10 @@
   would have to interpret differently.
 */
 
-#include "info.hpp"
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include <doctest/doctest.h>
 
-#include "test_util.hpp"
+#include "info.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -30,7 +31,7 @@ InfoSnapshot unboundSnapshot()
     return snapshot;
 }
 
-void testUnboundSnapshot()
+TEST_CASE("unbound snapshot")
 {
     const nlohmann::json json = sdl3mcp::infoToJson(unboundSnapshot());
 
@@ -58,7 +59,7 @@ void testUnboundSnapshot()
     CHECK(json["appliedFrame"] == 3);
 }
 
-void testBoundWindow()
+TEST_CASE("bound window")
 {
     InfoSnapshot snapshot = unboundSnapshot();
     snapshot.videoDriver = "wayland";
@@ -84,7 +85,7 @@ void testBoundWindow()
     CHECK(json["window"]["relativeMouseMode"] == true);
 }
 
-void testCaptureError()
+TEST_CASE("capture error")
 {
     InfoSnapshot snapshot = unboundSnapshot();
 
@@ -100,7 +101,7 @@ void testCaptureError()
     CHECK(capture["dropped"] == 1);
 }
 
-void testHeldInputOrder()
+TEST_CASE("held input order")
 {
     InfoSnapshot snapshot = unboundSnapshot();
     snapshot.heldKeys = {"ctrl", "s"};
@@ -118,14 +119,3 @@ void testHeldInputOrder()
 }
 
 } // namespace
-
-int main()
-{
-    testUnboundSnapshot();
-    testBoundWindow();
-    testCaptureError();
-    testHeldInputOrder();
-
-    std::fprintf(stderr, "info tests passed\n");
-    return 0;
-}

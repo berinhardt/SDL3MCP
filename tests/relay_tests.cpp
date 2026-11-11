@@ -11,13 +11,14 @@
   a window, so a failure is a protocol or socket bug rather than a driver one.
 */
 
+#define DOCTEST_CONFIG_IMPLEMENT
+#include <doctest/doctest.h>
+
 #include "cli.hpp"
 #include "socket_connect.hpp"
 #include "supervisor.hpp"
 #include "tools.hpp"
 #include "transport.hpp"
-
-#include "test_util.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -39,6 +40,9 @@
 
 namespace
 {
+
+/* The CTest registration supplies the supervisor binary as argv[1]. */
+std::string g_supervisor;
 
 using namespace std::chrono_literals;
 using sdl3mcp::ReadStatus;
@@ -205,7 +209,7 @@ struct RelayClient
         const std::size_t separator = line.rfind(':');
         CHECK(separator != std::string::npos);
         const long parsed = std::strtol(line.c_str() + separator + 1, nullptr, 10);
-        CHECK(parsed > 0 && parsed <= 65535);
+        CHECK((parsed > 0 && parsed <= 65535));
         port = static_cast<std::uint16_t>(parsed);
     }
 
@@ -1052,20 +1056,55 @@ void testSpawnerPeerAddsSpawnTools(const std::string &supervisor)
 
 } // namespace
 
+TEST_CASE("the relay command line")
+{
+    testCommandLineRelay();
+}
+
+TEST_CASE("wait session timeout")
+{
+    testWaitSessionTimeout(g_supervisor);
+}
+
+TEST_CASE("relay round trip")
+{
+    testRelayRoundTrip(g_supervisor);
+}
+
+TEST_CASE("idle peer disconnect")
+{
+    testIdlePeerDisconnect(g_supervisor);
+}
+
+TEST_CASE("peer disconnect during a call")
+{
+    testPeerDisconnectDuringCall(g_supervisor);
+}
+
+TEST_CASE("peer stops answering")
+{
+    testPeerStopsAnswering(g_supervisor);
+}
+
+TEST_CASE("a bare peer keeps the tool list")
+{
+    testBarePeerKeepsToolList(g_supervisor);
+}
+
+TEST_CASE("a spawner peer adds spawn tools")
+{
+    testSpawnerPeerAddsSpawnTools(g_supervisor);
+}
+
 int main(int argc, char **argv)
 {
+    /* Doctest owns argv once it runs, so it is given only the binary name. The
+       context also makes a failing argument check outside a case abort, as the
+       hand-rolled harness did. */
+    doctest::Context context(1, argv);
+    context.setAsDefaultForAssertsOutOfTestCases();
     CHECK(argc >= 2);
-    const std::string supervisor = argv[1];
 
-    testCommandLineRelay();
-    testWaitSessionTimeout(supervisor);
-    testRelayRoundTrip(supervisor);
-    testIdlePeerDisconnect(supervisor);
-    testPeerDisconnectDuringCall(supervisor);
-    testPeerStopsAnswering(supervisor);
-    testBarePeerKeepsToolList(supervisor);
-    testSpawnerPeerAddsSpawnTools(supervisor);
-
-    std::printf("relay_tests: all checks passed\n");
-    return 0;
+    g_supervisor = argv[1];
+    return context.run();
 }

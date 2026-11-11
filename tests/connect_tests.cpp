@@ -1,6 +1,7 @@
-#include "socket_connect.hpp"
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include <doctest/doctest.h>
 
-#include "test_util.hpp"
+#include "socket_connect.hpp"
 
 #include <cstdint>
 #include <cstring>
@@ -40,7 +41,7 @@ int bindLoopback(std::uint16_t &port)
     return fd;
 }
 
-void testConnectToListener()
+TEST_CASE("connect to listener")
 {
     std::uint16_t port = 0;
     const int listener = bindLoopback(port);
@@ -60,7 +61,7 @@ void testConnectToListener()
     ::close(listener);
 }
 
-void testRefusedConnect()
+TEST_CASE("refused connect")
 {
     /* Bound but not listening: the kernel refuses instead of black-holing. */
     std::uint16_t port = 0;
@@ -79,7 +80,7 @@ void testRefusedConnect()
     ::close(socketFd);
 }
 
-void testEmptyHostAndPort()
+TEST_CASE("empty host and port")
 {
     int fd = 0;
     std::string error;
@@ -95,12 +96,3 @@ void testEmptyHostAndPort()
 }
 
 } // namespace
-
-int main()
-{
-    testConnectToListener();
-    testRefusedConnect();
-    testEmptyHostAndPort();
-
-    return 0;
-}

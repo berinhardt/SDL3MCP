@@ -10,8 +10,20 @@ include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
 option(SDL3MCP_BUILD_SHARED "Build SDL3MCP as a shared library" OFF)
-option(SDL3MCP_BUILD_TESTS "Build the SDL3MCP smoke tests" ${PROJECT_IS_TOP_LEVEL})
+option(SDL3MCP_BUILD_TESTS "Build the SDL3MCP tests" ${PROJECT_IS_TOP_LEVEL})
 option(SDL3MCP_BUILD_EXAMPLES "Build the SDL3MCP examples" OFF)
+
+# A parent project that vendors doctest through add_subdirectory already defines
+# the target, so the check comes first and the package lookup only runs for a
+# standalone configure. Without doctest the suite would silently register no
+# tests, which reads like a passing run, so this stops instead.
+if(SDL3MCP_BUILD_TESTS AND NOT TARGET doctest::doctest)
+    find_package(doctest CONFIG QUIET)
+endif()
+if(SDL3MCP_BUILD_TESTS AND NOT TARGET doctest::doctest)
+    message(FATAL_ERROR "SDL3MCP: SDL3MCP_BUILD_TESTS is ON but doctest was not found; install doctest (Arch: pacman -S doctest) or configure with -DSDL3MCP_BUILD_TESTS=OFF")
+endif()
+
 option(SDL3MCP_BUILD_CLI "Build the sdl3mcp executable" OFF)
 option(SDL3MCP_USE_SYSTEM_JSON "Resolve nlohmann_json from the system before vendoring" ON)
 
@@ -143,24 +155,39 @@ endif()
 # the private src/ headers can link them directly: a shared library hides those
 # symbols from its dynamic symbol table.
 #
-# They are split in two so the supervisor can link the wire half alone:
+# The sources are split in two so the supervisor can link the wire half alone:
 #   * wire: protocol, session, framing, transports and configuration; the relay
 #     needs these and references no SDL symbol.
 #   * app: everything that calls SDL (input, replay, capture plumbing, info).
 # SDL3MCP keeps both halves, so the application sees no difference. The split is
 # enforced by the link: if a wire unit starts calling SDL, sdl3mcp stops linking.
-add_library(sdl3mcp_wire_objects OBJECT
+#
+# The wire half itself has a platform arm: the POSIX server, fd transport, stdio
+# isolation and socket dial exist only on desktop, because a browser has no fd
+# and no second thread. There the WebSocket peer takes their place, so both arms
+# answer through the same Responder over ByteSink.
+set(sdl3mcp_wire_sources
     src/configuration.cpp
     src/frame.cpp
     src/capture.cpp
     src/json_rpc.cpp
     src/tools.cpp
     src/session.cpp
-    src/server.cpp
-    src/transport.cpp
-    src/stdio_isolation.cpp
-    src/socket_connect.cpp
+    src/responder.cpp
 )
+if(EMSCRIPTEN)
+    # The browser dials a WebSocket and the bytes arrive in callbacks on the
+    # app's own thread; the peer turns them into the lines the responder reads.
+    list(APPEND sdl3mcp_wire_sources src/websocket_peer.cpp)
+else()
+    list(APPEND sdl3mcp_wire_sources
+        src/server.cpp
+        src/transport.cpp
+        src/stdio_isolation.cpp
+        src/socket_connect.cpp
+    )
+endif()
+add_library(sdl3mcp_wire_objects OBJECT ${sdl3mcp_wire_sources})
 add_library(sdl3mcp_app_objects OBJECT
     src/api.cpp
     src/capture_arguments.cpp
@@ -204,6 +231,12 @@ target_link_libraries(SDL3MCP
     PUBLIC SDL3::SDL3
     PRIVATE Threads::Threads
 )
+if(EMSCRIPTEN)
+    # emscripten_websocket_* lives in Emscripten's JS library, and the final link
+    # needs it named. As INTERFACE it reaches the application's link line, which
+    # is where the peer is pulled in from the static library.
+    target_link_libraries(SDL3MCP INTERFACE "-lwebsocket.js")
+endif()
 
 # The wire half includes the public header through configuration.hpp, which
 # pulls in <SDL3/SDL.h> for its types and macros, but references no SDL symbol.
@@ -243,9 +276,11 @@ if(SDL3MCP_BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()
 
-if(SDL3MCP_BUILD_CLI)
+if(SDL3MCP_BUILD_CLI AND NOT EMSCRIPTEN)
     # The supervisor is POSIX-only: the top-level WIN32 guard above already
-    # rejects Windows, and the implementation uses fork/exec and private pipes.
+    # rejects Windows, the implementation uses fork/exec and private pipes, and
+    # a browser build has neither a process to spawn nor the POSIX transport the
+    # relay is built on.
     # The supervisor owns presentation: the library-to-supervisor link carries
     # raw pixels, so PNG and base64 are compiled here only. stb is a private
     # include of the supervisor objects, never of the library.
@@ -259,6 +294,8 @@ if(SDL3MCP_BUILD_CLI)
         supervisor/png.cpp
         supervisor/stb_image_write_impl.cpp
         supervisor/supervisor.cpp
+        supervisor/web_app.cpp
+        supervisor/web_runner.cpp
     )
     target_compile_features(sdl3mcp_supervisor_objects PRIVATE cxx_std_20)
     target_include_directories(sdl3mcp_supervisor_objects

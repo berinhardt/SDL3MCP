@@ -9,9 +9,10 @@
   and the client timed out.
 */
 
-#include <SDL3MCP/SDL3MCP.h>
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include <doctest/doctest.h>
 
-#include "test_util.hpp"
+#include <SDL3MCP/SDL3MCP.h>
 
 #include <nlohmann/json.hpp>
 
@@ -206,7 +207,7 @@ void runClient(int requestsFd, MessageReader &reader)
 
 } // namespace
 
-int main()
+TEST_CASE("a written frame keeps the app's dimensions")
 {
     /* The CTest environment sets this too; the hint makes a manual run work. */
     (void)SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "dummy");
@@ -268,7 +269,4 @@ int main()
 
     SDL_DestroyWindow(window);
     SDL_Quit();
-
-    std::printf("frame_size_tests passed\n");
-    return 0;
 }

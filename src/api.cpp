@@ -17,6 +17,13 @@
   thread turns a taken batch into SDL events in AppIterate. sdl_capture waits on
   the CaptureState the server marks pending and the app answers with a copied
   frame; sdl_info is answered from a copied snapshot.
+
+  A browser has no second thread, so the same requests are split across frames
+  instead of across threads: the pump at the top of AppIterate parses a call,
+  registers what it needs on the app's own thread (CaptureState::begin for a
+  frame, InputQueue::post for a batch), and a later AppIterate answers it through
+  the same Responder and the same framing. Nothing on that path waits for a frame
+  the same thread has yet to render.
 */
 
 #include <SDL3MCP/SDL3MCP.h>
@@ -32,10 +39,16 @@
 #include "mouse.hpp"
 #include "queue.hpp"
 #include "replay.hpp"
-#include "server.hpp"
 #include "session.hpp"
+#ifdef __EMSCRIPTEN__
+/* The browser endpoint: one WebSocket, and the responder that answers on it. */
+#include "responder.hpp"
+#include "websocket_peer.hpp"
+#else
+#include "server.hpp"
 #include "socket_connect.hpp"
 #include "stdio_isolation.hpp"
+#endif
 
 #include <algorithm>
 #include <array>
@@ -55,6 +68,10 @@
 #include <vector>
 
 #include <nlohmann/json.hpp>
+
+#ifdef __EMSCRIPTEN__
+#include <emscripten/emscripten.h>
+#endif
 
 #include <unistd.h>
 
@@ -78,9 +95,14 @@ using sdl3mcp::KeyReplayer;
 using sdl3mcp::MouseButton;
 using sdl3mcp::MouseMetrics;
 using sdl3mcp::MouseReplayer;
+#ifdef __EMSCRIPTEN__
+using sdl3mcp::Responder;
+using sdl3mcp::WebSocketPeer;
+#else
 using sdl3mcp::Server;
-using sdl3mcp::Session;
 using sdl3mcp::StdioIsolation;
+#endif
+using sdl3mcp::Session;
 using sdl3mcp::TakenBatch;
 using sdl3mcp::TextInput;
 using sdl3mcp::ToolCall;
@@ -89,6 +111,43 @@ using sdl3mcp::ToolResult;
 using sdl3mcp::WindowInfo;
 
 constexpr const char *kToolStubMessage = "tool execution is not implemented yet";
+
+#ifdef __EMSCRIPTEN__
+/*
+  What a deferred tool call is waiting for. The browser answers one call at a
+  time, because a capture and a batch both borrow the same frame loop. An input
+  call takes two stages: the batch has to settle, and only then can the frame
+  that proves it be requested, so it moves from Input to InputFrame.
+*/
+enum class DeferredRequest
+{
+    Capture,
+    Input,
+    /* The batch settled; its acknowledgement frame has been requested. */
+    InputFrame
+};
+
+/*
+  A tool call the pump could not answer. The call is kept whole so the answer is
+  framed exactly as the desktop path frames it, and the request the call needs is
+  registered on the app's own thread. `started` is what sdl_info reports as the
+  capture time; `deadline` is the budget the request was given.
+*/
+struct DeferredCall
+{
+    ToolCall call;
+    DeferredRequest request = DeferredRequest::Capture;
+    /* The region parsed when the call arrived; absent means the whole frame. */
+    std::optional<CaptureRegion> region;
+    /* InputQueue::post()'s sequence number; input requests only. */
+    uint64_t token = 0;
+    /* The batch's size and the frame it applied at; input requests only. */
+    std::size_t actionCount = 0;
+    uint64_t appliedFrame = 0;
+    std::chrono::steady_clock::time_point started;
+    std::chrono::steady_clock::time_point deadline;
+};
+#endif
 
 struct LibraryState
 {
@@ -109,19 +168,33 @@ struct LibraryState
     InputQueue inputQueue;
     CaptureState capture;
     Session session;
+#ifndef __EMSCRIPTEN__
     StdioIsolation isolation;
 
     /* The connected socket in CONNECT mode; -1 otherwise. */
     int connectFd = -1;
+#endif
 
     /*
-      Set by the server thread's sdl_terminate handler and exchanged by the app
+      Set by whichever endpoint answers sdl_terminate and exchanged by the app
       thread, which owns the only SDL call (SDL_PushEvent).
     */
     std::atomic<bool> terminateRequested{false};
 
+#ifndef __EMSCRIPTEN__
     /* Present only while the stdio server runs; owns its thread. */
     std::unique_ptr<Server> server;
+#else
+    /*
+      The browser's whole endpoint: the socket, the responder that reads and
+      writes it, and the one call waiting for a frame or a batch. All three run
+      on the app thread, and they are destroyed in this order, so the responder
+      goes before the peer it writes to.
+    */
+    WebSocketPeer peer;
+    std::unique_ptr<Responder> responder;
+    std::optional<DeferredCall> deferred;
+#endif
 
     /* App thread only. The server thread has no way to reach it. */
     SDL_Window *window = nullptr;
@@ -189,11 +262,106 @@ void writeToStderr(const std::string &text)
     std::fprintf(stderr, "%s\n", text.c_str());
 }
 
+#ifdef __EMSCRIPTEN__
+/*
+  A page has no command line, so the query string is the only place a server can
+  be named. Reading it yields the same --mcp=<value> argument the desktop build
+  would parse, which keeps one parser and one validator on both platforms.
+*/
+
+/* -1 for anything that is not a hexadecimal digit. */
+int hexDigitValue(char digit)
+{
+    if (digit >= '0' && digit <= '9') {
+        return digit - '0';
+    }
+    if (digit >= 'a' && digit <= 'f') {
+        return digit - 'a' + 10;
+    }
+    if (digit >= 'A' && digit <= 'F') {
+        return digit - 'A' + 10;
+    }
+    return -1;
+}
+
+/*
+  Decodes %XX escapes: a browser writes HOST:PORT as HOST%3APORT. An incomplete
+  escape is copied through unchanged, so the configuration parser rejects the
+  value with its own message instead of this helper inventing one.
+*/
+std::string percentDecode(std::string_view encoded)
+{
+    std::string decoded;
+    decoded.reserve(encoded.size());
+    for (std::size_t index = 0; index < encoded.size(); ++index) {
+        if (encoded[index] == '%' && index + 2 < encoded.size()) {
+            const int high = hexDigitValue(encoded[index + 1]);
+            const int low = hexDigitValue(encoded[index + 2]);
+            if (high >= 0 && low >= 0) {
+                decoded.push_back(static_cast<char>(high * 16 + low));
+                index += 2;
+                continue;
+            }
+        }
+        decoded.push_back(encoded[index]);
+    }
+    return decoded;
+}
+
+/* The decoded value of the query's mcp parameter; absent when the page has none. */
+std::optional<std::string> mcpQueryValue()
+{
+    const char *search = emscripten_run_script_string("window.location.search");
+    std::string_view query = search != nullptr ? std::string_view(search) : std::string_view();
+    if (!query.empty() && query.front() == '?') {
+        query.remove_prefix(1);
+    }
+
+    while (!query.empty()) {
+        const std::size_t separator = query.find('&');
+        const std::string_view parameter = query.substr(0, separator);
+        query = separator == std::string_view::npos ? std::string_view()
+                                                    : query.substr(separator + 1);
+
+        const std::size_t equals = parameter.find('=');
+        if (parameter.substr(0, equals) != "mcp") {
+            continue;
+        }
+        return equals == std::string_view::npos
+                   ? std::string()
+                   : percentDecode(parameter.substr(equals + 1));
+    }
+    return std::nullopt;
+}
+
+/*
+  Commits the page's configuration. No mcp parameter means the page asked for no
+  server, so the values the caller supplied are only validated.
+*/
+Configuration::Status applyPageQuery(Configuration &configuration)
+{
+    const std::optional<std::string> value = mcpQueryValue();
+    if (!value.has_value()) {
+        return configuration.validate();
+    }
+
+    char program[] = "catalyst";
+    std::string argument = "--mcp=" + *value;
+    std::array<char *, 2> argv{program, argument.data()};
+    return configuration.parseCommandLine(static_cast<int>(argv.size()), argv.data());
+}
+#endif
+
 void writeCommandLineError(const std::string &message)
 {
+#ifdef __EMSCRIPTEN__
+    /* The browser console gets the diagnosis; there is no usage listing there. */
+    std::fprintf(stderr, "SDL3MCP: %s\n", message.c_str());
+#else
     std::fprintf(stderr, "SDL3MCP: %s\n%s\n",
                  message.c_str(),
                  Configuration::usageText().c_str());
+#endif
 }
 
 /* "major.minor.micro" from the SDL the library was linked against. */
@@ -420,6 +588,24 @@ void publishSnapshot(LibraryState &state, uint64_t frame)
 }
 
 /*
+  The text a capture answers with when no frame arrived in time. `failure` is
+  the first dropped frame's reason when the app tried and its data was rejected;
+  the browser path passes nothing, because it has no wait to attribute a drop to.
+*/
+std::string frameTimeoutText(std::chrono::milliseconds timeout, const std::string &failure)
+{
+    std::string text = "no frame arrived within " + std::to_string(timeout.count()) +
+                       " ms. The app must call SDL3MCP_WriteFrame() when "
+                       "SDL3MCP_FrameRequested() returns true, with tightly packed "
+                       "RGBA8888, its width, and its height.";
+    if (!failure.empty()) {
+        text += " Last drop: " + failure + ".";
+    }
+    return text;
+}
+
+#ifndef __EMSCRIPTEN__
+/*
   Server thread: what is left of a per-call budget after `started`. A spent
   budget is zero, never negative, so it can be handed to a blocking wait.
 */
@@ -454,13 +640,7 @@ bool takeFrame(LibraryState &state,
 
     std::string failure;
     if (!state.capture.wait(timeout, frame, failure)) {
-        error = "no frame arrived within " + std::to_string(timeout.count()) +
-                " ms. The app must call SDL3MCP_WriteFrame() when "
-                "SDL3MCP_FrameRequested() returns true, with tightly packed "
-                "RGBA8888, its width, and its height.";
-        if (!failure.empty()) {
-            error += " Last drop: " + failure + ".";
-        }
+        error = frameTimeoutText(timeout, failure);
         state.capture.recordError(error);
         return false;
     }
@@ -554,6 +734,7 @@ ToolResult inputResult(LibraryState &state, const ToolCall &call)
     result.frame = std::move(frame);
     return result;
 }
+#endif /* __EMSCRIPTEN__ */
 
 constexpr std::array<std::string_view, 2> kCaptureProperties{"timeout_ms", "region"};
 
@@ -619,6 +800,7 @@ std::optional<CaptureArguments> parseCaptureArguments(const nlohmann::json &argu
     return parsed;
 }
 
+#ifndef __EMSCRIPTEN__
 /* Server thread: one request, one cropped frame, then raw RGBA framing. */
 ToolResult captureResult(LibraryState &state, const ToolCall &call)
 {
@@ -663,11 +845,315 @@ ToolHandler makeToolHandler(LibraryState *state)
         return textResult(kToolStubMessage, true);
     };
 }
+#else /* __EMSCRIPTEN__ */
+/*
+  App thread, called from the pump. Registers the request the call needs and
+  returns a deferred result, which the responder leaves unanswered: the frame or
+  the batch has to exist first, and this thread cannot wait for itself. One call
+  at a time, so a capture and a batch never race for the same frame.
+*/
+ToolResult deferToolCall(LibraryState &state, const ToolCall &call)
+{
+    if (state.deferred.has_value()) {
+        return textResult(state.deferred->request == DeferredRequest::Capture
+                              ? "a capture request is already pending"
+                              : "an input request is already pending",
+                          true);
+    }
+
+    const SDL3MCP_Configuration &configuration = state.configuration.value();
+    DeferredCall deferred;
+    deferred.call = call;
+    deferred.started = std::chrono::steady_clock::now();
+    deferred.deadline =
+        deferred.started + std::chrono::milliseconds(configuration.frame_timeout_ms);
+
+    std::string error;
+    if (call.name == "sdl_capture") {
+        /* Validated here, so a bad document is answered now and not by a frame. */
+        const std::optional<CaptureArguments> arguments =
+            parseCaptureArguments(call.arguments, configuration.frame_timeout_ms, error);
+        if (!arguments.has_value()) {
+            return textResult(std::move(error), true);
+        }
+        /* Same gate as the desktop path: no window, no frame to ask the app for. */
+        if (!state.snapshotInfo().window.bound) {
+            return textResult("no window bound", true);
+        }
+        deferred.request = DeferredRequest::Capture;
+        deferred.region = arguments->region;
+        if (!state.capture.begin(error)) {
+            return textResult(std::move(error), true);
+        }
+    } else {
+        /* The whole document is parsed, so both transports accept the same calls. */
+        std::optional<sdl3mcp::InputRequest> request = sdl3mcp::parseInputArguments(
+            call.arguments, configuration.frame_timeout_ms, error);
+        if (!request.has_value()) {
+            return textResult(std::move(error), true);
+        }
+        deferred.request = DeferredRequest::Input;
+        deferred.actionCount = request->batch.actions.size();
+        deferred.region = request->region;
+        if (!state.inputQueue.post(std::move(request->batch), deferred.token, error)) {
+            return textResult(std::move(error), true);
+        }
+    }
+
+    state.deferred = std::move(deferred);
+    ToolResult result;
+    result.deferred = true;
+    return result;
+}
 
 /*
-  Wakes a waiting sdl_capture and stops the queue before the server so both
+  App thread. The browser's dispatcher. sdl_info and sdl_terminate need nothing
+  from the frame loop and are answered here; sdl_capture and sdl_input are
+  registered and answered by a later AppIterate.
+*/
+ToolHandler makePeerToolHandler(LibraryState *state)
+{
+    return [state](const ToolCall &call) {
+        if (call.name == "sdl_info") {
+            return textResult(sdl3mcp::infoToJson(state->snapshotInfo()).dump(2), false);
+        }
+        if (call.name == "sdl_terminate") {
+            state->terminateRequested.store(true);
+            return textResult("termination requested", false);
+        }
+        if (call.name == "sdl_capture" || call.name == "sdl_input") {
+            return deferToolCall(*state, call);
+        }
+        return textResult(kToolStubMessage, true);
+    };
+}
+
+/*
+  App thread. Drains the browser's byte queue before the frame counter, so a
+  request registered here is visible to this frame's SDL3MCP_FrameRequested()
+  and answered by the frame the app produces afterwards.
+*/
+void pumpPeer(LibraryState &state)
+{
+    if (!state.responder) {
+        return;
+    }
+
+    std::string error;
+    if (state.peer.pump(*state.responder, error)) {
+        return;
+    }
+
+    /*
+      The endpoint is gone. A browser app outlives its debug client, so this is
+      not an application failure; nothing can be answered any more, and a frame
+      request left pending would keep asking for frames nobody reads. An input
+      call in its batch stage owns no frame request.
+    */
+    if (state.deferred.has_value() && state.deferred->request != DeferredRequest::Input) {
+        state.capture.cancel();
+    }
+    state.deferred.reset();
+}
+
+/*
+  App thread. The line every acknowledgement opens with: what the batch did and
+  the frame it applied at.
+*/
+std::string appliedText(std::size_t actionCount, uint64_t appliedFrame)
+{
+    return std::to_string(actionCount) + " actions applied at frame " +
+           std::to_string(appliedFrame);
+}
+
+/*
+  App thread. Names the applied frame in a text answer whose frame is missing,
+  so the caller learns the actions landed even though the observation did not.
+  `applied` is empty for a plain sdl_capture, which has no batch to name.
+*/
+std::string lostFrameText(std::string_view applied, const std::string &failure)
+{
+    if (applied.empty()) {
+        return failure;
+    }
+    return std::string(applied) + " but no frame was taken: " + failure;
+}
+
+/* App thread. Why a batch that did not reach Applied answers with no frame. */
+std::string inputFailureText(const InputOutcome &outcome)
+{
+    switch (outcome.status) {
+    case InputStatus::Applied:
+        return "input applied at frame " + std::to_string(outcome.appliedFrame) +
+               " but no frame was taken";
+    case InputStatus::AppliedUnconfirmed:
+        return "applied at frame " + std::to_string(outcome.appliedFrame) +
+               " but not confirmed before the timeout; no frame was taken";
+    case InputStatus::Cancelled:
+        return "input not applied; is SDL3MCP_AppIterate called every loop?";
+    case InputStatus::Failed:
+        return outcome.error;
+    case InputStatus::Stopped:
+        return "SDL3MCP is shutting down";
+    }
+    return "input ended in an unknown state";
+}
+
+/*
+  True when the deferred capture was answered, with `result` filled in. `applied`
+  names the batch whose frame this is when the request came from sdl_input; only
+  a lost frame uses it, because a delivered one carries the frame.
+*/
+bool completeDeferredCapture(LibraryState &state,
+                             const DeferredCall &deferred,
+                             std::string_view applied,
+                             ToolResult &result)
+{
+    Frame frame;
+    if (state.capture.tryTake(frame)) {
+        if (deferred.region.has_value()) {
+            std::string error;
+            const std::optional<Frame> cropped =
+                sdl3mcp::cropFrame(frame, *deferred.region, error);
+            if (!cropped.has_value()) {
+                state.capture.recordError(error);
+                result = textResult(lostFrameText(applied, error), true);
+                return true;
+            }
+            frame = std::move(*cropped);
+        }
+
+        const double elapsedMs = std::chrono::duration<double, std::milli>(
+                                     std::chrono::steady_clock::now() - deferred.started)
+                                     .count();
+        state.capture.updateSuccess(frame.width, frame.height, frame.pixels.size(), elapsedMs);
+        result = ToolResult{};
+        result.frame = std::move(frame);
+        return true;
+    }
+
+    if (std::chrono::steady_clock::now() < deferred.deadline) {
+        return false;
+    }
+
+    /* The deadline passed: clear the request so the next call can ask again. */
+    const std::chrono::milliseconds budget = std::chrono::duration_cast<std::chrono::milliseconds>(
+        deferred.deadline - deferred.started);
+    state.capture.cancel();
+    const std::string timeout = frameTimeoutText(budget, std::string());
+    state.capture.recordError(timeout);
+    result = textResult(lostFrameText(applied, timeout), true);
+    return true;
+}
+
+/*
+  App thread. The batch settled at `outcome.appliedFrame`; request the frame that
+  proves it and keep the call deferred. False when the call must be answered now
+  instead, with `result` naming why: another capture already owns the request,
+  or no frame can be asked for. The budget restarts here, because the frame only
+  becomes owed once the batch has settled.
+*/
+bool beginInputAcknowledgement(LibraryState &state,
+                               DeferredCall &deferred,
+                               const InputOutcome &outcome,
+                               ToolResult &result)
+{
+    const std::string applied = appliedText(deferred.actionCount, outcome.appliedFrame);
+    if (!state.snapshotInfo().window.bound) {
+        result = textResult(lostFrameText(applied, "no window bound"), true);
+        return false;
+    }
+
+    const std::chrono::milliseconds budget{state.configuration.value().frame_timeout_ms};
+    deferred.started = std::chrono::steady_clock::now();
+    deferred.deadline = deferred.started + budget;
+
+    std::string error;
+    if (!state.capture.begin(error)) {
+        /* A client capture owns the request: name it rather than lose the frame. */
+        result = textResult(lostFrameText(applied, error), true);
+        return false;
+    }
+
+    deferred.appliedFrame = outcome.appliedFrame;
+    deferred.request = DeferredRequest::InputFrame;
+    return true;
+}
+
+/*
+  App thread. Answers the deferred call once its request can be met: a frame
+  taken after it was registered, or a batch that has settled. Nothing here
+  waits; an unfinished request simply stays deferred for the next frame.
+
+  An input call is answered in two stages, both driven from here: the settle
+  requests the acknowledgement frame, and a later frame delivers it. The answer
+  is one result with the frame attached, exactly as on the desktop.
+*/
+void completeDeferredCall(LibraryState &state)
+{
+    if (!state.deferred.has_value()) {
+        return;
+    }
+
+    DeferredCall &deferred = *state.deferred;
+    ToolResult result;
+    switch (deferred.request) {
+    case DeferredRequest::Capture:
+        if (!completeDeferredCapture(state, deferred, std::string_view(), result)) {
+            return;
+        }
+        break;
+    case DeferredRequest::Input: {
+        InputOutcome outcome;
+        if (!state.inputQueue.poll(deferred.token, outcome)) {
+            return;
+        }
+        if (outcome.status != InputStatus::Applied) {
+            result = textResult(inputFailureText(outcome), true);
+            break;
+        }
+        if (!beginInputAcknowledgement(state, deferred, outcome, result)) {
+            break;
+        }
+        /* The frame that proves the batch is rendered after this iterate. */
+        return;
+    }
+    case DeferredRequest::InputFrame: {
+        const std::string applied = appliedText(deferred.actionCount, deferred.appliedFrame);
+        if (!completeDeferredCapture(state, deferred, applied, result)) {
+            return;
+        }
+        if (result.frame.has_value()) {
+            if (const std::optional<std::string> order =
+                    sdl3mcp::checkFrameOrder(deferred.appliedFrame, result.frame->frame);
+                order.has_value()) {
+                result = textResult(*order, true);
+            } else {
+                result.frameText = applied + "; frame " +
+                                   std::to_string(result.frame->frame) +
+                                   " attached, rendered after the actions were delivered";
+            }
+        }
+        break;
+    }
+    }
+
+    /* Clear the stored call before writing, so no reference into it survives. */
+    const ToolCall call = deferred.call;
+    state.deferred.reset();
+    if (state.responder) {
+        std::string error;
+        state.responder->answer(call, result, error);
+    }
+}
+#endif /* __EMSCRIPTEN__ */
+
+/*
+  Wakes a waiting sdl_capture and stops the queue before the endpoint so both
   blocked handlers return, then joins the reader, then hands stdin/stdout back.
-  Safe with no state, and safe when startup failed before the server existed.
+  On the browser the same three steps release the frame request and the batch,
+  and the peer is stopped instead of a server thread being joined. Safe with no
+  state, and safe when startup failed before the endpoint existed.
 */
 void teardownState() noexcept
 {
@@ -676,6 +1162,7 @@ void teardownState() noexcept
             g_state->capture.cancel();
             g_state->inputQueue.stop();
             releaseHeldInput(*g_state);
+#ifndef __EMSCRIPTEN__
             if (g_state->server) {
                 g_state->server->stop();
                 g_state->server->join();
@@ -685,6 +1172,11 @@ void teardownState() noexcept
                 g_state->connectFd = -1;
             }
             g_state->isolation.restore();
+#else
+            g_state->peer.stop();
+            g_state->deferred.reset();
+            g_state->responder.reset();
+#endif
         } catch (...) {
             /* Shutdown must not throw; dropping the state still stops the thread. */
         }
@@ -709,11 +1201,22 @@ SDL3MCP_AppInit(SDL3MCP_Configuration *config, int argc, char **argv)
             return SDL_APP_FAILURE;
         }
 
-        const SDL3MCP_Configuration base =
+        SDL3MCP_Configuration base =
             config != nullptr ? *config : SDL3MCP_DefaultConfiguration();
+#ifdef __EMSCRIPTEN__
+        /*
+          A page has no command line, so a transport in the caller's value cannot
+          name a server: only the query string can, and its absence means none.
+        */
+        base.transport = SDL3MCP_TRANSPORT_NONE;
+#endif
 
         Configuration configuration(base);
+#ifdef __EMSCRIPTEN__
+        const Configuration::Status status = applyPageQuery(configuration);
+#else
         const Configuration::Status status = configuration.parseCommandLine(argc, argv);
+#endif
         if (status == Configuration::Status::Error) {
             writeCommandLineError(configuration.message());
             SDL_SetError("%s", configuration.message().c_str());
@@ -737,6 +1240,7 @@ SDL3MCP_AppInit(SDL3MCP_Configuration *config, int argc, char **argv)
         info.maxFrameBytes = g_state->configuration.value().max_frame_bytes;
         g_state->publishInfo(std::move(info));
 
+#ifndef __EMSCRIPTEN__
         if (g_state->configuration.value().transport == SDL3MCP_TRANSPORT_STDIO) {
             std::string error;
             if (!g_state->isolation.engage(error)) {
@@ -783,6 +1287,25 @@ SDL3MCP_AppInit(SDL3MCP_Configuration *config, int argc, char **argv)
             }
             g_state->server = std::move(server);
         }
+#else
+        /*
+          The page's only server is the endpoint it named. The dial completes in
+          the browser, so a URL the browser refuses fails here and a connection
+          that never opens surfaces through the peer instead of blocking startup.
+        */
+        if (g_state->configuration.value().transport == SDL3MCP_TRANSPORT_WEBSOCKET) {
+            const SDL3MCP_Configuration &configuration = g_state->configuration.value();
+            std::string error;
+            if (!g_state->peer.open(configuration.connect_host, configuration.connect_port,
+                                    error)) {
+                g_state.reset();
+                SDL_SetError("%s", error.c_str());
+                return SDL_APP_FAILURE;
+            }
+            g_state->responder = std::make_unique<Responder>(
+                g_state->peer, g_state->session, makePeerToolHandler(g_state.get()));
+        }
+#endif
 
         return SDL_APP_CONTINUE;
     } catch (const std::exception &exception) {
@@ -865,11 +1388,17 @@ extern "C" SDL_DECLSPEC SDL_AppResult SDLCALL SDL3MCP_AppIterate(void)
         if (g_state->configuration.value().transport == SDL3MCP_TRANSPORT_NONE) {
             return SDL_APP_CONTINUE;
         }
+#ifndef __EMSCRIPTEN__
         if (g_state->server && g_state->server->failed()) {
             const std::string error = g_state->server->lastError();
             SDL_SetError("%s", error.empty() ? "the MCP server thread failed" : error.c_str());
             return SDL_APP_FAILURE;
         }
+#else
+        /* Before the frame counter, so a request registered here is answered by
+           a frame this loop has not produced yet. */
+        pumpPeer(*g_state);
+#endif
 
         ++g_state->frameCounter;
         const uint64_t frame = g_state->frameCounter;
@@ -879,6 +1408,11 @@ extern "C" SDL_DECLSPEC SDL_AppResult SDLCALL SDL3MCP_AppIterate(void)
             applyNextBatch(*g_state, frame);
         }
         publishSnapshot(*g_state, frame);
+#ifdef __EMSCRIPTEN__
+        /* After the frame work, so the frame the app answered this frame's
+           request with is the one a completed capture carries. */
+        completeDeferredCall(*g_state);
+#endif
 
         /*
           One quit request makes one SDL_EVENT_QUIT. A failed push restores the
@@ -908,14 +1442,42 @@ extern "C" SDL_DECLSPEC void SDLCALL SDL3MCP_AppShutdown(void)
         /* A failed shutdown must still be a no-op rather than an escaping exception. */
         g_state.reset();
     }
+#ifdef __EMSCRIPTEN__
+    /*
+      The page owns the window and only the app knows it has quit, so the tab
+      closes itself. teardownState has already stopped the peer, so the client
+      sees the session end before the page disappears. The script is an EM_ASM
+      body rather than an emscripten_run_script string so it is emitted into the
+      generated JavaScript, where the size of the wasm data section cannot hide
+      it.
+
+      Firefox refuses window.close() unless dom.allow_scripts_to_close_windows
+      is true, which the web spawner sets in the throwaway profile's user.js. A
+      refusal is not an error here: the spawner kills the browser after its
+      grace period, and this call exists so that the normal case is a closed
+      window rather than a kill.
+    */
+    EM_ASM({ window.close(); });
+#endif
 }
 
 extern "C" SDL_DECLSPEC bool SDLCALL SDL3MCP_FrameRequested(void)
 {
     try {
-        if (!g_state || g_state->window == nullptr || !g_state->server) {
+        if (!g_state || g_state->window == nullptr) {
             return false;
         }
+#ifndef __EMSCRIPTEN__
+        if (!g_state->server) {
+            return false;
+        }
+#else
+        /* The browser has no Server: the peer is the endpoint, and a peer that
+           closed cannot answer a frame anyway. */
+        if (!g_state->responder || g_state->peer.failed()) {
+            return false;
+        }
+#endif
         /*
           Decline the poll before the app has completed a frame worth answering:
           the request stays pending, so the next servable frame answers it.

@@ -4,9 +4,10 @@
   are supervisor policy and are covered by supervisor_png_tests.
 */
 
-#include "frame.hpp"
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include <doctest/doctest.h>
 
-#include "test_util.hpp"
+#include "frame.hpp"
 
 #include <array>
 #include <cstddef>
@@ -63,7 +64,7 @@ bool hasValue(const std::optional<std::string> &error)
     return error.has_value();
 }
 
-void testValidateAcceptsExactBytes()
+TEST_CASE("validate accepts exact bytes")
 {
     const std::vector<uint8_t> pixels(4 * 5 * 4, 0);
     CHECK(!hasValue(sdl3mcp::validateFrame(pixels.data(), pixels.size(), 4, 5,
@@ -72,7 +73,7 @@ void testValidateAcceptsExactBytes()
                                           80u)));
 }
 
-void testValidateRejectsNullAndBadDimensions()
+TEST_CASE("validate rejects null and bad dimensions")
 {
     CHECK(hasValue(sdl3mcp::validateFrame(nullptr, 0, 4, 5, 33554432u)));
     CHECK(hasValue(sdl3mcp::validateFrame(nullptr, 80, 4, 5, 33554432u)));
@@ -86,7 +87,7 @@ void testValidateRejectsNullAndBadDimensions()
                                           33554432u)));
 }
 
-void testValidateRejectsSizeMismatch()
+TEST_CASE("validate rejects size mismatch")
 {
     const std::vector<uint8_t> pixels(81, 0);
 
@@ -101,7 +102,7 @@ void testValidateRejectsSizeMismatch()
     CHECK(tooLarge->find("size 81 != 4*5*4") != std::string::npos);
 }
 
-void testValidateRejectsOversizedFrame()
+TEST_CASE("validate rejects oversized frame")
 {
     const std::vector<uint8_t> pixels(4 * 5 * 4, 0);
     const auto error =
@@ -110,7 +111,7 @@ void testValidateRejectsOversizedFrame()
     CHECK(error->find("max_frame_bytes") != std::string::npos);
 }
 
-void testValidateUsesSixtyFourBitByteCount()
+TEST_CASE("validate uses sixty four bit byte count")
 {
     /*
       A 32-bit product of 100000 * 100000 * 4 truncates to 1345294336, which is
@@ -128,7 +129,7 @@ void testValidateUsesSixtyFourBitByteCount()
                                           std::numeric_limits<uint32_t>::max())));
 }
 
-void testCropCopiesExactPixels()
+TEST_CASE("crop copies exact pixels")
 {
     const Frame frame = patternedFrame(4, 4);
     std::string error;
@@ -148,7 +149,7 @@ void testCropCopiesExactPixels()
     }
 }
 
-void testCropAcceptsFarEdge()
+TEST_CASE("crop accepts far edge")
 {
     const Frame frame = patternedFrame(4, 4);
     std::string error;
@@ -179,7 +180,7 @@ void expectCropRejected(const Frame &frame, const CaptureRegion &region)
     CHECK(!error.empty());
 }
 
-void testCropRejectsInvalidRegions()
+TEST_CASE("crop rejects invalid regions")
 {
     const Frame frame = patternedFrame(4, 4);
 
@@ -200,17 +201,3 @@ void testCropRejectsInvalidRegions()
 }
 
 } // namespace
-
-int main()
-{
-    testValidateAcceptsExactBytes();
-    testValidateRejectsNullAndBadDimensions();
-    testValidateRejectsSizeMismatch();
-    testValidateRejectsOversizedFrame();
-    testValidateUsesSixtyFourBitByteCount();
-
-    testCropCopiesExactPixels();
-    testCropAcceptsFarEdge();
-    testCropRejectsInvalidRegions();
-    return 0;
-}

@@ -17,8 +17,10 @@
   something human to report.
 
   terminate() is SIGTERM first, then SIGKILL after the grace period, and it
-  joins both threads, so the stderr tail is complete when it returns. No SDL and
-  no shell are involved. POSIX only, matching the rest of the project.
+  joins both threads, so the stderr tail is complete when it returns. A child
+  asked to lead its own process group is signalled through that group, so
+  whatever it forked is stopped with it. No SDL and no shell are involved.
+  POSIX only, matching the rest of the project.
 */
 
 #ifndef SDL3MCP_SUPERVISOR_CHILD_PROCESS_HPP
@@ -50,6 +52,13 @@ struct ChildCommand
       the socket it dials, not stdio.
     */
     bool inheritStdio = false;
+    /*
+      When true the child leads a process group of its own. A launcher that owns
+      more than one process then stops them with one signal per group instead of
+      leaving whatever the child forked behind, which is what makes a browser
+      shutdown deterministic.
+    */
+    bool newProcessGroup = false;
 };
 
 class ChildProcess
@@ -96,8 +105,24 @@ public:
     std::string stderrTail() const;
 
     /*
-      SIGTERM, wait up to graceMs, then SIGKILL. Idempotent; joins the monitor
-      and stderr threads so the stderr tail is final when it returns.
+      SIGTERM to the child, or to its whole process group when it leads one,
+      without waiting. The first half of a stop that has to reach several
+      children at once.
+    */
+    void requestStop();
+
+    /* SIGKILL to the same target, for a child that outlived the grace period. */
+    void forceStop();
+
+    /*
+      Stops the stderr reader, joins both threads, and closes the exec channel.
+      Idempotent; call it once every child has been waited for.
+    */
+    void finish();
+
+    /*
+      requestStop(), wait up to graceMs, forceStop() for a survivor, then
+      finish(). Idempotent.
     */
     void terminate(int graceMs = kDefaultTerminateGraceMs);
 
@@ -111,8 +136,12 @@ private:
     void joinThreads();
     void closeDescriptors();
     void closeIfOpen(int &fd);
+    /* The pid to signal: the group id when the child leads one, else the pid. */
+    pid_t signalTarget() const noexcept { return processGroup_ ? -pid_ : pid_; }
 
     pid_t pid_ = -1;
+    /* True once the child leads its own process group; signals go to the group. */
+    bool processGroup_ = false;
     int stdinFd_ = -1;
     int stdoutFd_ = -1;
     int stderrFd_ = -1;

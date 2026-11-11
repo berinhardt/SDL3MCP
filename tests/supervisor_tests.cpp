@@ -15,12 +15,13 @@
   problem.
 */
 
+#define DOCTEST_CONFIG_IMPLEMENT
+#include <doctest/doctest.h>
+
 #include "cli.hpp"
 #include "supervisor.hpp"
 #include "tools.hpp"
 #include "transport.hpp"
-
-#include "test_util.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -46,6 +47,12 @@
 
 namespace
 {
+
+/* The CTest registration supplies the binaries as argv[1], argv[2] and, for the
+   real-example run, argv[3]. */
+std::string g_supervisor;
+std::string g_fakeChild;
+std::string g_example;
 
 using namespace std::chrono_literals;
 using sdl3mcp::ReadStatus;
@@ -1175,6 +1182,120 @@ void dumpToolDefinitions()
 
 } // namespace
 
+TEST_CASE("command line")
+{
+    testCommandLine();
+}
+
+TEST_CASE("tool list views")
+{
+    testToolListViews();
+}
+
+TEST_CASE("idle advertises spawn and app tools")
+{
+    testIdleAdvertisesSpawnAndAppTools(g_supervisor, g_fakeChild);
+}
+
+TEST_CASE("spawn and proxy")
+{
+    const std::string pidFile = makeTempPath();
+    testSpawnAndProxy(g_supervisor, g_fakeChild, pidFile);
+    ::unlink(pidFile.c_str());
+}
+
+TEST_CASE("captures stay at the native size")
+{
+    testCaptureStaysNativeSize(g_supervisor, g_fakeChild);
+}
+
+TEST_CASE("capture region")
+{
+    testCaptureRegion(g_supervisor, g_fakeChild);
+}
+
+TEST_CASE("capture text error")
+{
+    testCaptureTextError(g_supervisor, g_fakeChild);
+}
+
+TEST_CASE("capture rpc error")
+{
+    testCaptureRpcError(g_supervisor, g_fakeChild);
+}
+
+TEST_CASE("capture mismatch")
+{
+    testCaptureMismatch(g_supervisor, g_fakeChild);
+}
+
+TEST_CASE("capture large frame")
+{
+    testCaptureLargeFrame(g_supervisor, g_fakeChild);
+}
+
+TEST_CASE("input frame through the proxy")
+{
+    testInputFrameThroughProxy(g_supervisor, g_fakeChild);
+}
+
+TEST_CASE("input forward deadline")
+{
+    testInputForwardDeadline(g_supervisor, g_fakeChild);
+}
+
+TEST_CASE("child exits while running")
+{
+    testChildExitWhileRunning(g_supervisor, g_fakeChild);
+}
+
+TEST_CASE("child exits during startup")
+{
+    testChildExitDuringStartup(g_supervisor, g_fakeChild);
+}
+
+TEST_CASE("initialize failure")
+{
+    testInitializeFailure(g_supervisor, g_fakeChild);
+}
+
+TEST_CASE("nonexistent target")
+{
+    testNonexistentTarget(g_supervisor);
+}
+
+TEST_CASE("window timeout")
+{
+    testWindowTimeout(g_supervisor, g_fakeChild);
+}
+
+TEST_CASE("terminate normal")
+{
+    const std::string pidFile = makeTempPath();
+    testTerminateNormal(g_supervisor, g_fakeChild, pidFile);
+    ::unlink(pidFile.c_str());
+}
+
+TEST_CASE("terminate watchdog")
+{
+    const std::string pidFile = makeTempPath();
+    testTerminateWatchdog(g_supervisor, g_fakeChild, pidFile);
+    ::unlink(pidFile.c_str());
+}
+
+TEST_CASE("signals stop the child")
+{
+    testSignalsStopChild(g_supervisor, g_fakeChild);
+}
+
+/* The second CTest registration adds the real example as argv[3]. */
+TEST_CASE("the real example through the proxy")
+{
+    if (!g_example.empty()) {
+        testRealExample(g_supervisor, g_example);
+    }
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 2 && std::string_view(argv[1]) == "--dump-tools") {
@@ -1182,49 +1303,17 @@ int main(int argc, char **argv)
         return 0;
     }
 
+    /* Doctest owns argv once it runs, so it is given only the binary name. The
+       context also makes a failing argument check outside a case abort, as the
+       hand-rolled harness did. */
+    doctest::Context context(1, argv);
+    context.setAsDefaultForAssertsOutOfTestCases();
     CHECK(argc >= 3);
-    const std::string supervisor = argv[1];
-    const std::string fakeChild = argv[2];
 
-    testCommandLine();
-    testToolListViews();
-    testIdleAdvertisesSpawnAndAppTools(supervisor, fakeChild);
-
-    const std::string pidFile = makeTempPath();
-    testSpawnAndProxy(supervisor, fakeChild, pidFile);
-    ::unlink(pidFile.c_str());
-
-    testCaptureStaysNativeSize(supervisor, fakeChild);
-    testCaptureRegion(supervisor, fakeChild);
-    testCaptureTextError(supervisor, fakeChild);
-    testCaptureRpcError(supervisor, fakeChild);
-    testCaptureMismatch(supervisor, fakeChild);
-    testCaptureLargeFrame(supervisor, fakeChild);
-
-    testInputFrameThroughProxy(supervisor, fakeChild);
-    testInputForwardDeadline(supervisor, fakeChild);
-
-    testChildExitWhileRunning(supervisor, fakeChild);
-    testChildExitDuringStartup(supervisor, fakeChild);
-    testInitializeFailure(supervisor, fakeChild);
-    testNonexistentTarget(supervisor);
-    testWindowTimeout(supervisor, fakeChild);
-
-    const std::string terminatePidFile = makeTempPath();
-    testTerminateNormal(supervisor, fakeChild, terminatePidFile);
-    ::unlink(terminatePidFile.c_str());
-
-    const std::string watchdogPidFile = makeTempPath();
-    testTerminateWatchdog(supervisor, fakeChild, watchdogPidFile);
-    ::unlink(watchdogPidFile.c_str());
-
-    testSignalsStopChild(supervisor, fakeChild);
-
-    /* The second CTest registration adds the real example as argv[3]. */
+    g_supervisor = argv[1];
+    g_fakeChild = argv[2];
     if (argc >= 4) {
-        testRealExample(supervisor, argv[3]);
+        g_example = argv[3];
     }
-
-    std::printf("supervisor_tests: all checks passed\n");
-    return 0;
+    return context.run();
 }

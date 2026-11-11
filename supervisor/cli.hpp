@@ -5,14 +5,17 @@
     --target <executable> [app args...]   manage a child app over stdio
     --listen=HOST:PORT                    act as a relay for a dialing app
     --connect=HOST:PORT --targets=PATH    spawn apps for a relay, one at a time
-    --web-root=DIR [--web-entry=NAME]     launch a browser against a web build
+    --web-root=DIR [--web-entry=NAME]     print the launch plan for a web build
 
   --targets may be repeated; each PATH is a JSON file or a directory of *.json
   files, and all of them accumulate into one alias map. --listen also serves as
   the bind address for the spawner's per-spawn listener; without it the spawner
   binds 127.0.0.1:0. --web-entry defaults to catalyst.html and requires
-  --web-root; the web mode owns the whole launch and cannot be combined with the
-  other three.
+  --web-root; the web mode owns the whole launch and cannot be combined with
+  --target, --listen or --targets. In web mode --connect names the relay the
+  bridge dials and --web-port/--bridge-port pin the page and bridge ports;
+  --print-plan asks for the plan instead of the launch, and until the launcher
+  lands the web mode always prints and starts nothing.
 
   Splitting the parse from argv keeps the grammar testable without a process:
   parseCommandLine() takes the plain argument list and returns a value. Everything
@@ -36,6 +39,13 @@ namespace sdl3mcp
 constexpr int kDefaultStartupTimeoutMs = 10000;
 constexpr int kDefaultTerminateTimeoutMs = 60000;
 constexpr const char *kDefaultWebEntry = "catalyst.html";
+/*
+  The page and bridge ports default to the pair the documentation shows so a
+  plan can be composed without pinning either one; the launcher overrides them
+  with the ephemeral ports it binds.
+*/
+constexpr std::uint16_t kDefaultWebPagePort = 18080;
+constexpr std::uint16_t kDefaultWebBridgePort = 18081;
 
 struct SupervisorOptions
 {
@@ -58,12 +68,17 @@ struct SupervisorOptions
     std::string webRoot;
     /* --web-entry=NAME, defaulting to kDefaultWebEntry. */
     std::string webEntry = kDefaultWebEntry;
+    /* --web-port=N and --bridge-port=N, defaulting to the documented pair. */
+    std::uint16_t webPort = kDefaultWebPagePort;
+    std::uint16_t bridgePort = kDefaultWebBridgePort;
+    /* --print-plan: print the plan a launch would use, start nothing. */
+    bool printPlan = false;
 
     /* Spawner mode: dial a relay and spawn the targets on demand. */
     bool spawner() const noexcept { return !connectHost.empty(); }
     /* Relay mode: only --listen was given (the app dials us). */
     bool relay() const noexcept { return !listenHost.empty() && !spawner(); }
-    /* Web mode: serve a page and launch a browser against it. */
+    /* Web mode: compose a page, bridge and browser launch from a web build. */
     bool web() const noexcept { return !webRoot.empty(); }
 };
 
@@ -77,7 +92,7 @@ struct CliParseResult
 /*
   Parses argv without argv[0]. Returns ok=false with a one-line explanation when
   an option is unknown, missing its value, the modes conflict, both --connect and
-  --targets are not supplied together, --web-entry is given without --web-root,
+  --targets are not supplied together, a web option is given without --web-root,
   or a targets source fails validation.
 */
 CliParseResult parseCommandLine(const std::vector<std::string> &arguments);

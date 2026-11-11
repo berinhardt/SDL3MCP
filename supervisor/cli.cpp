@@ -24,6 +24,11 @@ constexpr std::string_view kWebRootOption = "--web-root";
 constexpr std::string_view kWebRootPrefix = "--web-root=";
 constexpr std::string_view kWebEntryOption = "--web-entry";
 constexpr std::string_view kWebEntryPrefix = "--web-entry=";
+constexpr std::string_view kWebPortOption = "--web-port";
+constexpr std::string_view kWebPortPrefix = "--web-port=";
+constexpr std::string_view kBridgePortOption = "--bridge-port";
+constexpr std::string_view kBridgePortPrefix = "--bridge-port=";
+constexpr std::string_view kPrintPlanOption = "--print-plan";
 
 bool parsePositiveInteger(std::string_view text, int &value)
 {
@@ -43,12 +48,33 @@ bool parsePositiveInteger(std::string_view text, int &value)
     return true;
 }
 
+bool parsePort(std::string_view text, std::uint16_t &port)
+{
+    if (text.empty()) {
+        return false;
+    }
+
+    unsigned parsed = 0;
+    const char *begin = text.data();
+    const char *end = text.data() + text.size();
+    const auto result = std::from_chars(begin, end, parsed);
+    if (result.ec != std::errc{} || result.ptr != end || parsed < 1 || parsed > 65535) {
+        return false;
+    }
+
+    port = static_cast<std::uint16_t>(parsed);
+    return true;
+}
+
 } // namespace
 
 CliParseResult parseCommandLine(const std::vector<std::string> &arguments)
 {
     CliParseResult result;
     bool webEntryGiven = false;
+    bool webPortGiven = false;
+    bool bridgePortGiven = false;
+    bool printPlanGiven = false;
 
     size_t index = 0;
     while (index < arguments.size()) {
@@ -142,10 +168,6 @@ CliParseResult parseCommandLine(const std::vector<std::string> &arguments)
         }
 
         if (argument.rfind(kConnectPrefix, 0) == 0) {
-            if (result.options.web()) {
-                result.error = "--web-root and --connect cannot be combined";
-                return result;
-            }
             if (!result.options.connectHost.empty()) {
                 result.error = "--connect may be given only once";
                 return result;
@@ -195,8 +217,8 @@ CliParseResult parseCommandLine(const std::vector<std::string> &arguments)
         }
 
         if (argument.rfind(kWebRootPrefix, 0) == 0) {
-            if (!result.options.targetsPaths.empty() || result.options.spawner()) {
-                result.error = "--web-root and --connect cannot be combined";
+            if (!result.options.targetsPaths.empty()) {
+                result.error = "--web-root and --targets cannot be combined";
                 return result;
             }
             if (result.options.relay()) {
@@ -248,12 +270,86 @@ CliParseResult parseCommandLine(const std::vector<std::string> &arguments)
             continue;
         }
 
+        if (argument == kWebPortOption) {
+            result.error = "--web-port requires a port written as --web-port=PORT";
+            return result;
+        }
+
+        if (argument.rfind(kWebPortPrefix, 0) == 0) {
+            if (webPortGiven) {
+                result.error = "--web-port may be given only once";
+                return result;
+            }
+
+            const std::size_t valueStart = kWebPortOption.size() + 1;
+            const std::string_view value(argument.data() + valueStart,
+                                         argument.size() - valueStart);
+            if (!parsePort(value, result.options.webPort)) {
+                result.error = "invalid value for --web-port: expected 1..65535";
+                return result;
+            }
+            webPortGiven = true;
+            index += 1;
+            continue;
+        }
+
+        if (argument == kBridgePortOption) {
+            result.error = "--bridge-port requires a port written as --bridge-port=PORT";
+            return result;
+        }
+
+        if (argument.rfind(kBridgePortPrefix, 0) == 0) {
+            if (bridgePortGiven) {
+                result.error = "--bridge-port may be given only once";
+                return result;
+            }
+
+            const std::size_t valueStart = kBridgePortOption.size() + 1;
+            const std::string_view value(argument.data() + valueStart,
+                                         argument.size() - valueStart);
+            if (!parsePort(value, result.options.bridgePort)) {
+                result.error = "invalid value for --bridge-port: expected 1..65535";
+                return result;
+            }
+            bridgePortGiven = true;
+            index += 1;
+            continue;
+        }
+
+        if (argument == kPrintPlanOption) {
+            if (printPlanGiven) {
+                result.error = "--print-plan may be given only once";
+                return result;
+            }
+            result.options.printPlan = true;
+            printPlanGiven = true;
+            index += 1;
+            continue;
+        }
+
         result.error = "unexpected argument: " + argument;
         return result;
     }
 
     if (webEntryGiven && result.options.webRoot.empty()) {
         result.error = "--web-entry requires --web-root=DIR";
+        return result;
+    }
+    if (webPortGiven && !result.options.web()) {
+        result.error = "--web-port requires --web-root=DIR";
+        return result;
+    }
+    if (bridgePortGiven && !result.options.web()) {
+        result.error = "--bridge-port requires --web-root=DIR";
+        return result;
+    }
+    if (printPlanGiven && !result.options.web()) {
+        result.error = "--print-plan requires --web-root=DIR";
+        return result;
+    }
+
+    if (result.options.web()) {
+        result.ok = true;
         return result;
     }
 
@@ -263,11 +359,6 @@ CliParseResult parseCommandLine(const std::vector<std::string> &arguments)
     }
     if (!result.options.connectHost.empty() && result.options.targetsPaths.empty()) {
         result.error = "--connect requires --targets=PATH";
-        return result;
-    }
-
-    if (result.options.web()) {
-        result.ok = true;
         return result;
     }
 
@@ -295,7 +386,9 @@ std::string usageLine()
     return "usage: sdl3mcp [--startup-timeout-ms N] [--terminate-timeout-ms N] "
            "(--target <executable> [app args...] | --listen=HOST:PORT | "
            "--connect=HOST:PORT --targets=PATH [--targets=PATH ...] "
-           "[--listen=HOST:PORT] | --web-root=DIR [--web-entry=NAME])";
+           "[--listen=HOST:PORT] | --web-root=DIR [--web-entry=NAME] "
+           "[--web-port=PORT] [--bridge-port=PORT] [--connect=HOST:PORT] "
+           "[--print-plan])";
 }
 
 } // namespace sdl3mcp

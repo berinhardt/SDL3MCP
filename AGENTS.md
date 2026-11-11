@@ -1,10 +1,11 @@
 # AGENTS.md
 
 SDL3MCP is a library that embeds an MCP server in any SDL3 application: public
-C API, C++20 internals, stdio and dialed-socket transports, synthetic input, and
-PNG frame capture. `README.md` is the design contract and the implementation
-follows it: the transport, input replay, frame pipeline, and all four MCP tools
-are in `src/`, and `examples/minimal` is a complete host.
+C API, C++20 internals, a stdio server and a dialed endpoint on desktop, a
+dialed WebSocket in the browser, synthetic input, and PNG frame capture.
+`README.md` is the design contract and the implementation follows it: the
+transports, input replay, frame pipeline, and all four MCP tools are in `src/`,
+and `examples/minimal` is a complete host.
 
 ## Current state
 
@@ -23,6 +24,16 @@ are in `src/`, and `examples/minimal` is a complete host.
   itself and its SDL child) and `tsan` filters to `queue_tests`, `server_tests`,
   and `supervisor_tests`. The direct `cmake -S . -B build` flow stays the
   documented path and no CI workflow runs the presets.
+- The unit suite is doctest. `SDL3MCP_BUILD_TESTS` defaults to on for a
+  top-level configure, and a missing doctest is a configure error, never a
+  silent zero-test run; a parent that vendors doctest through
+  `add_subdirectory` already defines `doctest::doctest` and needs no package.
+  `SDL3MCP_BUILD_TESTS` also works from a parent tree: Catalyst's desktop
+  configurations build the library suite and run it from their own `ctest`.
+  The supervisor half — `supervisor_png_tests`, `supervisor_tests`,
+  `relay_tests`, `spawner_tests`, `supervisor_real_app` — is registered only
+  under `SDL3MCP_BUILD_CLI`, which a parent build leaves off, so those still
+  need a standalone configure.
 - The example target is `minimal`, built from `examples/CMakeLists.txt`, so the
   binary is `build/examples/minimal`; run `./build/examples/minimal --mcp` from
   the repository root (or `cd build && ./examples/minimal --mcp`). There is no
@@ -35,21 +46,29 @@ are in `src/`, and `examples/minimal` is a complete host.
   requires every catalog and README tool description to carry a parseable
   `Example:` JSON object naming each argument its schema accepts. CTest
   registers it as `readme_check` when Python 3 is found.
-- `SDL3MCP_BUILD_CLI=ON` builds `build/sdl3mcp`, one executable with
-  three modes over one peer seam. `--target <executable>` is the child
-  supervisor: it speaks MCP on its own stdio and runs one target child at a time
-  over private pipes. `--listen=HOST:PORT` is a relay: it speaks MCP on its own
+- `SDL3MCP_BUILD_CLI=ON` builds `build/sdl3mcp`, one executable with three
+  peer modes over one peer seam and a fourth that launches a web run.
+  `--target <executable>` is the child supervisor: it speaks MCP on its own
+  stdio and runs one target child at a time over private pipes.
+  `--listen=HOST:PORT` is a relay: it speaks MCP on its own
   stdio and proxies to whichever application dials in, one session at a time.
   `--connect=HOST:PORT --targets=PATH [--listen=HOST:PORT]` is a spawner: it
   dials a relay, advertises one `app_spawn_<alias>` per targets entry, and starts
   the chosen application with `--mcp=HOST:PORT` so it dials back to a listener
-  the spawner owns. The modes vary only how the data-path `Peer`
+  the spawner owns. `--web-root=DIR [--web-entry=NAME] [--web-port=PORT]
+  [--bridge-port=PORT] [--connect=HOST:PORT] [--print-plan]` is a launcher: it
+  composes, starts and supervises the page server, the WebSocket bridge and an
+  isolated browser, owns no MCP session of its own and cannot be combined with
+  `--target`, `--listen` or `--targets`. `--print-plan` prints the plan it would
+  run and starts nothing. The three peer modes vary only how the data-path `Peer`
   (`supervisor/peer.hpp`) is created: `stdio_peer.*` for the client's own pipes,
   `child_peer.*` for a `--target` child, and `socket_peer.*` for an accepted
   application connection (`--listen`) or the dialed relay (`--connect`). The
-  proxy loop never knows which one it holds. Sources live in `supervisor/` (CLI, child process, peers, proxy,
-  targets file, PNG/base64) and its tests are `supervisor_png_tests` (the moved
-  presentation code), `supervisor_tests` (fake MCP child over real pipes),
+  proxy loop never knows which one it holds. Sources live in `supervisor/` (CLI,
+  child process, peers, proxy, targets file, PNG/base64, the web plan in
+  `web_app.*` and the web launch in `web_runner.*`) and its tests are
+  `supervisor_png_tests` (the moved presentation code),
+  `supervisor_tests` (fake MCP child over real pipes),
   `relay_tests` (fake application over TCP), `spawner_tests` (spawner against a
   relay the test owns) and `supervisor_real_app` (the real `examples/minimal`
   under `SDL_VIDEODRIVER=dummy`); the last is registered only when examples are
@@ -66,7 +85,31 @@ are in `src/`, and `examples/minimal` is a complete host.
   `SDL3MCP_TRANSPORT_NONE`; `--mcp` (or `--mcp=stdio`) enables the stdio server,
   `--mcp=HOST:PORT` dials one endpoint with no retry, and `--mcp=off` disables
   it. A failed dial fails `SDL3MCP_AppInit` instead of falling back to stdio or
-  to no server. Only the optional `sdl3mcp` relay binds a port.
+  to no server. Only the optional `sdl3mcp` relay binds a port. The enum is
+  `SDL3MCP_TRANSPORT_NONE`, `SDL3MCP_TRANSPORT_STDIO`,
+  `SDL3MCP_TRANSPORT_CONNECT` and `SDL3MCP_TRANSPORT_WEBSOCKET`, with
+  `SDL3MCP_TRANSPORT_WEBSOCKET` appended after `CONNECT` so the two existing
+  values keep their numbers. Desktop builds accept
+  `NONE`, `STDIO` and `CONNECT`; an Emscripten build accepts only `NONE` and
+  `SDL3MCP_TRANSPORT_WEBSOCKET`, because a page has neither a stdio server nor a
+  second thread. There, `--mcp=off` and `--mcp=HOST:PORT` are the only values:
+  no `stdio` value, no `--mcp-help`, no `--mcp-version`, and neither
+  `usageText()` nor `versionText()` is compiled, since no command line can reach
+  them.
+- **One parser, two configuration sources.** Desktop reads argv; the browser
+  reads `window.location.search`, takes the `mcp` parameter, percent-decodes it
+  and hands the same `--mcp=<value>` argument to
+  `Configuration::parseCommandLine`, so one grammar and one validator serve
+  both platforms. A page without the parameter starts no server. The `ws://`
+  scheme is added by the peer when it dials, never by configuration, so the
+  endpoint grammar stays `HOST:PORT` (or `[V6]:PORT`) on both platforms and
+  `connect_host` never carries a scheme.
+- **One protocol implementation, two write paths.** `Responder` is the only code
+  that parses a line, asks the session, and writes an answer; it is handed a
+  `ByteSink`, which names exactly two operations, `writeLine` and `writeBytes`.
+  The desktop `Transport` (an fd pair) and the browser `WebSocketPeer` both
+  implement it, so the protocol is written once and no code that answers a
+  request names a file descriptor.
 - **One lifecycle per process.** A second `SDL3MCP_AppInit` fails even after
   shutdown; `SDL3MCP_AppShutdown` is idempotent.
 - **`SDL3MCP_AppIterate` is the last call of the frame**, after drawing, after
@@ -81,18 +124,21 @@ are in `src/`, and `examples/minimal` is a complete host.
   the answer says which frame carries the pixels, and because the capture is
   requested only after the F+1 completion that frame is always rendered after
   the actions were delivered (one acknowledgement frame and at least one capture
-  frame later), so an unchanged frame means the actions had no effect.
+  frame later), so an unchanged frame means the actions had no effect. The
+  browser keeps the F+1 rule but not the frame: a batch there ends with its own
+  answer, and a frame is a separate `sdl_capture` (see the one-thread bullet).
 - **Capture framing: raw in the library, image/png at the MCP edge.**
-  `sdl_capture` and `sdl_input` are the two tools whose library result is not a
-  content array: they write one result line
+  On desktop `sdl_capture` and `sdl_input` are the two tools whose library
+  result is not a content array: they write one result line
   `{"format":"rgba8888","width":W,"height":H,"byteLength":B,"frame":F}`
   (`sdl_input` adds `"text"`, the line naming the applied and attached frames;
   `F` is the attached frame) and then exactly `B`
-  tightly packed RGBA bytes, with no newline and no base64. `region` stays in
-  the library; PNG and base64 are supervisor policy, and the supervisor encodes
-  the frame at exactly the dimensions it received, so frames are never
-  resized. The supervisor reads that framing, validates the header and payload
-  size, and returns the standard
+  tightly packed RGBA bytes, with no newline and no base64. Only `sdl_capture`
+  does that on the browser, because a batch there attaches no frame.
+  `region` stays in the library; PNG and base64 are supervisor policy, and the
+  supervisor encodes the frame at exactly the dimensions it received, so frames
+  are never resized. The supervisor reads that framing, validates the header
+  and payload size, and returns the standard
   `{"type":"image","mimeType":"image/png","data":"<base64>"}` content block,
   which stays the client-facing contract. A supervisor in front of another
   supervisor relays that already-presented `content` result untouched; only a
@@ -110,7 +156,8 @@ are in `src/`, and `examples/minimal` is a complete host.
   dimensions, so any render target is valid and the library never reads the
   window size to validate a frame. The app converts and packs when a readback
   surface is padded. The server thread crops the optional region and writes the
-  raw framing; PNG encoding and base64 happen only in the supervisor. Drops
+  raw framing; on the browser the app thread crops it when the deferred capture
+  settles. PNG encoding and base64 happen only in the supervisor. Drops
   (size mismatch for the supplied dimensions, `max_frame_bytes`, null data,
   non-positive dimension) leave the request pending and surface in the timeout
   text and `sdl_info`.
@@ -144,10 +191,35 @@ are in `src/`, and `examples/minimal` is a complete host.
 - **Warping needs no focus.** `SDL_WarpMouseInWindow` is best effort and a
   synthetic zero-delta motion accompanies the warp; Remote Desktop or headless
   sessions may ignore the OS warp while event-driven apps still see the move.
-- **Requests are serialized.** One server thread handles one message at a time,
-  so a blocking `sdl_input`/`sdl_capture` delays later requests, including
-  `ping`, by up to its timeout (for `sdl_input`, the whole apply-plus-frame
-  budget).
+- **Requests are serialized on desktop.** One server thread handles one message
+  at a time, so a blocking `sdl_input`/`sdl_capture` delays later requests,
+  including `ping`, by up to its timeout (for `sdl_input`, the whole
+  apply-plus-frame budget).
+- **The browser session is one thread, so it answers later.** Emscripten has no
+  `Server` and no second thread: `WebSocketPeer` dials with
+  `emscripten_websocket_new`, its callbacks copy each frame into a byte queue,
+  and `pump()` hands the complete lines to the `Responder`, whose answers leave
+  through `emscripten_websocket_send_binary`. Callbacks, `pump()` and every
+  write share the page's main thread, which is why the queue needs no lock.
+  `SDL3MCP_AppIterate` pumps at the top of the frame, before the frame counter,
+  so a request registered there is answered by a frame the loop has not produced
+  yet; it then completes a deferred call after the frame work, so a capture
+  carries the frame the app answered with. `sdl_capture` and `sdl_input` never
+  wait: they register the request (`CaptureState::begin`, `InputQueue::post`)
+  and return a result marked deferred, which `Responder` leaves unanswered. A
+  later frame settles it and writes the answer through `Responder::answer`, with
+  `frame_timeout_ms` as the deadline, and one deferred call at a time so a
+  capture and a batch never race for the same frame. The reason is structural
+  and it is the point of the design: there is one thread, so waiting for the app
+  to render or apply would be waiting for itself. Nothing on this path may
+  block — not the pump, not a handler, not a write.
+- **What is compiled where.** `src/server.cpp`, `src/transport.cpp`,
+  `src/stdio_isolation.cpp` and `src/socket_connect.cpp` are desktop-only;
+  `src/websocket_peer.cpp` takes their place on Emscripten. The wire object
+  library holds whichever arm the build can compile, and the protocol above it
+  is shared. The entry points gate on the endpoint this build has:
+  `SDL3MCP_FrameRequested` asks the desktop `Server`, or on the browser the
+  `Responder` and a live peer, so a peer that closed cannot answer a frame.
 - **The supervisor's forward deadline follows the tool.** A forwarded call that
   carries `timeout_ms` gets that budget plus a grace; without one, `sdl_input`
   gets twice the default frame timeout because it waits for the apply and then
@@ -157,18 +229,23 @@ are in `src/`, and `examples/minimal` is a complete host.
   (the frame's own `text` when it has one, the capture summary otherwise). An
   application configured with a larger `frame_timeout_ms` should pass
   `timeout_ms` explicitly.
-- **`sdl_terminate` only sets a flag.** The server thread stores the request and
-  returns `termination requested`; it never calls SDL. `SDL3MCP_AppIterate`
-  exchanges the flag and pushes exactly one zeroed `SDL_EVENT_QUIT`, restoring
+- **`sdl_terminate` only sets a flag.** The handler stores the request and
+  returns `termination requested`; it never calls SDL. On desktop that handler
+  runs on the server thread; on the browser the same handler runs on the app
+  thread during the pump. `SDL3MCP_AppIterate` exchanges the flag and pushes
+  exactly one zeroed `SDL_EVENT_QUIT`, restoring
   the flag to retry when `SDL_PushEvent` fails. It still returns
   `SDL_APP_CONTINUE` and leaves the app's own quit handling untouched.
-- **The supervisor is one executable with three modes and one state machine.**
-  Child mode (`--target`) speaks MCP on its own stdio and runs one target child
-  at a time. Relay mode (`--listen`) speaks MCP on its own stdio and waits for an
-  application to dial in. Spawner mode (`--connect --targets`) speaks MCP to the
-  relay it dialed and starts the chosen application on demand. The advertised
-  tool list is a function of the mode, never of whether an application is
-  attached: child mode advertises `spawn` plus the application's four tools,
+- **The supervisor is one executable with three peer modes and one state
+  machine.** Child mode (`--target`) speaks MCP on its own stdio and runs one
+  target child at a time. Relay mode (`--listen`) speaks MCP on its own stdio and
+  waits for an application to dial in. Spawner mode (`--connect --targets`)
+  speaks MCP to the relay it dialed and starts the chosen application on demand.
+  The web mode is the exception: it has no MCP session and no state machine of
+  its own, it only launches and supervises the three processes of a web run (see
+  the web bullets below). The advertised tool list is a function of the peer
+  mode, never of whether an application is attached: child mode advertises
+  `spawn` plus the application's four tools,
   relay mode `wait_session` plus those four, and spawner mode one
   `app_spawn_<alias>` per targets entry plus those four. `sdl_capture` always
   carries the supervisor's own definition (region, `timeout_ms`) because it owns
@@ -220,14 +297,68 @@ are in `src/`, and `examples/minimal` is a complete host.
   instead of silently dragging SDL into the relay. It never calls SDL and is
   POSIX-only (`fork`/`exec`, pipes, sockets, signals), matching the platform
   stance above.
+- **The web spawner launches three processes and owns their lifetime.**
+  `--web-root=DIR [--web-entry=NAME] [--web-port=PORT] [--bridge-port=PORT]
+  [--connect=HOST:PORT] [--print-plan]` (see `supervisor/cli.hpp`) composes the
+  run from `web_app.*` and supervises it in `web_runner.*`. `--web-entry`
+  defaults to `catalyst.html`, the page port to 18080 and the bridge port to
+  18081, and `--connect` names the relay the bridge dials, defaulting to
+  `127.0.0.1:7777`. Web mode owns the whole launch and cannot be combined with
+  `--target`, `--listen` or `--targets`. The plan, in launch order, is:
+  `python3 -m http.server PAGE_PORT --bind 127.0.0.1 --directory ROOT`,
+  `websocat --binary ws-l:127.0.0.1:BRIDGE_PORT tcp:RELAY`, and Firefox on
+  `http://127.0.0.1:PAGE_PORT/ENTRY?mcp=127.0.0.1:BRIDGE_PORT`, which is exactly
+  the query the page's configuration reads. `--print-plan` prints `browser=`,
+  `profile=` and one `command:` line per child and starts nothing; the same
+  `makeLaunchPlan` composes both, so what a review prints is what a launch runs.
+  Starting follows the plan: page server and bridge first, then up to a
+  one-second wait for both loopback ports to accept a connection, then the
+  browser. A child that exits during that wait fails the run and is named; an
+  expired wait only warns and starts the browser against a server that is still
+  coming up.
+- **A web launch checks its inputs before it forks anything.** `websocat`
+  (install it with `cargo install websocat`) and `python3` must be on `PATH`,
+  and the page root must be a directory that holds the entry, so a missing tool
+  is one sentence instead of a half-launched stack holding a bound port. The
+  browser is resolved by `resolveBrowser`: `$BROWSER` when it names `firefox` or
+  `firefox-esr`, otherwise `firefox` then `firefox-esr` on `PATH`, and no
+  fallback at all, because any other browser would open the page in the user's
+  own session instead of the isolated one.
+- **The browser runs in a throwaway profile, and that is not optional.** The
+  browser is started with `--profile` pointing at a fresh
+  `sdl3mcp-web-XXXXXX` directory under `$XDG_RUNTIME_DIR` (or `/tmp`) together
+  with `--no-remote --new-instance`, so the run can neither inherit nor join an
+  already running browser. `seedProfile` writes the `user.js` that carries
+  `dom.allow_scripts_to_close_windows`, which is what lets the page close its
+  own window when the application shuts down, plus the preferences that keep a
+  fresh profile from stopping on first-run prompts. That preference can only be
+  set in a profile we own, never in the user's settings; the directory is
+  removed when the run ends.
+- **A web run ends in one chain, and the application starts it.**
+  `sdl_terminate` reaches the app through the relay and the bridge, the app's
+  loop handles the `SDL_EVENT_QUIT` it produces, and `SDL3MCP_AppShutdown` runs
+  `window.close()`; the browser then exits, and the launcher — which polls all
+  three children and treats the first exit as the end of the run, naming the
+  child — stops the rest with SIGTERM to their process groups, waits one grace
+  period, escalates to SIGKILL for anything still alive, and removes the
+  throwaway profile. When Firefox refuses to close the window, the run does not
+  end on its own; a stop request then takes the browser down through that same
+  grace-then-SIGKILL path. The preference above is what makes the normal case a
+  page that closes itself. SIGINT and SIGTERM take the same stop path.
 - **fd ownership.** `NONE` leaves stdin/stdout untouched. `STDIO` duplicates the
   originals for MCP, redirects the host stdin to `/dev/null` and the host stdout
   to stderr, and restores both at shutdown. `CONNECT` dials one socket and
-  duplicates nothing, so the host keeps its own stdin/stdout. stderr stays
+  duplicates nothing, so the host keeps its own stdin/stdout. `WEBSOCKET` is the
+  browser's `CONNECT`: it dials the page's WebSocket and duplicates nothing,
+  because a page has no stdin, stdout or descriptor to isolate. stderr stays
   separate and is where diagnostics go; the host must not write stdout before
   `SDL3MCP_AppInit` in stdio mode.
-- **Threading.** The server thread never calls SDL. Geometry is snapshotted on
-  the app thread; frames and input cross through queues/copies.
+- **Threading.** The desktop server thread never calls SDL: geometry is
+  snapshotted on the app thread, and frames and input cross through
+  queues/copies. The browser build has no server thread at all — its transport
+  callbacks, the queue copy and the pump all run on the app thread, which is why
+  nothing on that path may block and why a tool call that needs the app is
+  answered by a later frame.
 - **Public surface.** The six entry points plus the header-inline
   `SDL3MCP_DefaultConfiguration()`. Use `SDL3MCP_Configuration` (the original
   brief's `SDL3MCP_Configuratio` was a typo) and `(void)` prototypes. The C API
@@ -242,12 +373,15 @@ are in `src/`, and `examples/minimal` is a complete host.
   rather than the shared object. The sources are compiled once; do not add a
   second static copy for the tests or drop the hidden visibility to make them
   link.
-- **The transports and stdio isolation are POSIX-only; Windows is a TODO.**
-  `poll`/`read`/`write`, `dup`/`dup2`, `/dev/null`, blocking `SIGPIPE` on the
-  server thread, and the socket dial/listen/accept path (`getaddrinfo`, `socket`,
-  `connect`, `listen`, `accept` in `src/socket_connect.cpp` and
-  `supervisor/socket_peer.cpp`) are the shipped paths. `CMakeLists.txt` rejects
-  a `WIN32` configure with a `FATAL_ERROR`, and `src/transport.cpp` and
+- **The fd transports, stdio isolation and socket dial are desktop-only;
+  Windows is a TODO.** A browser has no descriptor and no second thread, so the
+  Emscripten arm replaces all of them with `src/websocket_peer.cpp` and answers
+  from the frame loop. `poll`/`read`/`write`, `dup`/`dup2`, `/dev/null`,
+  blocking `SIGPIPE` on the server thread, and the socket dial/listen/accept
+  path (`getaddrinfo`, `socket`, `connect`, `listen`, `accept` in
+  `src/socket_connect.cpp` and `supervisor/socket_peer.cpp`) are the shipped
+  desktop paths. `CMakeLists.txt` rejects a `WIN32` configure with a
+  `FATAL_ERROR`, and `src/transport.cpp` and
   `src/stdio_isolation.cpp` carry a `TODO(windows)` comment naming the work:
   binary stdio (`_setmode` with `_O_BINARY`), a Win32 reader wake-up
   (`PeekNamedPipe`/`WaitForSingleObject`), `_dup`/`_dup2` with `NUL` for stdio

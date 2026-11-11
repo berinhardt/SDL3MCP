@@ -200,6 +200,97 @@ TEST_CASE("connect transport")
     CHECK(defaultsValue.connect_port == 0);
 }
 
+/* Desktop dials a TCP endpoint; a browser dials a WebSocket instead. One
+   kDialTransport constant picks between them, so the desktop arm is pinned
+   here and the browser arm below. */
+#ifndef __EMSCRIPTEN__
+TEST_CASE("the endpoint form selects the dial transport")
+{
+    const Outcome outcome = parse({"--mcp=192.0.2.10:4321"});
+    CHECK(outcome.status == kContinue);
+    CHECK(outcome.message.empty());
+    CHECK(outcome.value.transport == SDL3MCP_TRANSPORT_CONNECT);
+    CHECK(std::string(outcome.value.connect_host) == "192.0.2.10");
+    CHECK(outcome.value.connect_port == 4321);
+}
+
+TEST_CASE("the ws scheme is not part of the endpoint grammar")
+{
+    /* Accepting it would leave "ws" as the host and "//host:port" as the port. */
+    expectDefaultRejected("--mcp=ws://localhost:7777", "--mcp");
+    expectDefaultRejected("--mcp=wss://localhost:7777", "--mcp");
+    expectDefaultRejected("--mcp=ws://127.0.0.1:7777", "--mcp");
+}
+
+TEST_CASE("websocket is rejected on this platform")
+{
+    SDL3MCP_Configuration base = defaults();
+    base.transport = SDL3MCP_TRANSPORT_WEBSOCKET;
+    std::strcpy(base.connect_host, "localhost");
+    base.connect_port = 7777;
+
+    Configuration configuration(base);
+    CHECK(configuration.validate() == kError);
+    CHECK(configuration.message().find("SDL3MCP_TRANSPORT_NONE") != std::string::npos);
+    CHECK(configuration.message().find("SDL3MCP_TRANSPORT_STDIO") != std::string::npos);
+    CHECK(configuration.message().find("SDL3MCP_TRANSPORT_CONNECT") != std::string::npos);
+    CHECK(configuration.message().find("SDL3MCP_TRANSPORT_WEBSOCKET") == std::string::npos);
+}
+#endif
+
+/*
+  Compiled only in a wasm test build, which this tree does not configure today:
+  the Emscripten build leaves SDL3MCP_BUILD_TESTS off, so these cases are not
+  executed anywhere yet and nothing here covers the web arm. They record the
+  contract the browser build must honour once such a suite exists; the desktop
+  expectations above do not depend on them.
+*/
+#ifdef __EMSCRIPTEN__
+TEST_CASE("the endpoint form selects the websocket dial transport")
+{
+    const Outcome outcome = parse({"--mcp=127.0.0.1:7777"});
+    CHECK(outcome.status == kContinue);
+    CHECK(outcome.message.empty());
+    CHECK(outcome.value.transport == SDL3MCP_TRANSPORT_WEBSOCKET);
+    CHECK(std::string(outcome.value.connect_host) == "127.0.0.1");
+    CHECK(outcome.value.connect_port == 7777);
+}
+
+TEST_CASE("off selects no transport in the browser")
+{
+    const Outcome outcome = parse({"--mcp=off"});
+    CHECK(outcome.status == kContinue);
+    CHECK(outcome.value.transport == SDL3MCP_TRANSPORT_NONE);
+}
+
+TEST_CASE("stdio is not offered in the browser")
+{
+    const Outcome outcome = parse({"--mcp=stdio"});
+    CHECK(outcome.status == kError);
+    /* The echoed argument contains "stdio"; the offered values must not. */
+    CHECK(outcome.message.find("expected 'off' or HOST:PORT") != std::string::npos);
+    CHECK(sameConfiguration(outcome.value, defaults()));
+}
+
+TEST_CASE("only the browser transport validates")
+{
+    SDL3MCP_Configuration base = defaults();
+    base.transport = SDL3MCP_TRANSPORT_WEBSOCKET;
+    std::strcpy(base.connect_host, "localhost");
+    base.connect_port = 7777;
+
+    Configuration accepted(base);
+    CHECK(accepted.validate() == kContinue);
+    CHECK(accepted.message().empty());
+
+    base.transport = SDL3MCP_TRANSPORT_CONNECT;
+    Configuration rejected(base);
+    CHECK(rejected.validate() == kError);
+    CHECK(rejected.message().find("SDL3MCP_TRANSPORT_WEBSOCKET") != std::string::npos);
+    CHECK(rejected.message().find("SDL3MCP_TRANSPORT_CONNECT") == std::string::npos);
+}
+#endif
+
 TEST_CASE("base preservation")
 {
     SDL3MCP_Configuration base = defaults();

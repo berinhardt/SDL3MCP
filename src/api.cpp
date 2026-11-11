@@ -1344,6 +1344,23 @@ extern "C" SDL_DECLSPEC void SDLCALL SDL3MCP_AppShutdown(void)
         /* A failed shutdown must still be a no-op rather than an escaping exception. */
         g_state.reset();
     }
+#ifdef __EMSCRIPTEN__
+    /*
+      The page owns the window and only the app knows it has quit, so the tab
+      closes itself. teardownState has already stopped the peer, so the client
+      sees the session end before the page disappears. The script is an EM_ASM
+      body rather than an emscripten_run_script string so it is emitted into the
+      generated JavaScript, where the size of the wasm data section cannot hide
+      it.
+
+      Firefox refuses window.close() unless dom.allow_scripts_to_close_windows
+      is true, which the web spawner sets in the throwaway profile's user.js. A
+      refusal is not an error here: the spawner kills the browser after its
+      grace period, and this call exists so that the normal case is a closed
+      window rather than a kill.
+    */
+    EM_ASM({ window.close(); });
+#endif
 }
 
 extern "C" SDL_DECLSPEC bool SDLCALL SDL3MCP_FrameRequested(void)

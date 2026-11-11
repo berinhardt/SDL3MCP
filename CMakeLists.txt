@@ -294,6 +294,7 @@ if(SDL3MCP_BUILD_CLI AND NOT EMSCRIPTEN)
         supervisor/png.cpp
         supervisor/stb_image_write_impl.cpp
         supervisor/supervisor.cpp
+        supervisor/web_app.cpp
     )
     target_compile_features(sdl3mcp_supervisor_objects PRIVATE cxx_std_20)
     target_include_directories(sdl3mcp_supervisor_objects

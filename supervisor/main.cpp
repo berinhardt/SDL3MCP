@@ -2,7 +2,8 @@
   The supervisor executable: parse our own options, then hand the upstream MCP
   endpoint to the Supervisor. With --target the app is a child behind private
   pipes; with --listen the app dials in; with --connect --targets the supervisor
-  dials a relay and spawns the configured applications on demand.
+  dials a relay and spawns the configured applications on demand; with
+  --web-root the plan for a browser-hosted build is printed instead of launched.
 
   SIGINT and SIGTERM stop the supervisor the same way the client leaving does:
   the run loop returns and shutdown terminates any child with SIGTERM, a grace
@@ -15,8 +16,10 @@
 #include "socket_peer.hpp"
 #include "stdio_peer.hpp"
 #include "supervisor.hpp"
+#include "web_app.hpp"
 
 #include <csignal>
+#include <cstdint>
 #include <cstdio>
 #include <memory>
 #include <string>
@@ -30,6 +33,80 @@
 
 namespace
 {
+
+/*
+  Fixed stand-ins for the values the launcher resolves once it exists: it picks
+  the two ephemeral ports, finds the browser on PATH and seeds the throwaway
+  profile. Composing the plan from them here keeps the command shape inspectable
+  until then, without binding a port, starting a process or writing a file.
+*/
+constexpr const char *kPreviewRelayHost = "127.0.0.1";
+constexpr std::uint16_t kPreviewRelayPort = 7777;
+constexpr const char *kPreviewBrowser = "firefox";
+constexpr const char *kPreviewProfileDir = "/tmp/sdl3mcp-web-profile";
+constexpr std::uint16_t kPreviewPagePort = 8000;
+constexpr std::uint16_t kPreviewBridgePort = 8001;
+
+bool isShellSafe(char character)
+{
+    return (character >= 'a' && character <= 'z') ||
+           (character >= 'A' && character <= 'Z') ||
+           (character >= '0' && character <= '9') ||
+           character == '_' || character == '@' || character == '%' ||
+           character == '+' || character == '=' || character == ':' ||
+           character == ',' || character == '.' || character == '/' ||
+           character == '-';
+}
+
+/* Single-quote anything a shell would otherwise split, glob or expand. */
+std::string shellQuote(const std::string &argument)
+{
+    bool safe = !argument.empty();
+    for (const char character : argument) {
+        safe = safe && isShellSafe(character);
+    }
+    if (safe) {
+        return argument;
+    }
+
+    std::string quoted = "'";
+    for (const char character : argument) {
+        if (character == '\'') {
+            quoted += "'\\''";
+        } else {
+            quoted += character;
+        }
+    }
+    quoted += '\'';
+    return quoted;
+}
+
+void printLaunchPlan(const std::vector<std::vector<std::string>> &plan)
+{
+    for (const std::vector<std::string> &command : plan) {
+        for (std::size_t index = 0; index < command.size(); ++index) {
+            if (index > 0) {
+                std::fputc(' ', stdout);
+            }
+            std::fputs(shellQuote(command[index]).c_str(), stdout);
+        }
+        std::fputc('\n', stdout);
+    }
+}
+
+sdl3mcp::WebAppOptions previewWebOptions(const sdl3mcp::SupervisorOptions &options)
+{
+    sdl3mcp::WebAppOptions web;
+    web.pageRoot = options.webRoot;
+    web.entry = options.webEntry;
+    web.relayHost = kPreviewRelayHost;
+    web.relayPort = kPreviewRelayPort;
+    web.browser = kPreviewBrowser;
+    web.profileDir = kPreviewProfileDir;
+    web.pagePort = kPreviewPagePort;
+    web.bridgePort = kPreviewBridgePort;
+    return web;
+}
 
 /*
   A spawned application must not inherit the relay connection. If it does, the
@@ -90,6 +167,18 @@ int main(int argc, char **argv)
         std::fprintf(stderr, "sdl3mcp: %s\n%s\n", parsed.error.c_str(),
                      sdl3mcp::usageLine().c_str());
         return 2;
+    }
+
+    if (parsed.options.web()) {
+        std::vector<std::vector<std::string>> plan;
+        std::string planError;
+        if (!sdl3mcp::makeLaunchPlan(previewWebOptions(parsed.options), plan,
+                                     planError)) {
+            std::fprintf(stderr, "sdl3mcp: --web-root: %s\n", planError.c_str());
+            return 2;
+        }
+        printLaunchPlan(plan);
+        return 0;
     }
 
     std::string upstreamError;

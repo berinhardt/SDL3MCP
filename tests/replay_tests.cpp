@@ -1,6 +1,7 @@
-#include "replay.hpp"
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include <doctest/doctest.h>
 
-#include "test_util.hpp"
+#include "replay.hpp"
 
 #include <SDL3/SDL.h>
 
@@ -83,7 +84,7 @@ void expectRejected(KeyReplayer &replayer, const KeyInput &input,
     CHECK(error.find(fragment) != std::string::npos);
 }
 
-void testDownAndUp()
+TEST_CASE("down and up")
 {
     const KeyMap map;
     KeyReplayer replayer(map, kWindowID);
@@ -111,7 +112,7 @@ void testDownAndUp()
     expectHeld(replayer, {});
 }
 
-void testPress()
+TEST_CASE("press")
 {
     const KeyMap map;
     KeyReplayer replayer(map, kWindowID);
@@ -134,7 +135,7 @@ void testPress()
     expectHeld(replayer, {});
 }
 
-void testCtrlChord()
+TEST_CASE("ctrl chord")
 {
     const KeyMap map;
     KeyReplayer replayer(map, kWindowID);
@@ -151,7 +152,7 @@ void testCtrlChord()
     CHECK(replayer.modifiers() == SDL_KMOD_NONE);
 }
 
-void testShiftCtrlChord()
+TEST_CASE("shift ctrl chord")
 {
     const KeyMap map;
     KeyReplayer replayer(map, kWindowID);
@@ -173,7 +174,7 @@ void testShiftCtrlChord()
     expectHeld(replayer, {});
 }
 
-void testAltAndGuiChords()
+TEST_CASE("alt and gui chords")
 {
     const KeyMap map;
     KeyReplayer replayer(map, kWindowID);
@@ -197,7 +198,7 @@ void testAltAndGuiChords()
     expectHeld(replayer, {});
 }
 
-void testHeldModifierIsReused()
+TEST_CASE("held modifier is reused")
 {
     const KeyMap map;
     KeyReplayer replayer(map, kWindowID);
@@ -230,7 +231,7 @@ std::optional<KeyChord> resolveBang()
     return chord;
 }
 
-void testCharacterNeedingShift()
+TEST_CASE("character needing shift")
 {
     const KeyMap map;
     const std::optional<KeyChord> bang = resolveBang();
@@ -247,7 +248,7 @@ void testCharacterNeedingShift()
     expectHeld(replayer, {});
 }
 
-void testCharacterWithHeldShift()
+TEST_CASE("character with held shift")
 {
     const KeyMap map;
     const std::optional<KeyChord> bang = resolveBang();
@@ -267,7 +268,7 @@ void testCharacterWithHeldShift()
     CHECK(replayer.modifiers() == SDL_KMOD_LSHIFT);
 }
 
-void testModifierChordKeyAndLoneModifier()
+TEST_CASE("modifier chord key and lone modifier")
 {
     const KeyMap map;
     KeyReplayer replayer(map, kWindowID);
@@ -288,7 +289,7 @@ void testModifierChordKeyAndLoneModifier()
     CHECK(replayer.modifiers() == SDL_KMOD_NONE);
 }
 
-void testDownRejectsKeyNeedingModifiers()
+TEST_CASE("down rejects key needing modifiers")
 {
     const KeyMap map;
     KeyReplayer replayer(map, kWindowID);
@@ -302,7 +303,7 @@ void testDownRejectsKeyNeedingModifiers()
     CHECK(replayer.modifiers() == SDL_KMOD_NONE);
 }
 
-void testReleaseAll()
+TEST_CASE("release all")
 {
     const KeyMap map;
     KeyReplayer replayer(map, kWindowID);
@@ -326,7 +327,7 @@ void testReleaseAll()
     CHECK(replayer.modifiers() == SDL_KMOD_NONE);
 }
 
-void testReset()
+TEST_CASE("reset")
 {
     const KeyMap map;
     KeyReplayer replayer(map, kWindowID);
@@ -352,7 +353,7 @@ void testReset()
   Text replay borrows the string: the event stores input.text.c_str(), so the
   test keeps the TextInput alive while it inspects the event.
 */
-void testTextInput()
+TEST_CASE("text input")
 {
     const std::string text = "héllo ✓";
     const TextInput input{text};
@@ -372,7 +373,7 @@ void testTextInput()
     CHECK(std::string(event.text.text) == text);
 }
 
-void testTextInputRejected()
+TEST_CASE("text input rejected")
 {
     const TextInput text{"a"};
     const TextInput empty{""};
@@ -397,7 +398,7 @@ void testTextInputRejected()
   A batch applies to a copy and commits it only on success, so a copy that walks
   a valid action and then fails must leave the original's state and events alone.
 */
-void testCopyRollsBack()
+TEST_CASE("copy rolls back")
 {
     const KeyMap map;
     KeyReplayer original(map, kWindowID);
@@ -424,23 +425,3 @@ void testCopyRollsBack()
 }
 
 } // namespace
-
-int main()
-{
-    testDownAndUp();
-    testPress();
-    testCtrlChord();
-    testShiftCtrlChord();
-    testAltAndGuiChords();
-    testHeldModifierIsReused();
-    testCharacterNeedingShift();
-    testCharacterWithHeldShift();
-    testModifierChordKeyAndLoneModifier();
-    testDownRejectsKeyNeedingModifiers();
-    testReleaseAll();
-    testReset();
-    testTextInput();
-    testTextInputRejected();
-    testCopyRollsBack();
-    return 0;
-}

@@ -5,9 +5,10 @@
   rejected field shape, and the exact index a client is told to fix.
 */
 
-#include "input_json.hpp"
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include <doctest/doctest.h>
 
-#include "test_util.hpp"
+#include "input_json.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -142,7 +143,7 @@ void expectIndexedError(const nlohmann::json &arguments,
 #define EXPECT_INDEXED_ERROR(arguments, index, fragment) \
     expectIndexedError((arguments), (index), (fragment), __FILE__, __LINE__)
 
-void testKeyDefaults()
+TEST_CASE("key defaults")
 {
     const std::optional<InputRequest> request = PARSE_OK(single({{"type", "key"}, {"key", "a"}}));
     CHECK(request->batch.actions.size() == 1);
@@ -152,7 +153,7 @@ void testKeyDefaults()
     CHECK(key.modifiers.empty());
 }
 
-void testKeyActions()
+TEST_CASE("key actions")
 {
     const auto down =
         PARSE_OK(single({{"type", "key"}, {"key", "space"}, {"action", "down"}}));
@@ -168,7 +169,7 @@ void testKeyActions()
     CHECK(std::get<KeyInput>(press->batch.actions.at(0)).action == KeyAction::Press);
 }
 
-void testKeyModifiers()
+TEST_CASE("key modifiers")
 {
     const auto request = PARSE_OK(single({{"type", "key"},
                                         {"key", "s"},
@@ -182,7 +183,7 @@ void testKeyModifiers()
     CHECK(key.modifiers.at(3) == Modifier::Gui);
 }
 
-void testKeyErrors()
+TEST_CASE("key errors")
 {
     EXPECT_INDEXED_ERROR(single({{"type", "key"}, {"key", "a"}, {"modifiers", {"hyper"}}}),
                          0, "unknown modifier \"hyper\"");
@@ -211,7 +212,7 @@ void testKeyErrors()
                          0, "key is 65 bytes; the maximum is 64");
 }
 
-void testText()
+TEST_CASE("text")
 {
     const auto one = PARSE_OK(single({{"type", "text"}, {"text", "a"}}));
     CHECK(std::get<TextInput>(one->batch.actions.at(0)).text == "a");
@@ -230,7 +231,7 @@ void testText()
                          0, "unknown property \"value\"");
 }
 
-void testMouseMove()
+TEST_CASE("mouse move")
 {
     const auto absolute = PARSE_OK(single({{"type", "mouse_move"}, {"x", 10}, {"y", 20}}));
     const auto &move = std::get<MouseMoveInput>(absolute->batch.actions.at(0));
@@ -285,7 +286,7 @@ void expectButtonAction(const char *name, MouseButtonAction expected)
     CHECK(input.action == expected);
 }
 
-void testMouseButton()
+TEST_CASE("mouse button")
 {
     expectButton("left", MouseButton::Left);
     expectButton("middle", MouseButton::Middle);
@@ -345,7 +346,7 @@ void testMouseButton()
         0, "unknown property \"modifiers\"");
 }
 
-void testScroll()
+TEST_CASE("scroll")
 {
     const auto both = PARSE_OK(single({{"type", "scroll"}, {"x", 2}, {"y", -3}}));
     const auto &full = std::get<ScrollInput>(both->batch.actions.at(0));
@@ -365,7 +366,7 @@ void testScroll()
                          0, "unknown property \"dx\"");
 }
 
-void testReleaseAll()
+TEST_CASE("release all")
 {
     const auto request = PARSE_OK(single({{"type", "release_all"}}));
     CHECK(std::holds_alternative<ReleaseAllInput>(request->batch.actions.at(0)));
@@ -374,7 +375,7 @@ void testReleaseAll()
                          0, "unknown property \"count\"");
 }
 
-void testBatchRules()
+TEST_CASE("batch rules")
 {
     EXPECT_ERROR(argumentsWith(nlohmann::json::array()), "at least one action");
     EXPECT_ERROR(argumentsWith(repeatedKeyActions(257)), "the maximum is 256");
@@ -399,7 +400,7 @@ void testBatchRules()
     EXPECT_INDEXED_ERROR(single({{"type", 1}, {"key", "a"}}), 0, "type must be a string");
 }
 
-void testErrorIndices()
+TEST_CASE("error indices")
 {
     nlohmann::json actions = nlohmann::json::array();
     actions.push_back(nlohmann::json{{"type", "key"}, {"key", "a"}});
@@ -424,7 +425,7 @@ void testErrorIndices()
   The observation half is shared with sdl_capture: the same region object and
   the same timeout range, plus a default of twice the frame timeout.
 */
-void testObservationArguments()
+TEST_CASE("observation arguments")
 {
     const auto defaults = PARSE_OK(single({{"type", "release_all"}}));
     CHECK(!defaults->region.has_value());
@@ -500,7 +501,7 @@ void testObservationArguments()
     EXPECT_ERROR(stringTimeout, "timeout_ms must be an integer");
 }
 
-void testAllTypesInOneBatch()
+TEST_CASE("all types in one batch")
 {
     nlohmann::json actions = nlohmann::json::array();
     actions.push_back(nlohmann::json{{"type", "key"}, {"key", "a"}});
@@ -521,23 +522,3 @@ void testAllTypesInOneBatch()
 }
 
 } // namespace
-
-int main()
-{
-    testKeyDefaults();
-    testKeyActions();
-    testKeyModifiers();
-    testKeyErrors();
-    testText();
-    testMouseMove();
-    testMouseButton();
-    testScroll();
-    testReleaseAll();
-    testBatchRules();
-    testErrorIndices();
-    testObservationArguments();
-    testAllTypesInOneBatch();
-
-    std::puts("input_json_tests passed");
-    return 0;
-}

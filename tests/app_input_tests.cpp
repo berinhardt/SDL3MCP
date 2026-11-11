@@ -9,9 +9,10 @@
   the plan and the live replayers exactly as they were.
 */
 
-#include "app_input.hpp"
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include <doctest/doctest.h>
 
-#include "test_util.hpp"
+#include "app_input.hpp"
 
 #include <SDL3/SDL.h>
 
@@ -140,7 +141,7 @@ bool heldEquals(const std::vector<SDL_Scancode> &held,
            && std::equal(expected.begin(), expected.end(), held.begin());
 }
 
-void testKeyPress()
+TEST_CASE("key press")
 {
     Harness harness;
     InputBatch batch;
@@ -163,7 +164,7 @@ void testKeyPress()
     CHECK(harness.keys.heldKeys().empty());
 }
 
-void testHeldKeyCarriesAcrossBatches()
+TEST_CASE("held key carries across batches")
 {
     Harness harness;
 
@@ -190,7 +191,7 @@ void testHeldKeyCarriesAcrossBatches()
     CHECK(harness.keys.heldKeys().empty());
 }
 
-void testTextEventBorrowsTheBatch()
+TEST_CASE("text event borrows the batch")
 {
     Harness harness;
     InputBatch batch;
@@ -210,7 +211,7 @@ void testTextEventBorrowsTheBatch()
     CHECK(events[0].text.text == stored.c_str());
 }
 
-void testInactiveTextIsRejected()
+TEST_CASE("inactive text is rejected")
 {
     Harness harness;
     InputBatch batch;
@@ -220,7 +221,7 @@ void testInactiveTextIsRejected()
     CHECK(error == "actions[0]: text input is not active on the bound window");
 }
 
-void testAbsoluteMoveWarps()
+TEST_CASE("absolute move warps")
 {
     Harness harness;
     InputBatch batch;
@@ -245,7 +246,7 @@ void testAbsoluteMoveWarps()
     CHECK(harness.mouse.cursorY() == 20.0F);
 }
 
-void testAbsoluteMoveWithoutWarp()
+TEST_CASE("absolute move without warp")
 {
     Harness harness;
     harness.mouse.setMetrics(MouseMetrics{100.0F, 100.0F, false, false});
@@ -263,7 +264,7 @@ void testAbsoluteMoveWithoutWarp()
     CHECK(!plan.warpsByAction[0].has_value());
 }
 
-void testAbsoluteMoveInRelativeMode()
+TEST_CASE("absolute move in relative mode")
 {
     Harness harness;
     harness.mouse.setMetrics(MouseMetrics{100.0F, 100.0F, true, true});
@@ -282,7 +283,7 @@ void testAbsoluteMoveInRelativeMode()
     CHECK(!plan.warpsByAction[0].has_value());
 }
 
-void testRelativeMovePassesDelta()
+TEST_CASE("relative move passes delta")
 {
     Harness harness;
 
@@ -298,7 +299,7 @@ void testRelativeMovePassesDelta()
     CHECK(!plan.warpsByAction[0].has_value());
 }
 
-void testWarpStaysWithItsAction()
+TEST_CASE("warp stays with its action")
 {
     Harness harness;
 
@@ -326,7 +327,7 @@ void testWarpStaysWithItsAction()
     CHECK(plan.eventsByAction[3].size() == 1);
 }
 
-void testButtonAndScroll()
+TEST_CASE("button and scroll")
 {
     Harness harness;
 
@@ -368,7 +369,7 @@ void testButtonAndScroll()
     CHECK(harness.mouse.heldButtons().empty());
 }
 
-void testReleaseAllClearsBothStates()
+TEST_CASE("release all clears both states")
 {
     Harness harness;
 
@@ -395,7 +396,7 @@ void testReleaseAllClearsBothStates()
     CHECK(harness.mouse.heldButtons().empty());
 }
 
-void testActionsKeepOrder()
+TEST_CASE("actions keep order")
 {
     Harness harness;
 
@@ -412,7 +413,7 @@ void testActionsKeepOrder()
     CHECK(plan.eventsByAction[2][0].type == SDL_EVENT_KEY_UP);
 }
 
-void testFailureLeavesEverythingUntouched()
+TEST_CASE("failure leaves everything untouched")
 {
     Harness harness;
 
@@ -448,23 +449,3 @@ void testFailureLeavesEverythingUntouched()
 }
 
 } // namespace
-
-int main()
-{
-    testKeyPress();
-    testHeldKeyCarriesAcrossBatches();
-    testTextEventBorrowsTheBatch();
-    testInactiveTextIsRejected();
-    testAbsoluteMoveWarps();
-    testAbsoluteMoveWithoutWarp();
-    testAbsoluteMoveInRelativeMode();
-    testRelativeMovePassesDelta();
-    testWarpStaysWithItsAction();
-    testButtonAndScroll();
-    testReleaseAllClearsBothStates();
-    testActionsKeepOrder();
-    testFailureLeavesEverythingUntouched();
-
-    std::printf("app_input_tests passed\n");
-    return 0;
-}

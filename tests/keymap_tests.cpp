@@ -1,6 +1,7 @@
-#include "keymap.hpp"
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include <doctest/doctest.h>
 
-#include "test_util.hpp"
+#include "keymap.hpp"
 
 #include <SDL3/SDL.h>
 
@@ -40,7 +41,7 @@ bool isLowercase(std::string_view text)
 }
 
 /* Case folding and word separators, including the '-'/'_' rule. */
-void testNameVariants()
+TEST_CASE("name variants")
 {
     const KeyMap map;
     constexpr std::string_view variants[] = {
@@ -58,7 +59,7 @@ void testNameVariants()
 }
 
 /* SDL's own '-' and 'Keypad -' names must not collapse to a bare word. */
-void testLiteralSeparators()
+TEST_CASE("literal separators")
 {
     const KeyMap map;
     CHECK(map.canonicalName(SDL_SCANCODE_MINUS) == "-");
@@ -68,7 +69,7 @@ void testLiteralSeparators()
 }
 
 /* Every name SDL reports must survive normalization and resolve again. */
-void testWholeTableRoundTrip()
+TEST_CASE("whole table round trip")
 {
     const KeyMap map;
     for (int index = 0; index < SDL_SCANCODE_COUNT; ++index) {
@@ -96,7 +97,7 @@ void testWholeTableRoundTrip()
     }
 }
 
-void testAliases()
+TEST_CASE("aliases")
 {
     const KeyMap map;
     struct AliasCase
@@ -132,7 +133,7 @@ void testAliases()
 }
 
 /* Single characters that are SDL names keep physical scancode semantics. */
-void testNamedCharacters()
+TEST_CASE("named characters")
 {
     const KeyMap map;
     expectBinding(map, "a", SDL_SCANCODE_A);
@@ -146,7 +147,7 @@ void testNamedCharacters()
   Unnamed symbols need the live layout, so no US scancode is assumed: at least
   one must resolve, and each that does must map back to the same codepoint.
 */
-void testFallbackSymbols()
+TEST_CASE("fallback symbols")
 {
     const KeyMap map;
     constexpr std::string_view symbols[] = {"!", "_", "+", "@", "#", "~"};
@@ -164,7 +165,7 @@ void testFallbackSymbols()
     CHECK(resolved >= 1);
 }
 
-void testRejections()
+TEST_CASE("rejections")
 {
     const KeyMap map;
     /* Chords belong to the chord parser, not the resolver. */
@@ -186,7 +187,7 @@ void testRejections()
     expectMissing(map, "+-");
 }
 
-void testCanonicalNames()
+TEST_CASE("canonical names")
 {
     const KeyMap map;
     const SDL_Scancode sample[] = {
@@ -207,7 +208,7 @@ void testCanonicalNames()
     CHECK(map.canonicalName(SDL_SCANCODE_COUNT).empty());
 }
 
-void testReturnDuplicate()
+TEST_CASE("return duplicate")
 {
     const KeyMap map;
     expectBinding(map, "return", SDL_SCANCODE_RETURN);
@@ -216,17 +217,3 @@ void testReturnDuplicate()
 }
 
 } // namespace
-
-int main()
-{
-    testNameVariants();
-    testLiteralSeparators();
-    testWholeTableRoundTrip();
-    testAliases();
-    testNamedCharacters();
-    testFallbackSymbols();
-    testRejections();
-    testCanonicalNames();
-    testReturnDuplicate();
-    return 0;
-}

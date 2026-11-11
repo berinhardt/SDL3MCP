@@ -3,9 +3,10 @@
   the blocking submit on a worker and plays the app on the main thread.
 */
 
-#include "queue.hpp"
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include <doctest/doctest.h>
 
-#include "test_util.hpp"
+#include "queue.hpp"
 
 #include <chrono>
 #include <cstddef>
@@ -105,7 +106,7 @@ std::optional<TakenBatch> takeEventually(InputQueue &queue)
     return taken;
 }
 
-void appliedOnlyAfterCompletion()
+TEST_CASE("applied only after completion")
 {
     InputQueue queue;
     SubmitWorker worker(queue, batchWith(2), 5000ms);
@@ -131,7 +132,7 @@ void appliedOnlyAfterCompletion()
     CHECK(queue.lastAppliedFrame() == 12);
 }
 
-void timeoutBeforeTakeCancels()
+TEST_CASE("timeout before take cancels")
 {
     InputQueue queue;
     SubmitWorker worker(queue, batchWith(1), 50ms);
@@ -143,7 +144,7 @@ void timeoutBeforeTakeCancels()
     CHECK(queue.lastAppliedFrame() == 0);
 }
 
-void timeoutAfterApplyIsUnconfirmed()
+TEST_CASE("timeout after apply is unconfirmed")
 {
     InputQueue queue;
     SubmitWorker worker(queue, batchWith(1), 300ms);
@@ -164,7 +165,7 @@ void timeoutAfterApplyIsUnconfirmed()
     CHECK(queue.lastAppliedFrame() == 4);
 }
 
-void applyErrorFails()
+TEST_CASE("apply error fails")
 {
     InputQueue queue;
     SubmitWorker worker(queue, batchWith(1), 5000ms);
@@ -190,7 +191,7 @@ void applyErrorFails()
     CHECK(queue.lastError().empty());
 }
 
-void takeWaitsForOutstandingBatch()
+TEST_CASE("take waits for outstanding batch")
 {
     InputQueue queue;
     SubmitWorker first(queue, batchWith(1), 5000ms);
@@ -216,7 +217,7 @@ void takeWaitsForOutstandingBatch()
     CHECK(outcome.appliedFrame == 2);
 }
 
-void cancelledBatchIsNeverTaken()
+TEST_CASE("cancelled batch is never taken")
 {
     InputQueue queue;
     SubmitWorker cancelled(queue, batchWith(1), 30ms);
@@ -232,7 +233,7 @@ void cancelledBatchIsNeverTaken()
     CHECK(awaitResult(next.future()).status == InputStatus::Applied);
 }
 
-void nextBatchQueuesBehindUnconfirmed()
+TEST_CASE("next batch queues behind unconfirmed")
 {
     InputQueue queue;
     SubmitWorker first(queue, batchWith(1), 300ms);
@@ -258,7 +259,7 @@ void nextBatchQueuesBehindUnconfirmed()
     CHECK(outcome.appliedFrame == 5);
 }
 
-void stopWakesWaitersAndRefusesSubmits()
+TEST_CASE("stop wakes waiters and refuses submits")
 {
     InputQueue queue;
     SubmitWorker worker(queue, batchWith(1), 10000ms);
@@ -278,7 +279,7 @@ void stopWakesWaitersAndRefusesSubmits()
     CHECK(queue.completedCount() == 0);
 }
 
-void stopLeavesTakenBatchCompletable()
+TEST_CASE("stop leaves taken batch completable")
 {
     InputQueue queue;
     SubmitWorker worker(queue, batchWith(1), 10000ms);
@@ -294,7 +295,7 @@ void stopLeavesTakenBatchCompletable()
     CHECK(queue.lastAppliedFrame() == 8);
 }
 
-void countersAdvanceOnCompletion()
+TEST_CASE("counters advance on completion")
 {
     InputQueue queue;
     SubmitWorker worker(queue, batchWith(1), 5000ms);
@@ -318,7 +319,7 @@ void countersAdvanceOnCompletion()
   polls each frame: queued and Applied are not settled, completion is, and the
   outcome is consumed once it is reported.
 */
-void postPollsUntilCompletion()
+TEST_CASE("post polls until completion")
 {
     InputQueue queue;
     uint64_t token = 0;
@@ -352,7 +353,7 @@ void postPollsUntilCompletion()
     CHECK(!queue.poll(token, outcome));
 }
 
-void postPollsFailure()
+TEST_CASE("post polls failure")
 {
     InputQueue queue;
     uint64_t token = 0;
@@ -374,7 +375,7 @@ void postPollsFailure()
     CHECK(!queue.poll(token, outcome));
 }
 
-void postRefusedAfterStop()
+TEST_CASE("post refused after stop")
 {
     InputQueue queue;
     queue.stop();
@@ -388,7 +389,7 @@ void postRefusedAfterStop()
 }
 
 /* A posted batch that shutdown cancels still has to reach its poller. */
-void stopSettlesPostedBatch()
+TEST_CASE("stop settles posted batch")
 {
     InputQueue queue;
     uint64_t token = 0;
@@ -404,24 +405,3 @@ void stopSettlesPostedBatch()
 }
 
 } // namespace
-
-int main()
-{
-    appliedOnlyAfterCompletion();
-    timeoutBeforeTakeCancels();
-    timeoutAfterApplyIsUnconfirmed();
-    applyErrorFails();
-    takeWaitsForOutstandingBatch();
-    cancelledBatchIsNeverTaken();
-    nextBatchQueuesBehindUnconfirmed();
-    stopWakesWaitersAndRefusesSubmits();
-    stopLeavesTakenBatchCompletable();
-    countersAdvanceOnCompletion();
-    postPollsUntilCompletion();
-    postPollsFailure();
-    postRefusedAfterStop();
-    stopSettlesPostedBatch();
-
-    std::printf("queue_tests passed\n");
-    return 0;
-}

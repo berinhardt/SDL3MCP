@@ -11,9 +11,10 @@
   separate CTest and no scenario can leak global state into another.
 */
 
-#include <SDL3MCP/SDL3MCP.h>
+#define DOCTEST_CONFIG_IMPLEMENT
+#include <doctest/doctest.h>
 
-#include "test_util.hpp"
+#include <SDL3MCP/SDL3MCP.h>
 
 #include <nlohmann/json.hpp>
 
@@ -320,28 +321,46 @@ void testStdioPipes()
 
 } // namespace
 
+/* One scenario per process, selected by the CTest argument, never by state. */
+TEST_CASE("none")
+{
+    testNone();
+}
+
+TEST_CASE("help")
+{
+    testHelp();
+}
+
+TEST_CASE("version")
+{
+    testVersion();
+}
+
+TEST_CASE("error")
+{
+    testError();
+}
+
+TEST_CASE("uninitialized")
+{
+    testUninitialized();
+}
+
+TEST_CASE("stdio_pipes")
+{
+    testStdioPipes();
+}
+
 int main(int argc, char **argv)
 {
+    /* Doctest owns argv once it runs, so the scenario becomes its filter. The
+       context also makes a failing argument check outside a case abort, as the
+       hand-rolled harness did. */
+    doctest::Context context(1, argv);
+    context.setAsDefaultForAssertsOutOfTestCases();
     CHECK(argc == 2);
-    const std::string_view scenario(argv[1]);
 
-    if (scenario == "none") {
-        testNone();
-    } else if (scenario == "help") {
-        testHelp();
-    } else if (scenario == "version") {
-        testVersion();
-    } else if (scenario == "error") {
-        testError();
-    } else if (scenario == "uninitialized") {
-        testUninitialized();
-    } else if (scenario == "stdio_pipes") {
-        testStdioPipes();
-    } else {
-        std::fprintf(stderr, "unknown lifecycle scenario '%s'\n", argv[1]);
-        return 1;
-    }
-
-    std::fprintf(stderr, "lifecycle %s passed\n", argv[1]);
-    return 0;
+    context.setOption("test-case", argv[1]);
+    return context.run();
 }

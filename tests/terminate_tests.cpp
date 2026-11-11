@@ -8,9 +8,10 @@
   thread, then iterates exactly as a game loop would.
 */
 
-#include <SDL3MCP/SDL3MCP.h>
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include <doctest/doctest.h>
 
-#include "test_util.hpp"
+#include <SDL3MCP/SDL3MCP.h>
 
 #include <nlohmann/json.hpp>
 
@@ -148,7 +149,7 @@ int quitEvents()
 
 } // namespace
 
-int main()
+TEST_CASE("the terminate request becomes one quit event")
 {
     /* The CTest environment sets this too; the hint makes a manual run work. */
     (void)SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "dummy");
@@ -203,7 +204,4 @@ int main()
     ::close(savedStdout);
 
     SDL_Quit();
-
-    std::printf("terminate_tests passed\n");
-    return 0;
 }

@@ -1,6 +1,7 @@
-#include "json_rpc.hpp"
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include <doctest/doctest.h>
 
-#include "test_util.hpp"
+#include "json_rpc.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -43,7 +44,7 @@ void expectError(std::string_view line, RpcErrorCode code, const nlohmann::json 
     CHECK(errorResponse["id"] == id);
 }
 
-void testVersionMacros()
+TEST_CASE("version macros")
 {
     CHECK(NLOHMANN_JSON_VERSION_MAJOR == 3);
     CHECK(NLOHMANN_JSON_VERSION_MINOR == 12);
@@ -54,7 +55,7 @@ void testVersionMacros()
     CHECK(static_cast<int>(RpcErrorCode::InternalError) == -32603);
 }
 
-void testRequests()
+TEST_CASE("requests")
 {
     {
         RpcMessage message;
@@ -120,7 +121,7 @@ void testRequests()
     }
 }
 
-void testNotifications()
+TEST_CASE("notifications")
 {
     {
         RpcMessage message;
@@ -141,7 +142,7 @@ void testNotifications()
     }
 }
 
-void testParseErrors()
+TEST_CASE("parse errors")
 {
     expectError("{", RpcErrorCode::ParseError, nullptr);
     expectError("not json", RpcErrorCode::ParseError, nullptr);
@@ -151,7 +152,7 @@ void testParseErrors()
     expectError(" \t\r\n", RpcErrorCode::ParseError, nullptr);
 }
 
-void testInvalidRequests()
+TEST_CASE("invalid requests")
 {
     /* MCP does not allow batches. */
     expectError("[]", RpcErrorCode::InvalidRequest, nullptr);
@@ -198,7 +199,7 @@ void testInvalidRequests()
     expectError(R"({"method":"ping"})", RpcErrorCode::InvalidRequest, nullptr);
 }
 
-void testMakeResult()
+TEST_CASE("make result")
 {
     {
         const nlohmann::json response =
@@ -225,7 +226,7 @@ void testMakeResult()
     }
 }
 
-void testMakeError()
+TEST_CASE("make error")
 {
     {
         const nlohmann::json response =
@@ -256,15 +257,3 @@ void testMakeError()
 }
 
 } // namespace
-
-int main()
-{
-    testVersionMacros();
-    testRequests();
-    testNotifications();
-    testParseErrors();
-    testInvalidRequests();
-    testMakeResult();
-    testMakeError();
-    return 0;
-}

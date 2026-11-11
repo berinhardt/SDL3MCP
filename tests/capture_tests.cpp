@@ -5,9 +5,10 @@
   window, or a renderer.
 */
 
-#include "capture.hpp"
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include <doctest/doctest.h>
 
-#include "test_util.hpp"
+#include "capture.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -41,7 +42,7 @@ Frame solidFrame(int width, int height, uint8_t red)
     return frame;
 }
 
-void testSubmitDeliversFrame()
+TEST_CASE("submit delivers frame")
 {
     CaptureState capture;
     std::string error = "stale";
@@ -66,7 +67,7 @@ void testSubmitDeliversFrame()
     CHECK(!capture.pending());
 }
 
-void testTimeoutClearsRequestAndIgnoresLateFrame()
+TEST_CASE("timeout clears request and ignores late frame")
 {
     CaptureState capture;
     std::string error;
@@ -87,7 +88,7 @@ void testTimeoutClearsRequestAndIgnoresLateFrame()
     CHECK(!capture.pending());
 }
 
-void testFailureIsRetriedAndCountedOnce()
+TEST_CASE("failure is retried and counted once")
 {
     CaptureState capture;
     std::string error;
@@ -118,7 +119,7 @@ void testFailureIsRetriedAndCountedOnce()
     CHECK(stats.count == 0);
 }
 
-void testCancelWakesWaiter()
+TEST_CASE("cancel wakes waiter")
 {
     CaptureState capture;
     std::string error;
@@ -149,7 +150,7 @@ void testCancelWakesWaiter()
     CHECK(!capture.pending());
 }
 
-void testStatsUpdateOnlyOnSuccess()
+TEST_CASE("stats update only on success")
 {
     CaptureState capture;
     std::string error;
@@ -177,7 +178,7 @@ void testStatsUpdateOnlyOnSuccess()
     CHECK(stats.lastMs == 2.5);
 }
 
-void testPendingTransitions()
+TEST_CASE("pending transitions")
 {
     CaptureState capture;
     std::string error;
@@ -212,7 +213,7 @@ void testPendingTransitions()
   back an untouched scene. The boundary is pinned here because the app-facing
   gate (SDL3MCP_FrameRequested) needs a window and a server to observe.
 */
-void testServableFrameBoundary()
+TEST_CASE("servable frame boundary")
 {
     CHECK(sdl3mcp::kFirstServableFrame == 1);
     CHECK(!sdl3mcp::servableFrame(0));
@@ -225,7 +226,7 @@ void testServableFrameBoundary()
   gate, so the request has to survive it and be answered by the first frame the
   predicate allows.
 */
-void testDeclinedPollKeepsRequestPending()
+TEST_CASE("declined poll keeps request pending")
 {
     CaptureState capture;
     std::string error;
@@ -254,7 +255,7 @@ void testDeclinedPollKeepsRequestPending()
   The browser arm asks without waiting: a request the app has not answered yet
   yields false, and the frame that answers it is handed back exactly once.
 */
-void testTryTakeReturnsSubmittedFrameOnce()
+TEST_CASE("try take returns submitted frame once")
 {
     CaptureState capture;
     std::string error;
@@ -286,7 +287,7 @@ void testTryTakeReturnsSubmittedFrameOnce()
   An idle state, a cancelled request, and a frame that arrived after either all
   yield false and leave the state ready for the next request.
 */
-void testTryTakeIgnoresIdleAndCancelledState()
+TEST_CASE("try take ignores idle and cancelled state")
 {
     CaptureState capture;
     Frame received;
@@ -315,7 +316,7 @@ void testTryTakeIgnoresIdleAndCancelledState()
   library stamps at WriteFrame and crops on the server thread; losing the index
   there would make every cropped answer anonymous.
 */
-void testCropPreservesFrameStamp()
+TEST_CASE("crop preserves frame stamp")
 {
     Frame frame = solidFrame(4, 3, 5);
     frame.frame = 9;
@@ -334,7 +335,7 @@ void testCropPreservesFrameStamp()
   direct assertion of that relation: it must reject equal and earlier indices
   even though the protocol never produces them.
 */
-void testFrameOrderHelper()
+TEST_CASE("frame order helper")
 {
     CHECK(!sdl3mcp::checkFrameOrder(3, 5).has_value());
     CHECK(!sdl3mcp::checkFrameOrder(0, 1).has_value());
@@ -350,22 +351,3 @@ void testFrameOrderHelper()
 }
 
 } // namespace
-
-int main()
-{
-    testSubmitDeliversFrame();
-    testTimeoutClearsRequestAndIgnoresLateFrame();
-    testFailureIsRetriedAndCountedOnce();
-    testCancelWakesWaiter();
-    testStatsUpdateOnlyOnSuccess();
-    testPendingTransitions();
-    testServableFrameBoundary();
-    testDeclinedPollKeepsRequestPending();
-    testTryTakeReturnsSubmittedFrameOnce();
-    testTryTakeIgnoresIdleAndCancelledState();
-    testCropPreservesFrameStamp();
-    testFrameOrderHelper();
-
-    std::fprintf(stderr, "capture tests passed\n");
-    return 0;
-}

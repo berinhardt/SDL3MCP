@@ -1,6 +1,8 @@
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include <doctest/doctest.h>
+
 #include "session.hpp"
 
-#include "test_util.hpp"
 #include "tools.hpp"
 
 #include <SDL3MCP/SDL3MCP_version.h>
@@ -109,7 +111,7 @@ nlohmann::json actionOf(const nlohmann::json &schema, const char *type)
     return nlohmann::json();
 }
 
-void testInitialize()
+TEST_CASE("initialize")
 {
     for (const char *requested : {"2025-11-25", "2026-07-28"}) {
         Session session;
@@ -127,7 +129,7 @@ void testInitialize()
     }
 }
 
-void testInitializeErrors()
+TEST_CASE("initialize errors")
 {
     {
         Session session;
@@ -179,7 +181,7 @@ void testInitializeErrors()
     }
 }
 
-void testPing()
+TEST_CASE("ping")
 {
     {
         Session session;
@@ -200,7 +202,7 @@ void testPing()
     }
 }
 
-void testToolsRequireInitialize()
+TEST_CASE("tools require initialize")
 {
     Session session;
     expectError(session, R"({"jsonrpc":"2.0","id":1,"method":"tools/list"})",
@@ -212,7 +214,7 @@ void testToolsRequireInitialize()
     CHECK(!session.initialized());
 }
 
-void testNotifications()
+TEST_CASE("notifications")
 {
     {
         /* The notification alone never makes tools available. */
@@ -235,7 +237,7 @@ void testNotifications()
     }
 }
 
-void testUnknownMethod()
+TEST_CASE("unknown method")
 {
     {
         Session session;
@@ -256,7 +258,7 @@ void testUnknownMethod()
     }
 }
 
-void testToolList()
+TEST_CASE("tool list")
 {
     Session session;
     initializeSession(session);
@@ -288,7 +290,7 @@ void testToolList()
     CHECK(sdl3mcp::findTool("") == nullptr);
 }
 
-void testInfoSchema()
+TEST_CASE("info schema")
 {
     const nlohmann::json &schema = schemaOf("sdl_info");
     CHECK(schema["type"] == "object");
@@ -297,7 +299,7 @@ void testInfoSchema()
     CHECK(schema["additionalProperties"] == false);
 }
 
-void testInputSchema()
+TEST_CASE("input schema")
 {
     const nlohmann::json &schema = schemaOf("sdl_input");
     CHECK(schema["type"] == "object");
@@ -389,7 +391,7 @@ void testInputSchema()
     }
 }
 
-void testCaptureSchema()
+TEST_CASE("capture schema")
 {
     const nlohmann::json &schema = schemaOf("sdl_capture");
     CHECK(schema["type"] == "object");
@@ -421,7 +423,7 @@ void testCaptureSchema()
     CHECK(region["properties"]["height"]["minimum"] == 1);
 }
 
-void testAnnotations()
+TEST_CASE("annotations")
 {
     const ToolDefinition *info = sdl3mcp::findTool("sdl_info");
     const ToolDefinition *input = sdl3mcp::findTool("sdl_input");
@@ -450,7 +452,7 @@ void testAnnotations()
     CHECK(terminate->annotations["openWorldHint"] == false);
 }
 
-void testTerminateSchema()
+TEST_CASE("terminate schema")
 {
     const nlohmann::json &schema = schemaOf("sdl_terminate");
     CHECK(schema["type"] == "object");
@@ -460,7 +462,7 @@ void testTerminateSchema()
     CHECK(!schema.contains("required"));
 }
 
-void testToolCalls()
+TEST_CASE("tool calls")
 {
     Session session;
     initializeSession(session);
@@ -512,7 +514,7 @@ void testToolCalls()
     }
 }
 
-void testToolCallErrors()
+TEST_CASE("tool call errors")
 {
     Session session;
     initializeSession(session);
@@ -552,22 +554,3 @@ void testToolCallErrors()
 }
 
 } // namespace
-
-int main()
-{
-    testInitialize();
-    testInitializeErrors();
-    testPing();
-    testToolsRequireInitialize();
-    testNotifications();
-    testUnknownMethod();
-    testToolList();
-    testInfoSchema();
-    testInputSchema();
-    testCaptureSchema();
-    testTerminateSchema();
-    testAnnotations();
-    testToolCalls();
-    testToolCallErrors();
-    return 0;
-}

@@ -11,10 +11,12 @@
   to cover the error path both entry points share.
 */
 
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include <doctest/doctest.h>
+
 #include "responder.hpp"
 
 #include "session.hpp"
-#include "test_util.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -132,7 +134,7 @@ void expectSameWire(const ToolResult &result)
     CHECK(deferredWire(result) == synchronous);
 }
 
-void testContentResult()
+TEST_CASE("content result")
 {
     ToolResult result;
     result.content = nlohmann::json::array(
@@ -140,7 +142,7 @@ void testContentResult()
     expectSameWire(result);
 }
 
-void testErrorResult()
+TEST_CASE("error result")
 {
     ToolResult result;
     result.content = nlohmann::json::array(
@@ -149,7 +151,7 @@ void testErrorResult()
     expectSameWire(result);
 }
 
-void testFrameResult()
+TEST_CASE("frame result")
 {
     ToolResult result;
     result.frame = Frame{2, 1, {1, 2, 3, 4, 5, 6, 7, 8}, 42};
@@ -170,7 +172,7 @@ void testFrameResult()
     CHECK(wire.substr(newline + 1) == std::string("\x01\x02\x03\x04\x05\x06\x07\x08", 8));
 }
 
-void testFrameResultWithText()
+TEST_CASE("frame result with text")
 {
     ToolResult result;
     result.content = nlohmann::json::array();
@@ -189,7 +191,7 @@ void testFrameResultWithText()
   nothing on the wire, and the call is answered exactly once later through
   answer(). Anything else would send two responses for one id.
 */
-void testDeferredResultWritesNothing()
+TEST_CASE("deferred result writes nothing")
 {
     Session session;
     initializeSession(session);
@@ -223,7 +225,7 @@ void testDeferredResultWritesNothing()
     CHECK(sink.wire.size() == newline + 1 + 4);
 }
 
-void testWriteFailure()
+TEST_CASE("write failure")
 {
     Session parsingSession;
     initializeSession(parsingSession);
@@ -248,14 +250,3 @@ void testWriteFailure()
 }
 
 } // namespace
-
-int main()
-{
-    testContentResult();
-    testErrorResult();
-    testFrameResult();
-    testFrameResultWithText();
-    testDeferredResultWritesNothing();
-    testWriteFailure();
-    return 0;
-}

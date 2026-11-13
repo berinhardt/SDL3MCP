@@ -343,8 +343,17 @@ and `examples/minimal` is a complete host.
   `dom.allow_scripts_to_close_windows`, which is what lets the page close its
   own window when the application shuts down, plus the preferences that keep a
   fresh profile from stopping on first-run prompts. That preference can only be
-  set in a profile we own, never in the user's settings; the directory is
-  removed when the run ends.
+  set in a profile we own, never in the user's settings. The run holds an
+  exclusive `flock` on a `.lock` file inside that directory for its whole
+  lifetime, which is the profile's ownership: the kernel drops the lock when the
+  process dies, including on SIGKILL, where a PID or a timestamp would guess.
+  That lock is what lets a later launcher tell a live profile from an abandoned
+  one — `sweepAbandonedProfiles` removes any `sdl3mcp-web-*` directory whose lock
+  it can take, and one with no `.lock` at all only once it is older than a
+  minute, so the instant between `mkdtemp` and the lock cannot be mistaken for
+  abandonment. The sweep runs in the launch path only, never in `--print-plan`,
+  which creates and changes nothing; a run that reclaims something says so on
+  stderr.
 - **A web run ends in one chain, and the application starts it.**
   `sdl_terminate` reaches the app through the relay and the bridge, the app's
   loop handles the `SDL_EVENT_QUIT` it produces, and `SDL3MCP_AppShutdown` runs

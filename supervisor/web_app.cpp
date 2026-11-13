@@ -4,10 +4,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <string>
 #include <string_view>
 #include <utility>
 
+#include <dirent.h>
+#include <fcntl.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -23,7 +27,13 @@ constexpr const char *kBrowserHeight = "800";
 
 /* The template mkdtemp() fills; its suffix must be the last six characters. */
 constexpr const char *kProfileTemplate = "sdl3mcp-web-XXXXXX";
+constexpr const char *kLockFile = ".lock";
 constexpr const char *kFallbackProfileParent = "/tmp";
+
+/* The prefix a seeded profile carries, which is also what the sweep looks for. */
+constexpr const char *kProfilePrefix = "sdl3mcp-web-";
+/* Long enough that a directory still being created is never mistaken for one. */
+constexpr int kUnlockedGraceSeconds = 60;
 
 /*
   One line per preference. The first is the reason the profile exists: the page
@@ -151,6 +161,16 @@ bool writePreferences(const std::string &directory, std::string &error)
         return fail("cannot write " + path, error);
     }
     return true;
+}
+
+/* The mtime test that keeps the sweep off a directory a launcher is creating. */
+bool olderThan(const std::string &path, int seconds)
+{
+    struct stat status {};
+    if (::stat(path.c_str(), &status) != 0) {
+        return false;
+    }
+    return std::time(nullptr) - status.st_mtime > seconds;
 }
 
 } // namespace
@@ -286,7 +306,7 @@ bool resolveBrowser(std::string &path, std::string &error)
                 error);
 }
 
-bool seedProfile(std::string &directory, std::string &error)
+bool seedProfile(std::string &directory, int &lockFd, std::string &error)
 {
     const std::string parent = profileParent();
     std::string candidate = parent + "/" + kProfileTemplate;
@@ -296,12 +316,77 @@ bool seedProfile(std::string &directory, std::string &error)
                         std::strerror(createError),
                     error);
     }
+
+    /*
+      The lock is the profile's ownership: the kernel drops it when the descriptor
+      closes, including on SIGKILL, which a PID file cannot promise. O_CLOEXEC keeps
+      the three children from inheriting it and making a dead run look alive.
+    */
+    const int fd =
+        ::open((candidate + "/" + kLockFile).c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
+    if (fd < 0) {
+        const int openError = errno;
+        ::rmdir(candidate.c_str());
+        return fail("cannot create the profile lock: " +
+                        std::string(std::strerror(openError)),
+                    error);
+    }
+    if (::flock(fd, LOCK_EX | LOCK_NB) != 0) {
+        const int lockError = errno;
+        ::close(fd);
+        ::rmdir(candidate.c_str());
+        return fail("cannot lock the profile directory: " +
+                        std::string(std::strerror(lockError)),
+                    error);
+    }
     if (!writePreferences(candidate, error)) {
+        ::close(fd);
         return false;
     }
 
     directory = std::move(candidate);
+    lockFd = fd;
     return true;
+}
+
+int sweepAbandonedProfiles(std::string &error)
+{
+    error.clear();
+    const std::string parent = profileParent();
+    DIR *directory = ::opendir(parent.c_str());
+    if (directory == nullptr) {
+        error = "cannot scan " + parent + ": " + std::strerror(errno);
+        return -1;
+    }
+
+    int removed = 0;
+    while (const dirent *entry = ::readdir(directory)) {
+        const std::string name(entry->d_name);
+        if (name.rfind(kProfilePrefix, 0) != 0) {
+            continue;
+        }
+        const std::string path = parent + "/" + name;
+        std::string ignored;
+        const int fd = ::open((path + "/" + kLockFile).c_str(), O_RDWR | O_CLOEXEC);
+        if (fd < 0) {
+            if (errno == ENOENT && olderThan(path, kUnlockedGraceSeconds)) {
+                if (removeProfileTree(path, ignored)) {
+                    ++removed;
+                }
+            }
+            continue;
+        }
+        const bool owned = ::flock(fd, LOCK_EX | LOCK_NB) != 0;
+        ::close(fd);
+        if (owned) {
+            continue;
+        }
+        if (removeProfileTree(path, ignored)) {
+            ++removed;
+        }
+    }
+    ::closedir(directory);
+    return removed;
 }
 
 std::string plannedProfilePath()

@@ -139,58 +139,6 @@ std::string removalFailure(const std::string &path, int errorCode)
     return "cannot remove " + path + ": " + std::strerror(errorCode);
 }
 
-/* A browser leaves thousands of files, so the profile needs a whole tree gone. */
-bool removeTree(const std::string &path, std::string &error)
-{
-    struct stat status {};
-    if (::lstat(path.c_str(), &status) != 0) {
-        const int lookupError = errno;
-        if (lookupError == ENOENT) {
-            return true;
-        }
-        error = removalFailure(path, lookupError);
-        return false;
-    }
-    if (!S_ISDIR(status.st_mode)) {
-        if (::unlink(path.c_str()) == 0) {
-            return true;
-        }
-        error = removalFailure(path, errno);
-        return false;
-    }
-
-    DIR *directory = ::opendir(path.c_str());
-    if (directory == nullptr) {
-        error = removalFailure(path, errno);
-        return false;
-    }
-
-    bool removed = true;
-    std::string firstFailure;
-    while (const dirent *entry = ::readdir(directory)) {
-        const std::string name(entry->d_name);
-        if (name == "." || name == "..") {
-            continue;
-        }
-        std::string entryFailure;
-        if (!removeTree(path + "/" + name, entryFailure) && removed) {
-            removed = false;
-            firstFailure = std::move(entryFailure);
-        }
-    }
-    ::closedir(directory);
-
-    if (!removed) {
-        error = std::move(firstFailure);
-        return false;
-    }
-    if (::rmdir(path.c_str()) != 0) {
-        error = removalFailure(path, errno);
-        return false;
-    }
-    return true;
-}
-
 /* Stops everything, then takes the throwaway profile with it. */
 WebRunOutcome finishRun(std::array<ChildRun, kChildCount> &children,
                         WebRunOutcome outcome,
@@ -201,8 +149,12 @@ WebRunOutcome finishRun(std::array<ChildRun, kChildCount> &children,
         std::fprintf(stderr, "sdl3mcp: web: a process outlived the grace period and was killed\n");
     }
 
-    if (!options.profileDir.empty() && !removeTree(options.profileDir, outcome.cleanupError)) {
+    if (!options.profileDir.empty() &&
+        !removeProfileTree(options.profileDir, outcome.cleanupError)) {
         std::fprintf(stderr, "sdl3mcp: web: %s\n", outcome.cleanupError.c_str());
+    }
+    if (options.profileLockFd >= 0) {
+        ::close(options.profileLockFd);
     }
     return outcome;
 }
@@ -236,6 +188,58 @@ Readiness waitForPorts(std::array<ChildRun, kChildCount> &children,
 }
 
 } // namespace
+
+/* A browser leaves thousands of files, so the profile needs a whole tree gone. */
+bool removeProfileTree(const std::string &path, std::string &error)
+{
+    struct stat status {};
+    if (::lstat(path.c_str(), &status) != 0) {
+        const int lookupError = errno;
+        if (lookupError == ENOENT) {
+            return true;
+        }
+        error = removalFailure(path, lookupError);
+        return false;
+    }
+    if (!S_ISDIR(status.st_mode)) {
+        if (::unlink(path.c_str()) == 0) {
+            return true;
+        }
+        error = removalFailure(path, errno);
+        return false;
+    }
+
+    DIR *directory = ::opendir(path.c_str());
+    if (directory == nullptr) {
+        error = removalFailure(path, errno);
+        return false;
+    }
+
+    bool removed = true;
+    std::string firstFailure;
+    while (const dirent *entry = ::readdir(directory)) {
+        const std::string name(entry->d_name);
+        if (name == "." || name == "..") {
+            continue;
+        }
+        std::string entryFailure;
+        if (!removeProfileTree(path + "/" + name, entryFailure) && removed) {
+            removed = false;
+            firstFailure = std::move(entryFailure);
+        }
+    }
+    ::closedir(directory);
+
+    if (!removed) {
+        error = std::move(firstFailure);
+        return false;
+    }
+    if (::rmdir(path.c_str()) != 0) {
+        error = removalFailure(path, errno);
+        return false;
+    }
+    return true;
+}
 
 WebRunOutcome runWebApp(const WebAppOptions &options,
                         const std::vector<std::vector<std::string>> &plan,

@@ -53,6 +53,7 @@ struct WebAppOptions
     std::string websocat;        /* resolved websocat executable */
     std::string browser;         /* resolved browser executable */
     std::string profileDir;      /* throwaway profile directory */
+    int profileLockFd = -1;      /* held for the whole run; -1 in a plan print */
     std::uint16_t pagePort = 0;  /* 0 until the launcher picks one */
     std::uint16_t bridgePort = 0;
 };
@@ -86,10 +87,24 @@ bool resolveBrowser(std::string &path, std::string &error);
 /*
   Creates a unique directory from sdl3mcp-web-XXXXXX under $XDG_RUNTIME_DIR when
   it is set and writable, otherwise under /tmp, and writes the user.js that
-  carries the throwaway profile's preferences. A failure leaves `directory`
-  untouched and names what could not be created.
+  carries the throwaway profile's preferences. `lockFd` receives a descriptor
+  holding an exclusive flock() on the directory's `.lock` file, which is what
+  marks the profile as owned by a live run; the caller holds it until it has
+  removed the directory. A failure leaves `directory` and `lockFd` untouched and
+  names what could not be created.
 */
-bool seedProfile(std::string &directory, std::string &error);
+bool seedProfile(std::string &directory, int &lockFd, std::string &error);
+
+/* Removes a profile tree. Shared by the runner's cleanup and the startup sweep. */
+bool removeProfileTree(const std::string &path, std::string &error);
+
+/*
+  Reclaims profile directories whose owner is gone: a directory whose .lock can be
+  taken has no live launcher, and one with no .lock at all is swept only once it is
+  old enough that a launcher creating it right now cannot be the owner. Returns the
+  number removed, or -1 with `error` set when the parent cannot be scanned.
+*/
+int sweepAbandonedProfiles(std::string &error);
 
 /*
   Names the directory a launch would seed, without creating it: the mkdtemp()

@@ -1352,7 +1352,9 @@ join a browser the user already has open. The profile's `user.js` carries
 window when the application shuts down, plus the preferences that keep a fresh
 profile from stopping on first-run prompts. That preference can only be set in a
 profile we own, never in the user's own settings, and the directory is removed
-when the run ends.
+when the run ends. A run holds a lock inside it for its lifetime, so the next
+launch reclaims a directory left behind by a launcher that was killed outright;
+a page printed with `--print-plan` creates none at all.
 
 ### Ending a web run
 

@@ -188,9 +188,20 @@ int main(int argc, char **argv)
         */
         if (parsed.options.printPlan) {
             web.profileDir = sdl3mcp::plannedProfilePath();
-        } else if (!sdl3mcp::seedProfile(web.profileDir, webError)) {
-            std::fprintf(stderr, "sdl3mcp: --web-root: %s\n", webError.c_str());
-            return 2;
+        } else {
+            std::string sweepError;
+            const int swept = sdl3mcp::sweepAbandonedProfiles(sweepError);
+            if (swept < 0) {
+                std::fprintf(stderr, "sdl3mcp: --web-root: %s\n", sweepError.c_str());
+                return 2;
+            }
+            if (swept > 0) {
+                std::fprintf(stderr, "sdl3mcp: web: reclaimed %d abandoned profile(s)\n", swept);
+            }
+            if (!sdl3mcp::seedProfile(web.profileDir, web.profileLockFd, webError)) {
+                std::fprintf(stderr, "sdl3mcp: --web-root: %s\n", webError.c_str());
+                return 2;
+            }
         }
 
         std::vector<std::vector<std::string>> plan;

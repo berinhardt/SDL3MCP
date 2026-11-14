@@ -272,18 +272,29 @@ target_include_directories(SDL3MCP PRIVATE
     ${SDL3MCP_JSON_INCLUDE_DIRS}
 )
 
-# The 1.0 protocol core: JSON-RPC, tools, results, the session and the stream.
-# It is SDL-free, so it compiles and links without SDL3::SDL3; the tests link
-# this object library directly, as they do for the v0 halves, because a shared
-# build hides these symbols.
-add_library(sdl3mcp_common_objects OBJECT
+# The 1.0 protocol core: JSON-RPC, tools, results, the session, the stream, the
+# configuration, and the dial. It is SDL-free at link time, so it compiles and
+# links without SDL3::SDL3; the tests link this object library directly, as they
+# do for the v0 halves, because a shared build hides these symbols.
+#
+# The configuration and the dial take only SDL types, never an SDL symbol, so
+# they belong to the half the Handler will also use. The dial has a platform arm:
+# the native socket here, the Emscripten WebSocket in the library's web build.
+set(sdl3mcp_common_sources
     src/JsonRpc.cpp
     src/Tool.cpp
     src/ToolCatalog.cpp
     src/ToolResult.cpp
     src/Session.cpp
     src/Stream.cpp
+    src/Configuration.cpp
 )
+if(EMSCRIPTEN)
+    list(APPEND sdl3mcp_common_sources src/WebSocketStream.cpp)
+else()
+    list(APPEND sdl3mcp_common_sources src/SocketStream.cpp)
+endif()
+add_library(sdl3mcp_common_objects OBJECT ${sdl3mcp_common_sources})
 target_compile_features(sdl3mcp_common_objects PRIVATE cxx_std_20)
 target_include_directories(sdl3mcp_common_objects
     PUBLIC
@@ -291,6 +302,9 @@ target_include_directories(sdl3mcp_common_objects
         "$<BUILD_INTERFACE:${SDL3MCP_GENERATED_DIR}>"
     PRIVATE
         ${SDL3MCP_JSON_INCLUDE_DIRS}
+        # SDL types only: the public configuration header needs the include path
+        # but no symbol, so SDL is not on this target's link line.
+        $<TARGET_PROPERTY:SDL3::SDL3,INTERFACE_INCLUDE_DIRECTORIES>
 )
 target_link_libraries(sdl3mcp_common_objects PRIVATE nlohmann_json::nlohmann_json)
 set_target_properties(sdl3mcp_common_objects PROPERTIES
@@ -298,6 +312,62 @@ set_target_properties(sdl3mcp_common_objects PROPERTIES
     VISIBILITY_INLINES_HIDDEN YES
     POSITION_INDEPENDENT_CODE ON
 )
+
+# The 1.0 library, built beside the v0 one while the rewrite fills it in. The
+# target is temporary: ticket 10 makes it the public SDL3MCP and deletes the v0
+# halves. It is a static archive of the protocol core plus the app half, and it
+# is desktop-only until the Emscripten arm (WebSocketStream) lands; the web
+# build keeps using the v0 library until then.
+if(NOT EMSCRIPTEN)
+    add_library(sdl3mcp_v1_app_objects OBJECT
+        src/Api.cpp
+        src/AppInput.cpp
+        src/Frame.cpp
+        src/Info.cpp
+        src/Input.cpp
+        src/KeyMap.cpp
+        src/Mouse.cpp
+        src/Replay.cpp
+        src/Runtime.cpp
+    )
+    target_compile_features(sdl3mcp_v1_app_objects PRIVATE cxx_std_20)
+    target_include_directories(sdl3mcp_v1_app_objects
+        PUBLIC
+            "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+            "$<BUILD_INTERFACE:${SDL3MCP_GENERATED_DIR}>"
+        PRIVATE
+            ${SDL3MCP_JSON_INCLUDE_DIRS}
+    )
+    target_link_libraries(sdl3mcp_v1_app_objects
+        PUBLIC SDL3::SDL3
+        PRIVATE nlohmann_json::nlohmann_json Threads::Threads
+    )
+    set_target_properties(sdl3mcp_v1_app_objects PROPERTIES
+        CXX_VISIBILITY_PRESET hidden
+        VISIBILITY_INLINES_HIDDEN YES
+        POSITION_INDEPENDENT_CODE ON
+    )
+    # The C API carries SDL_DECLSPEC; a static archive must say so or a Windows
+    # consumer would see dllimport. No effect on Linux, but the contract is
+    # platform-neutral.
+    target_compile_definitions(sdl3mcp_v1_app_objects PRIVATE SDL_STATIC_LIB)
+
+    add_library(sdl3mcp_v1 STATIC
+        $<TARGET_OBJECTS:sdl3mcp_common_objects>
+        $<TARGET_OBJECTS:sdl3mcp_v1_app_objects>
+    )
+    add_library(SDL3MCP::V1 ALIAS sdl3mcp_v1)
+    target_include_directories(sdl3mcp_v1
+        PUBLIC
+            "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+            "$<BUILD_INTERFACE:${SDL3MCP_GENERATED_DIR}>"
+            "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
+    )
+    target_link_libraries(sdl3mcp_v1
+        PUBLIC SDL3::SDL3
+        PRIVATE nlohmann_json::nlohmann_json Threads::Threads
+    )
+endif()
 
 # The 1.0 public target names, added beside the v0 build while the rewrite fills
 # them in: COMMON is the SDL-free core, SERVER is the Handler built on it, and
@@ -311,6 +381,9 @@ target_include_directories(SDL3MCP_COMMON INTERFACE
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
     "$<BUILD_INTERFACE:${SDL3MCP_GENERATED_DIR}>"
     "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
+    # The configuration header names SDL types but no SDL symbol, so the include
+    # path travels with COMMON while SDL stays off its link line.
+    $<TARGET_PROPERTY:SDL3::SDL3,INTERFACE_INCLUDE_DIRECTORIES>
 )
 
 add_library(SDL3MCP_SERVER INTERFACE)

@@ -16,24 +16,6 @@ add_test(NAME header_c COMMAND sdl3mcp_test_header_c)
 
 find_package(Threads REQUIRED)
 
-# The 1.0 CamelCase tree is filled in beside the v0 build, so the v0 source
-# lists do not name these files yet. They compile here for their behavior
-# suites only: the same test sources run against both implementations until the
-# switch removes the v0 ones.
-add_library(sdl3mcp_ported_objects OBJECT
-    "${CMAKE_CURRENT_SOURCE_DIR}/../src/AppInput.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/../src/Frame.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/../src/Input.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/../src/KeyMap.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/../src/Mouse.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/../src/Replay.cpp"
-)
-target_compile_features(sdl3mcp_ported_objects PRIVATE cxx_std_20)
-target_include_directories(sdl3mcp_ported_objects PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/../src"
-)
-target_link_libraries(sdl3mcp_ported_objects PUBLIC SDL3::SDL3)
-
 # One doctest suite is one executable, so a failing case is reported by doctest
 # and the remaining cases still run, unlike a hand-rolled main that aborts at
 # the first assertion. The private src/ include and the object-library link let
@@ -161,13 +143,59 @@ sdl3mcp_add_test(session_tests session_tests.cpp
 
 sdl3mcp_add_test(frame_tests frame_tests.cpp)
 
-# The same suites against the ported sources: the v0 files are the oracle until
-# the switch, so both must pass and neither may drift.
-foreach(sdl3mcp_ported_family keymap input replay mouse app_input frame)
-    sdl3mcp_add_test(${sdl3mcp_ported_family}_ported_tests
-        ${sdl3mcp_ported_family}_tests.cpp
-        LIBRARY sdl3mcp_ported_objects)
-endforeach()
+# The same suites against the 1.0 library: the v0 files are the oracle until
+# the switch, so both must pass and neither may drift. The 1.0 target owns the
+# ported sources now, so the temporary test-only object library is gone.
+if(NOT EMSCRIPTEN)
+    foreach(sdl3mcp_ported_family keymap input replay mouse app_input frame)
+        sdl3mcp_add_test(${sdl3mcp_ported_family}_ported_tests
+            ${sdl3mcp_ported_family}_tests.cpp
+            LIBRARY sdl3mcp_v1)
+    endforeach()
+
+    # The 1.0 C API and native socket path. The configuration suite is pure: a
+    # value in, a value and a message out, with no window or socket.
+    add_executable(sdl3mcp_test_library_header_c library_header_c.c)
+    set_target_properties(sdl3mcp_test_library_header_c PROPERTIES
+        LINKER_LANGUAGE CXX)
+    target_compile_features(sdl3mcp_test_library_header_c PRIVATE c_std_11)
+    target_link_libraries(sdl3mcp_test_library_header_c PRIVATE sdl3mcp_v1)
+    add_test(NAME library_header_c COMMAND sdl3mcp_test_library_header_c)
+
+    sdl3mcp_add_test(library_configuration_tests
+        library_configuration_tests.cpp
+        LIBRARY sdl3mcp_v1
+        LIBS nlohmann_json::nlohmann_json)
+
+    # The sdl_info wire shape is a pure serializer, so it needs no window.
+    sdl3mcp_add_test(library_info_tests library_info_tests.cpp
+        LIBRARY sdl3mcp_v1
+        LIBS nlohmann_json::nlohmann_json)
+
+    # One lifecycle per process, so every scenario is its own CTest and no
+    # scenario can leak the claimed lifecycle into another.
+    sdl3mcp_add_test(library_lifecycle_tests library_lifecycle_tests.cpp
+        LIBRARY sdl3mcp_v1
+        LIBS Threads::Threads
+        NO_TEST)
+    foreach(sdl3mcp_lifecycle_scenario
+            off no_endpoint off_clears_endpoint refused_endpoint second_init
+            uninitialized help version bad_argument)
+        add_test(NAME library_lifecycle_${sdl3mcp_lifecycle_scenario}
+                 COMMAND sdl3mcp_test_library_lifecycle
+                         ${sdl3mcp_lifecycle_scenario})
+    endforeach()
+
+    # The test app dials a test MCP server on loopback, with the server in its
+    # own thread. SDL's dummy video driver keeps process-wide allocations the
+    # test cannot free, so leak detection is scoped off for this integration
+    # test only.
+    sdl3mcp_add_test(library_socket_tests library_socket_tests.cpp
+        LIBRARY sdl3mcp_v1
+        LIBS nlohmann_json::nlohmann_json Threads::Threads)
+    set_tests_properties(library_socket_tests PROPERTIES ENVIRONMENT
+        "SDL_VIDEODRIVER=dummy;ASAN_OPTIONS=detect_leaks=0:halt_on_error=1")
+endif()
 
 sdl3mcp_add_test(info_tests info_tests.cpp
     LIBS nlohmann_json::nlohmann_json)

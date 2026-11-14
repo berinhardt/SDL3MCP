@@ -18,6 +18,8 @@ class ToolCatalog {
   public:
    void add(Tool tool);
    const Tool* find(std::string_view name) const;
+   /* Empties the map so the Handler can rebuild the merged view in place. */
+   void clear() noexcept { tools_.clear(); }
 
    const std::map<std::string, Tool, std::less<>>& tools() const noexcept {
       return tools_;

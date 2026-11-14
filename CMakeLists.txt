@@ -300,6 +300,7 @@ set(sdl3mcp_common_sources
     src/JsonRpc.cpp
     src/Tool.cpp
     src/ToolCatalog.cpp
+    src/ToolDefinitions.cpp
     src/ToolResult.cpp
     src/Session.cpp
     src/Stream.cpp
@@ -308,7 +309,10 @@ set(sdl3mcp_common_sources
 if(EMSCRIPTEN)
     list(APPEND sdl3mcp_common_sources src/WebSocketStream.cpp)
 else()
-    list(APPEND sdl3mcp_common_sources src/SocketStream.cpp)
+    list(APPEND sdl3mcp_common_sources
+        src/SocketStream.cpp
+        src/StdioStream.cpp
+    )
 endif()
 add_library(sdl3mcp_common_objects OBJECT ${sdl3mcp_common_sources})
 target_compile_features(sdl3mcp_common_objects PRIVATE cxx_std_20)
@@ -390,6 +394,62 @@ if(EMSCRIPTEN)
     # link needs it named. As INTERFACE it reaches the application's link
     # line, which is where the WebSocket arm is pulled in from the archive.
     target_link_libraries(sdl3mcp_v1 INTERFACE "-lwebsocket.js")
+endif()
+
+# The Handler: one executable with a client-facing stream (stdio, or the
+# upstream dial in Relay mode) and one application listener. It links the
+# SDL-free common core and never SDL3::SDL3, so a wire unit that starts calling
+# SDL breaks this link instead of dragging a window into the Handler.
+#
+# Presentation lives here: the library sends raw RGBA and this tree encodes PNG
+# and base64. stb is compiled in one server unit, so the library archive holds
+# no stb symbol.
+if(NOT EMSCRIPTEN)
+    add_library(sdl3mcp_server_objects OBJECT
+        server/AppPeer.cpp
+        server/Cli.cpp
+        server/Handler.cpp
+        server/Listener.cpp
+        server/Png.cpp
+        server/StbImageWrite.cpp
+    )
+    target_compile_features(sdl3mcp_server_objects PRIVATE cxx_std_20)
+    target_include_directories(sdl3mcp_server_objects
+        PUBLIC
+            "${CMAKE_CURRENT_SOURCE_DIR}/server"
+        PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/src"
+            "${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb"
+            # Configuration.h names SDL types but no SDL symbol; the include
+            # path travels with the common core, never the link line.
+            $<TARGET_PROPERTY:SDL3::SDL3,INTERFACE_INCLUDE_DIRECTORIES>
+    )
+    target_link_libraries(sdl3mcp_server_objects
+        PUBLIC
+            sdl3mcp_common_objects
+            nlohmann_json::nlohmann_json
+        PRIVATE
+            Threads::Threads
+    )
+    set_target_properties(sdl3mcp_server_objects PROPERTIES
+        CXX_VISIBILITY_PRESET hidden
+        VISIBILITY_INLINES_HIDDEN YES
+        POSITION_INDEPENDENT_CODE ON
+    )
+
+    # The executable is sdl3mcp_handler beside the v0 sdl3mcp until ticket 10
+    # makes the Handler the public SERVER target; both binaries coexist.
+    add_executable(sdl3mcp_handler server/Main.cpp)
+    target_compile_features(sdl3mcp_handler PRIVATE cxx_std_20)
+    target_include_directories(sdl3mcp_handler PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/server"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    )
+    target_link_libraries(sdl3mcp_handler PRIVATE
+        sdl3mcp_server_objects
+        sdl3mcp_common_objects
+        nlohmann_json::nlohmann_json
+    )
 endif()
 
 # The 1.0 public target names, added beside the v0 build while the rewrite fills

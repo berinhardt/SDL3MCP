@@ -46,10 +46,22 @@ class Stream {
    virtual bool sendText(std::string_view text) = 0;
    /* Exactly `size` bytes with nothing appended. */
    virtual bool sendBinary(const uint8_t* data, size_t size) = 0;
+   /*
+      The next `size` bytes belong to the line just delivered, not to a new
+      line. A peer's raw frame result is one header line followed by exactly
+      byteLength bytes; the handler asks for them from onMessage.
+   */
+   virtual void expectPayload(size_t size) = 0;
    virtual void close() = 0;
    /* Reads and delivers whatever the transport has available; a no-op where
       the platform pushes messages itself. */
    virtual void pump() = 0;
+   /*
+      True while the transport holds bytes it could not write yet. A poll loop
+      adds the stream to its POLLOUT set only then, so a writable socket does
+      not spin the loop.
+   */
+   virtual bool wantsWrite() const { return false; }
 
    void setHandler(StreamHandler* handler) noexcept { handler_ = handler; }
    StreamHandler* handler() const noexcept { return handler_; }
@@ -79,13 +91,16 @@ class StreamBase : public Stream {
      The next `size` bytes belong to the line just delivered, not to a new
      line. Called from onMessage when that line announced a raw payload.
    */
-   void expectPayload(size_t size);
+   void expectPayload(size_t size) override;
    bool awaitingPayload() const noexcept {
       return payloadExpected_ > payload_.size();
    }
 
+   bool wantsWrite() const override { return wantsWrite_; }
+
   protected:
    bool finished() const noexcept { return finished_; }
+   void setWantsWrite(bool value) noexcept { wantsWrite_ = value; }
 
   private:
    void failLineTooLong();
@@ -94,6 +109,7 @@ class StreamBase : public Stream {
    std::vector<uint8_t> payload_;
    size_t payloadExpected_ = 0;
    bool finished_ = false;
+   bool wantsWrite_ = false;
 };
 
 }  // namespace sdl3mcp

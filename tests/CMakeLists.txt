@@ -119,6 +119,28 @@ target_link_libraries(sdl3mcp_test_protocol_core PRIVATE
 )
 add_test(NAME protocol_core_tests COMMAND sdl3mcp_test_protocol_core)
 
+# The Handler end to end: the real executable over pipes and sockets, driven by
+# a test MCP client and a fake application that speaks the library's wire
+# protocol. No SDL is on this link line, so a server unit that starts calling
+# SDL breaks the test build instead of dragging a window into the Handler.
+if(NOT EMSCRIPTEN)
+    add_executable(sdl3mcp_test_handler handler_tests.cpp)
+    target_compile_features(sdl3mcp_test_handler PRIVATE cxx_std_20)
+    target_include_directories(sdl3mcp_test_handler PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../server"
+    )
+    target_link_libraries(sdl3mcp_test_handler PRIVATE
+        sdl3mcp_server_objects
+        sdl3mcp_common_objects
+        nlohmann_json::nlohmann_json
+        doctest::doctest
+        Threads::Threads
+    )
+    add_test(NAME handler_tests
+             COMMAND sdl3mcp_test_handler $<TARGET_FILE:sdl3mcp_handler>)
+endif()
+
 sdl3mcp_add_test(configuration_tests configuration_tests.cpp)
 
 sdl3mcp_add_test(keymap_tests keymap_tests.cpp)

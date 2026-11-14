@@ -300,7 +300,7 @@ int Handler::run() {
    if (options_.hasDumpTools) {
       return printToolCatalog();
    }
-   if (options_.hasDryRun) {
+   if (options_.dryRun()) {
       return printDryRun();
    }
 

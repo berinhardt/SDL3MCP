@@ -1,7 +1,7 @@
 /*
   The Handler's command line.
 
-  One shape with an optional upstream:
+  One shape with an optional upstream and an optional listener:
 
     --listen=HOST:PORT                 the downstream application listener
     --connect=HOST:PORT                dial an upstream MCP client (a Relay)
@@ -9,12 +9,18 @@
     --web=PATH                         an alias-to-web-root app source (repeatable)
     --timeout-ms=N                     forward/attach/spawn budget, default 10000
     --dry-run=ALIAS                    print what app_spawn_<alias> would run
+    --dump-tools                       print the tool catalog and exit
 
   Without --connect the client-facing face is stdio (a Server); with it the
   Handler dials the endpoint and is the MCP server on that TCP connection (a
-  Relay). Every Handler needs a downstream source: --listen, --targets, or (from
-  ticket 09) --web. When an app source is present --listen defaults to
-  127.0.0.1:0; otherwise it is required.
+  Relay). Listening, relaying and dry-run are derived from those option values,
+  not tracked separately.
+
+  --listen is optional. With an app source it defaults to an ephemeral loopback
+  listener, 127.0.0.1:0, whose bound port the startup line reports; an explicit
+  --listen wins. A run with an app source, an explicit --listen, or --dump-tools
+  is valid; anything else has nothing to serve and fails, naming --targets and
+  --web.
 
   Splitting the parse from argv keeps the grammar testable without a process.
 */
@@ -32,14 +38,15 @@ constexpr int kMinHandlerTimeoutMs = 1;
 constexpr int kMaxHandlerTimeoutMs = 60000;
 
 struct HandlerOptions {
-   /* Empty unless --listen=HOST:PORT was given. */
+   /*
+     Empty when no listener was requested. With an app source the CLI fills in
+     127.0.0.1:0, so the kernel picks an ephemeral port the startup line reports.
+   */
    std::string listenHost;
    std::uint16_t listenPort = 0;
-   bool hasListen = false;
    /* Empty unless --connect=HOST:PORT was given. */
    std::string connectHost;
    std::uint16_t connectPort = 0;
-   bool hasConnect = false;
    /* The default forward budget; a call's timeout_ms overrides it. */
    int timeoutMs = kDefaultHandlerTimeoutMs;
 
@@ -49,7 +56,6 @@ struct HandlerOptions {
    std::vector<std::string> webPaths;
 
    /* --dry-run=ALIAS prints what app_spawn_<alias> would run and starts nothing. */
-   bool hasDryRun = false;
    std::string dryRunAlias;
 
    /*
@@ -59,11 +65,14 @@ struct HandlerOptions {
    bool hasDumpTools = false;
 
    /* A Relay dials an upstream; a Server speaks stdio to its client. */
-   bool relay() const noexcept { return hasConnect; }
+   bool relay() const noexcept { return !connectHost.empty(); }
+
+   /* --dry-run=ALIAS: print one alias's plan and start nothing. */
+   bool dryRun() const noexcept { return !dryRunAlias.empty(); }
 
    /*
-     True when a --targets or --web source contributes app_spawn_* tools.
-     --listen is then optional and defaults to loopback:0.
+     True when a --targets or --web source contributes app_spawn_* tools. An app
+     source also supplies the listener default.
    */
    bool hasAppSource() const noexcept {
       return !targetsPaths.empty() || !webPaths.empty();
@@ -83,8 +92,8 @@ struct HandlerCliResult {
 
 /*
   Parses argv without argv[0]. Returns ok=false with a one-line explanation when
-  an option is unknown, missing its value, repeated, out of range, or when no
-  downstream listener was given.
+  an option is unknown, missing its value, repeated, out of range, or when the
+  run has neither an app source nor a listener to serve.
 */
 HandlerCliResult parseHandlerCommandLine(const std::vector<std::string>& arguments);
 

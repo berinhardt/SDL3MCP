@@ -1664,10 +1664,10 @@ TEST_CASE("the handler command line") {
    const auto server = parseHandlerCommandLine({"--listen=127.0.0.1:0"});
    CHECK(server.ok);
    CHECK(!server.exit);
-   CHECK(server.options.hasListen);
    CHECK(server.options.listenHost == "127.0.0.1");
    CHECK(server.options.listenPort == 0);
    CHECK(!server.options.relay());
+   CHECK(!server.options.dryRun());
    CHECK(server.options.timeoutMs == 10000);
 
    const auto relay = parseHandlerCommandLine(
@@ -1680,7 +1680,21 @@ TEST_CASE("the handler command line") {
    CHECK(relay.options.listenPort == 7778);
    CHECK(relay.options.timeoutMs == 2500);
 
-   CHECK(!parseHandlerCommandLine({}).ok);
+   /*
+     Nothing to serve: without an app source and without a listener the run says
+     which two app sources exist. Its message names both flags.
+   */
+   const auto empty = parseHandlerCommandLine({});
+   CHECK(!empty.ok);
+   CHECK(empty.error.find("nothing to serve") != std::string::npos);
+   CHECK(empty.error.find("--targets") != std::string::npos);
+   CHECK(empty.error.find("--web") != std::string::npos);
+
+   /* A Relay needs a downstream just as a Server does. */
+   const auto relayOnly = parseHandlerCommandLine({"--connect=127.0.0.1:7777"});
+   CHECK(!relayOnly.ok);
+   CHECK(relayOnly.error.find("--targets") != std::string::npos);
+   CHECK(relayOnly.error.find("--web") != std::string::npos);
    CHECK(!parseHandlerCommandLine({"--listen"}).ok);
    CHECK(!parseHandlerCommandLine({"--listen=127.0.0.1"}).ok);
    CHECK(!parseHandlerCommandLine({"--listen=:7000"}).ok);
@@ -1690,11 +1704,22 @@ TEST_CASE("the handler command line") {
    CHECK(!parseHandlerCommandLine({"--listen=127.0.0.1:0", "--connect=x"}).ok);
    CHECK(!parseHandlerCommandLine({"--listen=127.0.0.1:0", "--bogus"}).ok);
 
-   /* An app source makes --listen optional and defaults it to loopback:0. */
+   /* Every single-valued flag still errors when it is repeated. */
+   CHECK(!parseHandlerCommandLine(
+              {"--listen=127.0.0.1:1", "--listen=127.0.0.1:2"})
+              .ok);
+   CHECK(!parseHandlerCommandLine({"--listen=127.0.0.1:1",
+                                   "--connect=127.0.0.1:2",
+                                   "--connect=127.0.0.1:3"})
+              .ok);
+   CHECK(!parseHandlerCommandLine(
+              {"--targets=a.json", "--dry-run=a", "--dry-run=b"})
+              .ok);
+
+   /* An app source supplies the listener default, so --listen is optional. */
    const auto targetsOnly =
        parseHandlerCommandLine({"--targets=/tmp/targets.json"});
    CHECK(targetsOnly.ok);
-   CHECK(targetsOnly.options.hasListen);
    CHECK(targetsOnly.options.listenHost == "127.0.0.1");
    CHECK(targetsOnly.options.listenPort == 0);
    CHECK(!targetsOnly.options.relay());
@@ -1721,7 +1746,6 @@ TEST_CASE("the handler command line") {
    /* --web is a second app source with the same default listener. */
    const auto webOnly = parseHandlerCommandLine({"--web=web.json"});
    CHECK(webOnly.ok);
-   CHECK(webOnly.options.hasListen);
    CHECK(webOnly.options.listenHost == "127.0.0.1");
    CHECK(webOnly.options.listenPort == 0);
    CHECK((webOnly.options.webPaths == std::vector<std::string>{"web.json"}));
@@ -1747,8 +1771,9 @@ TEST_CASE("the handler command line") {
    const auto dryRun =
        parseHandlerCommandLine({"--targets=a.json", "--dry-run=alpha"});
    CHECK(dryRun.ok);
-   CHECK(dryRun.options.hasDryRun);
+   CHECK(dryRun.options.dryRun());
    CHECK(dryRun.options.dryRunAlias == "alpha");
+   CHECK(dryRun.options.listenPort == 0);
    CHECK(!parseHandlerCommandLine({"--targets=a.json", "--dry-run"}).ok);
    CHECK(!parseHandlerCommandLine({"--targets=a.json", "--dry-run="}).ok);
    CHECK(!parseHandlerCommandLine({"--dry-run=alpha"}).ok);
@@ -1773,11 +1798,76 @@ TEST_CASE("the handler command line") {
    CHECK(version.exitCode == 0);
    CHECK(version.message == "SDL3MCP 1.0.0");
 
-   /* --dump-tools is a diagnostic: it prints and exits, with no listener. */
+   /*
+     --dump-tools is a diagnostic: it prints and exits, with no listener and no
+     app source. It reserves no port at all, so nothing is bound.
+   */
    const auto dump = parseHandlerCommandLine({"--dump-tools"});
    CHECK(dump.ok);
    CHECK(dump.options.hasDumpTools);
+   CHECK(dump.options.listenHost.empty());
    CHECK(!parseHandlerCommandLine({"--dump-tools=1"}).ok);
+}
+
+/*
+  A Handler given nothing at all has nothing to serve: it fails at once and says
+  which two app sources exist, instead of listening on a port nobody can learn.
+*/
+TEST_CASE("an argument-less run fails naming both app source flags") {
+   TestProcess process;
+   process.start(g_handler, {});
+
+   const std::string err = readAllFd(process.stderrChild, kLineTimeoutMs);
+   CHECK(process.waitForExit(kLineTimeoutMs));
+   CHECK(process.exitCode != 0);
+   CHECK(err.find("nothing to serve") != std::string::npos);
+   CHECK(err.find("--targets") != std::string::npos);
+   CHECK(err.find("--web") != std::string::npos);
+   CHECK(err.find("listening on") == std::string::npos);
+}
+
+/*
+  No --listen: an app source alone asks for an ephemeral loopback listener. The
+  startup line must report the kernel's port, and that port is the one bound.
+*/
+TEST_CASE("--targets alone serves on an ephemeral loopback port") {
+   TempDir directory;
+   writeFile(directory.file("targets.json"),
+             nlohmann::json{{"alpha", nlohmann::json::array({g_fakeApp})}}.dump());
+
+   TestProcess process;
+   process.start(g_handler, {"--targets=" + directory.file("targets.json")});
+
+   const std::string line = process.readStderrLine(kLineTimeoutMs);
+   REQUIRE(line.rfind("sdl3mcp: listening on 127.0.0.1:", 0) == 0);
+   const long parsed = std::strtol(line.c_str() + line.rfind(':') + 1, nullptr, 10);
+   REQUIRE((parsed > 0 && parsed <= 65535));
+   const auto port = static_cast<std::uint16_t>(parsed);
+   CHECK(loopbackPortAccepts(port));
+
+   process.closeStdin();
+   CHECK(process.waitForExit(kLineTimeoutMs));
+   CHECK(process.exitCode == 0);
+}
+
+/* An explicit --listen overrides the ephemeral default and is the port bound. */
+TEST_CASE("an explicit --listen is honoured over the ephemeral default") {
+   TempDir directory;
+   writeFile(directory.file("targets.json"),
+             nlohmann::json{{"alpha", nlohmann::json::array({g_fakeApp})}}.dump());
+
+   std::uint16_t requested = 0;
+   const int reserved = bindLoopback(requested);
+   ::close(reserved);
+
+   TestProcess process;
+   process.start(g_handler, {"--targets=" + directory.file("targets.json"),
+                             "--listen=127.0.0.1:" + std::to_string(requested)});
+   CHECK(process.readListeningPort() == requested);
+
+   process.closeStdin();
+   CHECK(process.waitForExit(kLineTimeoutMs));
+   CHECK(process.exitCode == 0);
 }
 
 /*

@@ -4,11 +4,16 @@
 # can run its suites on a machine with no SDL:
 #
 #   HANDLER_TESTS  handler_tests, web_tests, protocol_core_tests and the
-#                  configure-time checks. None links SDL: the common archive and
-#                  the server objects hold no SDL include path or link line.
-#   LIBRARY_TESTS  every suite that links the library (SDL3MCP::SDL3MCP) or the
-#                  app object library, which means SDL, plus the Emscripten Node
-#                  suites. They exist only when the library half is built.
+#                  configure-time checks. None needs SDL to configure, build or
+#                  run: the common archive and the server objects hold no SDL
+#                  include path or link line, and the checks are CMake/Python.
+#   LIBRARY_TESTS  every suite that needs SDL to configure, build or run: the
+#                  suites that link the library (SDL3MCP::SDL3MCP) or the app
+#                  object library, plus the Emscripten Node suites. The two
+#                  checks that test the library package rather than link it
+#                  (targets_check, readme_check) are library tests too, because
+#                  both need the library half to configure and build. They exist
+#                  only when the library half is built.
 #
 # A suite that includes the private src/ headers links the common archive and
 # the app object library: the sources are compiled once for the library, and
@@ -364,9 +369,16 @@ if(SDL3MCP_BUILD_HANDLER_TESTS)
     # generator and the dependencies it already resolved keeps the nested
     # configure off the network. The nested tree passes the fixture option OFF,
     # so the fixture does not register itself again.
+    #
+    # Only the standalone gate registers this fixture. An embedded parent owns
+    # neither doctest nor nlohmann/json in the variables the script forwards: it
+    # usually defines them as targets (add_subdirectory), so the nested
+    # configure would download them and a consumer's ctest would grow a network
+    # dependency and a cold nested build. The SDL-free invariant is this
+    # project's gate to keep, so the parent must not run it.
     option(SDL3MCP_HANDLER_ONLY_FIXTURE
-        "Register the nested SDL-free Handler build as a test" ON)
-    if(SDL3MCP_HANDLER_ONLY_FIXTURE)
+        "Register the nested SDL-free Handler build as a test (standalone only)" ON)
+    if(PROJECT_IS_TOP_LEVEL AND SDL3MCP_HANDLER_ONLY_FIXTURE)
         set(sdl3mcp_handler_only_command
             "-DSDL3MCP_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
             "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/handler_only"

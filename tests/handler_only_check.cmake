@@ -19,7 +19,14 @@
 #
 # Forwarding the dependencies is what keeps the fixture off the network: on a
 # machine whose parent configure already resolved them, the nested configure
-# must not download them again.
+# must not download them again. The parent validates the paths it forwards, so
+# this script takes them as given.
+#
+# Only the standalone gate registers this fixture. An embedded parent (one that
+# adds SDL3MCP with add_subdirectory) defines doctest and nlohmann/json as
+# targets instead of package/source directories, so nothing could be forwarded
+# and the nested configure would download them; the SDL-free invariant is the
+# standalone gate's to keep, and an embedded parent never runs the nested build.
 #
 # The nested tree registers this fixture too, so the configure passes
 # -DSDL3MCP_HANDLER_ONLY_FIXTURE=OFF and the recursion stops there.
@@ -52,13 +59,13 @@ endif()
 if(BUILD_TYPE)
     list(APPEND sdl3mcp_configure "-DCMAKE_BUILD_TYPE=${BUILD_TYPE}")
 endif()
-if(DOCTEST_DIR AND EXISTS "${DOCTEST_DIR}/doctestConfig.cmake")
+if(DOCTEST_DIR)
     list(APPEND sdl3mcp_configure "-Ddoctest_DIR=${DOCTEST_DIR}")
 elseif(DOCTEST_SOURCE_DIR)
     list(APPEND sdl3mcp_configure
         "-DFETCHCONTENT_SOURCE_DIR_DOCTEST=${DOCTEST_SOURCE_DIR}")
 endif()
-if(NLOHMANN_JSON_DIR AND EXISTS "${NLOHMANN_JSON_DIR}/nlohmann_jsonConfig.cmake")
+if(NLOHMANN_JSON_DIR)
     list(APPEND sdl3mcp_configure "-Dnlohmann_json_DIR=${NLOHMANN_JSON_DIR}")
 elseif(NLOHMANN_JSON_SOURCE_DIR)
     list(APPEND sdl3mcp_configure

@@ -18,8 +18,10 @@ option(SDL3MCP_BUILD_LIBRARY
 # Tests are two groups by dependency, not by directory:
 #   HANDLER_TESTS  handler_tests, web_tests, protocol_core_tests: every suite
 #                  that links no SDL.
-#   LIBRARY_TESTS  every suite that links the library or the app half, which
-#                  means SDL, including the Emscripten Node suites.
+#   LIBRARY_TESTS  every suite that needs SDL to configure, build or run: the
+#                  suites that link the library or the app half, plus the
+#                  package checks (targets_check, readme_check), including the
+#                  Emscripten Node suites.
 # SDL3MCP_BUILD_TESTS is the convenience that enables both: it sets their
 # defaults, and an explicit group option overrides it.
 option(SDL3MCP_BUILD_TESTS

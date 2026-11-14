@@ -25,7 +25,9 @@ namespace sdl3mcp {
 
   An optional Session is the whole transport choice. No endpoint means no
   session and AppIterate is a no-op; an endpoint means exactly one dial in
-  start(), and a failed dial leaves no Runtime behind.
+  start(). The native dial completes inside start(), so a failure leaves no
+  Runtime behind; the browser dial is asynchronous, so a failure arrives as a
+  close or error and ends the page on the next AppIterate.
 */
 class Runtime {
   public:
@@ -72,6 +74,18 @@ class Runtime {
      SDL call (SDL_PushEvent). One thread, so a plain bool is enough.
    */
    bool terminateRequested_ = false;
+
+#ifdef __EMSCRIPTEN__
+   /*
+     A browser has no server thread to fail: the WebSocket closing or erroring
+     is the session ending, and the page has nothing left to serve, so the app
+     quits. The latches keep a closed session from pushing an event every frame,
+     and keep the asynchronous dial - where "not open" is the normal state
+     between AppInit and the first frame - from being mistaken for a close.
+   */
+   bool sessionOpened_ = false;
+   bool sessionClosed_ = false;
+#endif
 };
 
 }  // namespace sdl3mcp

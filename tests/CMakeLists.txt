@@ -2,6 +2,48 @@
 # (wire and app halves): a shared library hides those symbols from its dynamic
 # symbol table. Tests that only use the public C API keep linking the library
 # target itself.
+#
+# A browser configure has no POSIX test suite. Its one suite is the WebSocket
+# arm, run under Node against a local server, and it is registered only when the
+# option asked for it and Node is on PATH.
+if(EMSCRIPTEN)
+    if(SDL3MCP_BUILD_NODE_TESTS)
+        find_program(NODE_EXECUTABLE node)
+        if(NODE_EXECUTABLE)
+            add_executable(sdl3mcp_test_websocket_node
+                websocket_stream_node_tests.cpp)
+            target_compile_features(sdl3mcp_test_websocket_node PRIVATE
+                cxx_std_20)
+            target_include_directories(sdl3mcp_test_websocket_node PRIVATE
+                "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+            )
+            # The suite links the real 1.0 archive, so the WebSocket arm is
+            # pulled from the same object the application links; its INTERFACE
+            # also carries -lwebsocket.js and SDL3.
+            target_link_libraries(sdl3mcp_test_websocket_node PRIVATE
+                sdl3mcp_v1
+                doctest::doctest
+            )
+            # ASYNCIFY is what lets the browser event loop run between pumps,
+            # and EXIT_RUNTIME is what makes main's verdict end the Node process.
+            target_link_options(sdl3mcp_test_websocket_node PRIVATE
+                "-sASYNCIFY"
+                "-sEXIT_RUNTIME=1"
+                "-sENVIRONMENT=node"
+            )
+            add_test(NAME node_websocket_tests
+                     COMMAND "${NODE_EXECUTABLE}"
+                             "${CMAKE_CURRENT_SOURCE_DIR}/run_node_websocket_test.js"
+                             "$<TARGET_FILE:sdl3mcp_test_websocket_node>")
+        else()
+            message(WARNING
+                "SDL3MCP_BUILD_NODE_TESTS is ON but node was not found; "
+                "the WebSocket suite is not registered")
+        endif()
+    endif()
+    return()
+endif()
+
 if(SDL3MCP_BUILD_SHARED)
     set(SDL3MCP_TEST_INTERNAL_LIBRARY sdl3mcp_wire_objects sdl3mcp_app_objects)
 else()

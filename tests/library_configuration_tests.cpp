@@ -335,4 +335,84 @@ TEST_CASE("endpoint parsing") {
    CHECK(!sdl3mcp::parseEndpoint("127.0.0.1:0", host, port, false));
 }
 
+/*
+  The page query is the browser's argv. The decoder and the parameter lookup are
+  pure so they are checked here, on the desktop, with no browser involved; the
+  Emscripten arm only reads window.location.search and hands the string in.
+*/
+TEST_CASE("percent decoding") {
+   CHECK(sdl3mcp::percentDecode("") == "");
+   CHECK(sdl3mcp::percentDecode("plain") == "plain");
+   CHECK(sdl3mcp::percentDecode("127.0.0.1%3A7777") == "127.0.0.1:7777");
+   CHECK(sdl3mcp::percentDecode("%5B%3A%3A1%5D%3A7777") == "[::1]:7777");
+   CHECK(sdl3mcp::percentDecode("%41%42%43") == "ABC");
+   CHECK(sdl3mcp::percentDecode("%6f%66%66") == "off");
+
+   /* An escape the browser could not have written is copied through, so the
+      configuration parser names the malformed value instead of this helper. */
+   CHECK(sdl3mcp::percentDecode("%2") == "%2");
+   CHECK(sdl3mcp::percentDecode("%zz") == "%zz");
+   CHECK(sdl3mcp::percentDecode("100%") == "100%");
+}
+
+TEST_CASE("page query parameter") {
+   CHECK(!sdl3mcp::mcpQueryValue("").has_value());
+   CHECK(!sdl3mcp::mcpQueryValue("?").has_value());
+   CHECK(!sdl3mcp::mcpQueryValue("?other=1").has_value());
+   CHECK(!sdl3mcp::mcpQueryValue("?xmcp=1").has_value());
+
+   CHECK(sdl3mcp::mcpQueryValue("?mcp=127.0.0.1%3A7777") ==
+         "127.0.0.1:7777");
+   /* A search string without its leading '?' is accepted too. */
+   CHECK(sdl3mcp::mcpQueryValue("mcp=localhost:7777") == "localhost:7777");
+   CHECK(sdl3mcp::mcpQueryValue("?a=1&mcp=off&b=2") == "off");
+   /* A parameter with no value is present and empty, which the parser rejects. */
+   CHECK(sdl3mcp::mcpQueryValue("?mcp=") == "");
+   CHECK(sdl3mcp::mcpQueryValue("?mcp") == "");
+}
+
+TEST_CASE("page query configuration") {
+   /* No parameter: the values the caller supplied are only validated, exactly
+      as a desktop command line without --mcp leaves them alone. The defaults
+      name no endpoint, so a page opened without the parameter starts nothing. */
+   Configuration absent;
+   CHECK(sdl3mcp::applyPageQuery(absent, "") == kContinue);
+   CHECK(absent.message().empty());
+   CHECK(!absent.hasEndpoint());
+
+   SDL3MCP_Configuration preset = defaults();
+   std::strcpy(preset.connect_host, "127.0.0.1");
+   preset.connect_port = 7777;
+   Configuration kept(preset);
+   CHECK(sdl3mcp::applyPageQuery(kept, "") == kContinue);
+   CHECK(kept.hasEndpoint());
+   CHECK(std::string(kept.value().connect_host) == "127.0.0.1");
+
+   /* A percent-encoded endpoint reaches the same parser argv reaches. */
+   Configuration present;
+   CHECK(sdl3mcp::applyPageQuery(present, "?mcp=127.0.0.1%3A7777") ==
+         kContinue);
+   CHECK(std::string(present.value().connect_host) == "127.0.0.1");
+   CHECK(present.value().connect_port == 7777);
+   CHECK(present.hasEndpoint());
+
+   /* off clears an endpoint the caller configured. */
+   SDL3MCP_Configuration base = defaults();
+   std::strcpy(base.connect_host, "127.0.0.1");
+   base.connect_port = 7777;
+   Configuration off(base);
+   CHECK(sdl3mcp::applyPageQuery(off, "?mcp=off") == kContinue);
+   CHECK(!off.hasEndpoint());
+
+   /* A value the shared grammar rejects fails the same way argv does. */
+   Configuration stdio;
+   CHECK(sdl3mcp::applyPageQuery(stdio, "?mcp=stdio") == kError);
+   CHECK(stdio.message().find("stdio") != std::string::npos);
+   CHECK(!stdio.hasEndpoint());
+
+   Configuration empty;
+   CHECK(sdl3mcp::applyPageQuery(empty, "?mcp=") == kError);
+   CHECK(empty.message().find("--mcp") != std::string::npos);
+}
+
 }  // namespace

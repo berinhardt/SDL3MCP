@@ -389,6 +389,25 @@ SDL_AppResult Runtime::iterate() {
       pipeline_.discardRequests();
    }
 
+#ifdef __EMSCRIPTEN__
+   /*
+     The browser's transport is the WebSocket, and a page with no client has
+     nothing left to serve: a session that had opened and then ended, or a dial
+     that reported an error, quits the app once. The dial is asynchronous, so
+     "not open" is also the normal state between AppInit and the first frame;
+     only a session that has opened (or failed) counts as an end.
+   */
+   if (session_) {
+      if (session_->isOpen()) {
+         sessionOpened_ = true;
+      } else if (!sessionClosed_ &&
+                 (sessionOpened_ || !session_->lastError().empty())) {
+         sessionClosed_ = true;
+         terminateRequested_ = true;
+      }
+   }
+#endif
+
    /*
      One quit request makes one SDL_EVENT_QUIT. A failed push restores the flag
      so the next iterate retries instead of losing the request.

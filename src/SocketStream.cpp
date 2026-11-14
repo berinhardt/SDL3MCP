@@ -81,7 +81,46 @@ struct SocketStream::Native {
    int fd = -1;
    std::string endpoint;
    std::string outbound;
+
+   /* Writes as much of the outbound buffer as the socket accepts. */
+   bool flush(SocketStream& stream);
+   void reportWriteFailure(SocketStream& stream, int error);
 };
+
+bool SocketStream::Native::flush(SocketStream& stream) {
+   if (fd < 0) {
+      return false;
+   }
+
+   std::size_t offset = 0;
+   while (offset < outbound.size()) {
+      const ssize_t written =
+          ::send(fd, outbound.data() + offset, outbound.size() - offset,
+                 MSG_NOSIGNAL);
+      if (written > 0) {
+         offset += static_cast<std::size_t>(written);
+         continue;
+      }
+      if (written < 0 && errno == EINTR) {
+         continue;
+      }
+      if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+         break;
+      }
+      /* A zero-length send on a non-empty buffer means the peer is gone. */
+      reportWriteFailure(stream, written == 0 ? EPIPE : errno);
+      return false;
+   }
+
+   outbound.erase(0, offset);
+   return true;
+}
+
+void SocketStream::Native::reportWriteFailure(SocketStream& stream, int error) {
+   const std::string endpointText = endpoint;
+   outbound.clear();
+   stream.fail("cannot write to " + endpointText + ": " + std::strerror(error));
+}
 
 SocketStream::SocketStream() : native_(std::make_unique<Native>()) {
 }
@@ -174,7 +213,7 @@ bool SocketStream::sendText(std::string_view text) {
    }
    native_->outbound.append(text);
    native_->outbound.push_back('\n');
-   return flush();
+   return native_->flush(*this);
 }
 
 bool SocketStream::sendBinary(const std::uint8_t* data, std::size_t size) {
@@ -182,7 +221,7 @@ bool SocketStream::sendBinary(const std::uint8_t* data, std::size_t size) {
       return false;
    }
    native_->outbound.append(reinterpret_cast<const char*>(data), size);
-   return flush();
+   return native_->flush(*this);
 }
 
 void SocketStream::close() {
@@ -199,7 +238,7 @@ void SocketStream::pump() {
    if (native_->fd < 0 || finished()) {
       return;
    }
-   if (!flush()) {
+   if (!native_->flush(*this)) {
       return;
    }
 
@@ -228,41 +267,6 @@ void SocketStream::pump() {
       fail("cannot read from " + native_->endpoint + ": " + std::strerror(errno));
       return;
    }
-}
-
-bool SocketStream::flush() {
-   if (native_->fd < 0) {
-      return false;
-   }
-
-   std::size_t offset = 0;
-   while (offset < native_->outbound.size()) {
-      const ssize_t written =
-          ::send(native_->fd, native_->outbound.data() + offset,
-                 native_->outbound.size() - offset, MSG_NOSIGNAL);
-      if (written > 0) {
-         offset += static_cast<std::size_t>(written);
-         continue;
-      }
-      if (written < 0 && errno == EINTR) {
-         continue;
-      }
-      if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-         break;
-      }
-      /* A zero-length send on a non-empty buffer means the peer is gone. */
-      reportWriteFailure(written == 0 ? EPIPE : errno);
-      return false;
-   }
-
-   native_->outbound.erase(0, offset);
-   return true;
-}
-
-void SocketStream::reportWriteFailure(int error) {
-   const std::string endpoint = native_->endpoint;
-   native_->outbound.clear();
-   fail("cannot write to " + endpoint + ": " + std::strerror(error));
 }
 
 }  // namespace sdl3mcp

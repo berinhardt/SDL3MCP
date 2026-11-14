@@ -12,16 +12,32 @@ include(CMakePackageConfigHelpers)
 option(SDL3MCP_BUILD_SHARED "Build SDL3MCP as a shared library" OFF)
 option(SDL3MCP_BUILD_TESTS "Build the SDL3MCP tests" ${PROJECT_IS_TOP_LEVEL})
 option(SDL3MCP_BUILD_EXAMPLES "Build the SDL3MCP examples" OFF)
+# The browser arm's own suite: an Emscripten doctest executable that dials a
+# local WebSocket server from Node. It is off by default because it needs the
+# Emscripten toolchain and Node, and it is the only suite an Emscripten
+# configure builds.
+option(SDL3MCP_BUILD_NODE_TESTS "Build the Emscripten WebSocket suite run under Node.js" OFF)
+if(SDL3MCP_BUILD_NODE_TESTS AND NOT EMSCRIPTEN)
+    message(WARNING
+        "SDL3MCP_BUILD_NODE_TESTS is only meaningful for an Emscripten "
+        "configure; the WebSocket suite is not built")
+endif()
+set(SDL3MCP_WANTS_DOCTEST
+    ${SDL3MCP_BUILD_TESTS}
+)
+if(EMSCRIPTEN AND SDL3MCP_BUILD_NODE_TESTS)
+    set(SDL3MCP_WANTS_DOCTEST ON)
+endif()
 
 # A parent project that vendors doctest through add_subdirectory already defines
 # the target, so the check comes first and the package lookup only runs for a
 # standalone configure. Without doctest the suite would silently register no
 # tests, which reads like a passing run, so this stops instead.
-if(SDL3MCP_BUILD_TESTS AND NOT TARGET doctest::doctest)
+if(SDL3MCP_WANTS_DOCTEST AND NOT TARGET doctest::doctest)
     find_package(doctest CONFIG QUIET)
 endif()
-if(SDL3MCP_BUILD_TESTS AND NOT TARGET doctest::doctest)
-    message(FATAL_ERROR "SDL3MCP: SDL3MCP_BUILD_TESTS is ON but doctest was not found; install doctest (Arch: pacman -S doctest) or configure with -DSDL3MCP_BUILD_TESTS=OFF")
+if(SDL3MCP_WANTS_DOCTEST AND NOT TARGET doctest::doctest)
+    message(FATAL_ERROR "SDL3MCP: a test option is ON but doctest was not found; install doctest (Arch: pacman -S doctest) or configure with -DSDL3MCP_BUILD_TESTS=OFF")
 endif()
 
 option(SDL3MCP_BUILD_CLI "Build the sdl3mcp executable" OFF)
@@ -315,60 +331,65 @@ set_target_properties(sdl3mcp_common_objects PROPERTIES
 
 # The 1.0 library, built beside the v0 one while the rewrite fills it in. The
 # target is temporary: ticket 10 makes it the public SDL3MCP and deletes the v0
-# halves. It is a static archive of the protocol core plus the app half, and it
-# is desktop-only until the Emscripten arm (WebSocketStream) lands; the web
-# build keeps using the v0 library until then.
-if(NOT EMSCRIPTEN)
-    add_library(sdl3mcp_v1_app_objects OBJECT
-        src/Api.cpp
-        src/AppInput.cpp
-        src/Capture.cpp
-        src/Frame.cpp
-        src/Info.cpp
-        src/Input.cpp
-        src/KeyMap.cpp
-        src/Mouse.cpp
-        src/Pipeline.cpp
-        src/Replay.cpp
-        src/Runtime.cpp
-    )
-    target_compile_features(sdl3mcp_v1_app_objects PRIVATE cxx_std_20)
-    target_include_directories(sdl3mcp_v1_app_objects
-        PUBLIC
-            "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
-            "$<BUILD_INTERFACE:${SDL3MCP_GENERATED_DIR}>"
-        PRIVATE
-            ${SDL3MCP_JSON_INCLUDE_DIRS}
-    )
-    target_link_libraries(sdl3mcp_v1_app_objects
-        PUBLIC SDL3::SDL3
-        PRIVATE nlohmann_json::nlohmann_json Threads::Threads
-    )
-    set_target_properties(sdl3mcp_v1_app_objects PROPERTIES
-        CXX_VISIBILITY_PRESET hidden
-        VISIBILITY_INLINES_HIDDEN YES
-        POSITION_INDEPENDENT_CODE ON
-    )
-    # The C API carries SDL_DECLSPEC; a static archive must say so or a Windows
-    # consumer would see dllimport. No effect on Linux, but the contract is
-    # platform-neutral.
-    target_compile_definitions(sdl3mcp_v1_app_objects PRIVATE SDL_STATIC_LIB)
+# halves. It is a static archive of the protocol core plus the app half on both
+# platforms: the common objects carry the native socket on desktop and the
+# WebSocket arm (WebSocketStream) in the browser, and the app half is the same
+# SDL code either way.
+add_library(sdl3mcp_v1_app_objects OBJECT
+    src/Api.cpp
+    src/AppInput.cpp
+    src/Capture.cpp
+    src/Frame.cpp
+    src/Info.cpp
+    src/Input.cpp
+    src/KeyMap.cpp
+    src/Mouse.cpp
+    src/Pipeline.cpp
+    src/Replay.cpp
+    src/Runtime.cpp
+)
+target_compile_features(sdl3mcp_v1_app_objects PRIVATE cxx_std_20)
+target_include_directories(sdl3mcp_v1_app_objects
+    PUBLIC
+        "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+        "$<BUILD_INTERFACE:${SDL3MCP_GENERATED_DIR}>"
+    PRIVATE
+        ${SDL3MCP_JSON_INCLUDE_DIRS}
+)
+target_link_libraries(sdl3mcp_v1_app_objects
+    PUBLIC SDL3::SDL3
+    PRIVATE nlohmann_json::nlohmann_json Threads::Threads
+)
+set_target_properties(sdl3mcp_v1_app_objects PROPERTIES
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN YES
+    POSITION_INDEPENDENT_CODE ON
+)
+# The C API carries SDL_DECLSPEC; a static archive must say so or a Windows
+# consumer would see dllimport. No effect on Linux, but the contract is
+# platform-neutral.
+target_compile_definitions(sdl3mcp_v1_app_objects PRIVATE SDL_STATIC_LIB)
 
-    add_library(sdl3mcp_v1 STATIC
-        $<TARGET_OBJECTS:sdl3mcp_common_objects>
-        $<TARGET_OBJECTS:sdl3mcp_v1_app_objects>
-    )
-    add_library(SDL3MCP::V1 ALIAS sdl3mcp_v1)
-    target_include_directories(sdl3mcp_v1
-        PUBLIC
-            "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
-            "$<BUILD_INTERFACE:${SDL3MCP_GENERATED_DIR}>"
-            "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
-    )
-    target_link_libraries(sdl3mcp_v1
-        PUBLIC SDL3::SDL3
-        PRIVATE nlohmann_json::nlohmann_json Threads::Threads
-    )
+add_library(sdl3mcp_v1 STATIC
+    $<TARGET_OBJECTS:sdl3mcp_common_objects>
+    $<TARGET_OBJECTS:sdl3mcp_v1_app_objects>
+)
+add_library(SDL3MCP::V1 ALIAS sdl3mcp_v1)
+target_include_directories(sdl3mcp_v1
+    PUBLIC
+        "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+        "$<BUILD_INTERFACE:${SDL3MCP_GENERATED_DIR}>"
+        "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
+)
+target_link_libraries(sdl3mcp_v1
+    PUBLIC SDL3::SDL3
+    PRIVATE nlohmann_json::nlohmann_json Threads::Threads
+)
+if(EMSCRIPTEN)
+    # emscripten_websocket_* lives in Emscripten's JS library, and the final
+    # link needs it named. As INTERFACE it reaches the application's link
+    # line, which is where the WebSocket arm is pulled in from the archive.
+    target_link_libraries(sdl3mcp_v1 INTERFACE "-lwebsocket.js")
 endif()
 
 # The 1.0 public target names, added beside the v0 build while the rewrite fills
@@ -448,7 +469,7 @@ if(SDL3MCP_BUILD_CLI AND NOT EMSCRIPTEN)
     )
 endif()
 
-if(SDL3MCP_BUILD_TESTS)
+if(SDL3MCP_BUILD_TESTS OR (EMSCRIPTEN AND SDL3MCP_BUILD_NODE_TESTS))
     enable_testing()
     add_subdirectory(tests)
 endif()

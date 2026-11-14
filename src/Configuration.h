@@ -3,6 +3,7 @@
 #include <SDL3MCP/SDL3MCP1.h>
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -17,6 +18,23 @@ bool parseEndpoint(std::string_view value,
                    std::string_view& host,
                    std::uint16_t& port,
                    bool allowZeroPort);
+
+/*
+  Decodes the %XX escapes a browser writes into a URL. An incomplete or
+  non-hexadecimal escape is copied through unchanged, so the configuration
+  parser rejects the value with its own message instead of this helper
+  inventing one.
+*/
+std::string percentDecode(std::string_view encoded);
+
+/*
+  The decoded value of the `mcp` parameter in a URL query string, or nullopt
+  when the query has no such parameter. The leading '?' is optional, because
+  the caller reads window.location.search and a test may pass a bare query. A
+  parameter with no '=' is present and empty, which the parser rejects like any
+  other malformed endpoint.
+*/
+std::optional<std::string> mcpQueryValue(std::string_view query);
 
 /*
   The effective configuration plus the `--mcp` grammar that produced it.
@@ -50,8 +68,11 @@ class Configuration {
    /* An empty connect_host means no session; a set one means one dial. */
    bool hasEndpoint() const noexcept { return value_.connect_host[0] != '\0'; }
 
+#ifndef __EMSCRIPTEN__
+   /* Desktop only: a page has no argv, so this text has no reader there. */
    static std::string usageText();
    static std::string versionText();
+#endif
 
   private:
    Status applyArgument(SDL3MCP_Configuration& candidate,
@@ -71,5 +92,14 @@ class Configuration {
    SDL3MCP_Configuration value_;
    std::string message_;
 };
+
+/*
+  Applies the page query to a configuration. An absent `mcp` parameter means
+  the page asked for no session, so the values the caller supplied are only
+  validated; a present one becomes the same `--mcp=<value>` argument the
+  desktop argv carries, so one grammar and one validator serve both platforms.
+*/
+Configuration::Status applyPageQuery(Configuration& configuration,
+                                     std::string_view query);
 
 }  // namespace sdl3mcp

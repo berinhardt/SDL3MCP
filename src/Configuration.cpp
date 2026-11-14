@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -68,6 +69,20 @@ bool isValueFlag(std::string_view name) {
           name == "--mcp-log-level";
 }
 
+/* -1 for anything that is not a hexadecimal digit. */
+int hexDigitValue(char digit) {
+   if (digit >= '0' && digit <= '9') {
+      return digit - '0';
+   }
+   if (digit >= 'a' && digit <= 'f') {
+      return digit - 'a' + 10;
+   }
+   if (digit >= 'A' && digit <= 'F') {
+      return digit - 'A' + 10;
+   }
+   return -1;
+}
+
 }  // namespace
 
 bool parseEndpoint(std::string_view value,
@@ -108,6 +123,60 @@ bool parseEndpoint(std::string_view value,
    }
    port = static_cast<std::uint16_t>(parsed);
    return true;
+}
+
+std::string percentDecode(std::string_view encoded) {
+   std::string decoded;
+   decoded.reserve(encoded.size());
+   for (std::size_t index = 0; index < encoded.size(); ++index) {
+      if (encoded[index] == '%' && index + 2 < encoded.size()) {
+         const int high = hexDigitValue(encoded[index + 1]);
+         const int low = hexDigitValue(encoded[index + 2]);
+         if (high >= 0 && low >= 0) {
+            decoded.push_back(static_cast<char>(high * 16 + low));
+            index += 2;
+            continue;
+         }
+      }
+      decoded.push_back(encoded[index]);
+   }
+   return decoded;
+}
+
+std::optional<std::string> mcpQueryValue(std::string_view query) {
+   if (!query.empty() && query.front() == '?') {
+      query.remove_prefix(1);
+   }
+
+   while (!query.empty()) {
+      const std::size_t separator = query.find('&');
+      const std::string_view parameter = query.substr(0, separator);
+      query = separator == std::string_view::npos
+                  ? std::string_view()
+                  : query.substr(separator + 1);
+
+      const std::size_t equals = parameter.find('=');
+      if (parameter.substr(0, equals) != "mcp") {
+         continue;
+      }
+      return equals == std::string_view::npos
+                 ? std::string()
+                 : percentDecode(parameter.substr(equals + 1));
+   }
+   return std::nullopt;
+}
+
+Configuration::Status applyPageQuery(Configuration& configuration,
+                                     std::string_view query) {
+   const std::optional<std::string> value = mcpQueryValue(query);
+   if (!value.has_value()) {
+      return configuration.validate();
+   }
+
+   char program[] = "page";
+   std::string argument = "--mcp=" + *value;
+   char* argv[] = {program, argument.data(), nullptr};
+   return configuration.parseCommandLine(2, argv);
 }
 
 Configuration::Configuration() noexcept : value_(SDL3MCP_DefaultConfiguration()) {
@@ -157,6 +226,11 @@ Status Configuration::applyArgument(SDL3MCP_Configuration& candidate,
       candidate.warp_cursor = false;
       return Status::Continue;
    }
+#ifndef __EMSCRIPTEN__
+   /*
+     A browser receives one synthesised --mcp=<value> argument and has no argv,
+     so neither flag can arrive there; only the desktop build carries them.
+   */
    if (argument == "--mcp-help") {
       message_ = usageText();
       return Status::ExitSuccess;
@@ -165,6 +239,7 @@ Status Configuration::applyArgument(SDL3MCP_Configuration& candidate,
       message_ = versionText();
       return Status::ExitSuccess;
    }
+#endif
 
    const std::size_t separator = argument.find(kValueSeparator);
    if (separator == std::string_view::npos) {
@@ -293,6 +368,8 @@ Status Configuration::fail(std::string message) {
    return Status::Error;
 }
 
+/* Desktop only: a browser has no argv, so this text has no reader there. */
+#ifndef __EMSCRIPTEN__
 std::string Configuration::usageText() {
    return "SDL3MCP command line options:\n"
           "  --mcp=HOST:PORT           Connect to an MCP client at HOST:PORT.\n"
@@ -309,5 +386,6 @@ std::string Configuration::usageText() {
 std::string Configuration::versionText() {
    return "SDL3MCP " SDL3MCP_VERSION_STRING;
 }
+#endif
 
 }  // namespace sdl3mcp

@@ -33,9 +33,7 @@ Session::~Session() {
 
 void Session::pump() {
    discardAnswered();
-   if (open_) {
-      stream_->pump();
-   }
+   stream_->pump();
 }
 
 void Session::close() {

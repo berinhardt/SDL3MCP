@@ -43,7 +43,12 @@ class Session : public StreamHandler {
    Stream& stream() noexcept { return *stream_; }
    const Stream& stream() const noexcept { return *stream_; }
 
-   /* Drives the transport's non-blocking read; a no-op where it pushes. */
+   /*
+     Drives the transport: the native arm reads what the socket has, and the
+     browser arm drains the queue its callbacks filled. Pumping after a close is
+     harmless, and on the browser it is how a close or error that arrived while
+     the session was already shutting down still reaches the stream.
+   */
    void pump();
    /* Closes the transport and drops every pending order. */
    void close();

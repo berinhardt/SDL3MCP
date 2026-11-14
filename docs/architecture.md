@@ -71,11 +71,10 @@ src/handler/Web-Child.cpp        child launch, pidfd watch, readiness probe
 src/handler/Png.h/.cpp           PNG + base64 presentation
 src/handler/StbImageWrite.cpp    the one stb implementation unit
 tests/                           doctest suites, check_readme.py, consumers
-examples/minimal/main.c          a complete host
 ```
 
 C++ file names are CamelCase with a hyphen between compound words (`STYLE.md`
-§Files states the rule and its reason); `examples/minimal/main.c` stays C.
+§Files states the rule and its reason).
 
 ## The wire protocol
 

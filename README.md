@@ -57,14 +57,14 @@ The direct flow:
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug \
-  -DSDL3MCP_BUILD_EXAMPLES=ON -DSDL3MCP_BUILD_CLI=ON
+  -DSDL3MCP_BUILD_CLI=ON
 cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
 
 `SDL3MCP_BUILD_CLI=ON` builds the Handler and defines `SDL3MCP::SERVER`, so this
-flow also builds and tests `sdl3mcp`. Without it the library, the tests and the
-examples still build, and the Handler suites are skipped.
+flow also builds and tests `sdl3mcp`. Without it the library and the tests still
+build, and the Handler suites are skipped.
 
 `CMakePresets.json` wraps the same configurations:
 
@@ -73,7 +73,7 @@ cmake --preset debug && cmake --build --preset debug && ctest --preset debug
 cmake --preset asan  && cmake --build --preset asan  && ctest --preset asan
 ```
 
-Both presets turn on the tests, the examples and the Handler. `asan` runs
+Both presets turn on the tests and the Handler. `asan` runs
 with leak detection on; the tests that use SDL's dummy video driver scope it off
 for themselves because the driver keeps process-wide allocations they cannot
 free.
@@ -83,7 +83,6 @@ free.
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `SDL3MCP_BUILD_TESTS` | `ON` when top-level | Build the doctest suites. |
-| `SDL3MCP_BUILD_EXAMPLES` | `OFF` | Build `examples/minimal`. |
 | `SDL3MCP_BUILD_CLI` | `OFF` | Build the `sdl3mcp` Handler. |
 | `SDL3MCP_BUILD_NODE_TESTS` | `OFF` | Build the Emscripten WebSocket suite (needs Node). |
 
@@ -138,9 +137,9 @@ because a page has no command line to reach them.
 
 ## Quick start
 
-`examples/minimal/main.c` is a complete host: a window whose background an agent
-can change with synthetic key presses and then see in a capture. This is the
-whole file.
+The program below is a complete host: a window whose background an agent can
+change with synthetic key presses and then see in a capture. This is the whole
+file.
 
 ```c
 /*
@@ -315,10 +314,10 @@ void SDL_AppQuit(void* appstate, SDL_AppResult result) {
 }
 ```
 
-Build and run it against a Handler, or directly against a listener:
+Build your host and run it against a Handler, or directly against a listener:
 
 ```sh
-./build/examples/minimal --mcp=127.0.0.1:7777
+./build/my-app --mcp=127.0.0.1:7777
 ```
 
 ## The frame loop
@@ -484,8 +483,8 @@ In practice the Handler starts the application with the endpoint it owns:
 ```
 
 `build/sdl3mcp-targets.json` is written by CMake for every executable registered
-with `sdl3mcp_app`. Calling `app_spawn_minimal` then runs
-`build/examples/minimal --mcp=<the Handler's listener endpoint>`.
+with `sdl3mcp_app`. Calling `app_spawn_catalyst` then runs the path Catalyst
+registered, with `--mcp=<the Handler's listener endpoint>`.
 
 ## The library API
 
@@ -1198,7 +1197,7 @@ into one map, and an alias defined twice is a startup error naming both files.
 
 ```json
 {
-  "minimal": ["build/examples/minimal"],
+  "catalyst": ["build/catalyst"],
   "game": ["build/game", "--fullscreen"]
 }
 ```
@@ -1266,8 +1265,8 @@ needs no listener. `readme_check` uses it to compare the documented schemas and
 `sdl3mcp_app(<alias> <target> [ARGS <arg>...])` records one entry and, at the end
 of the top-level configure, writes `${CMAKE_BINARY_DIR}/sdl3mcp-targets.json`
 with each target's full path. It is a function, not a target, so an application
-that is not built is simply absent. `examples/CMakeLists.txt` registers
-`minimal`, which is why the file above names it.
+that is not built is simply absent. Catalyst registers its `catalyst` target,
+which is why the file above names it.
 
 ## The browser
 
@@ -1334,8 +1333,8 @@ browser arm (`src/WebSocketStream.cpp`) replaces the native socket:
   SDL, COMMON with sources);
 - `readme_check`, which compiles the README's two complete C examples, parses
   every JSON block, compares the documented tool schemas with the Handler's
-  `--dump-tools` catalog, and checks the framing prose, the `sdl_input` text, the
-  loop order and the run command.
+  `--dump-tools` catalog, checks the framing prose, the `sdl_input` text and the
+  loop order, and rejects any reference to a bundled example.
 
 The optional `SDL3MCP_BUILD_NODE_TESTS=ON` Emscripten configure adds the
 WebSocket suite, run under Node against a local server.

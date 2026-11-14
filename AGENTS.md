@@ -50,8 +50,9 @@ section the branch names, not the whole file:
   the tool JSON schemas when a parameter changes.
 - `tests/check_readme.py` enforces the two complete examples, the JSON blocks,
   the tool schemas, the `Example:` descriptions, the framing prose, the
-  `sdl_input` text, the `SDL3MCP_WriteFrame` signature, the run command and the
-  loop order. Update it when the contract changes; never weaken it.
+  `sdl_input` text, the `SDL3MCP_WriteFrame` signature, the loop order, and that
+  no bundled example is named. Update it when the contract changes; never weaken
+  it.
 - `CHANGELOG.md` records breaking changes; add an entry for every user-visible
   break, not for internal refactors.
 

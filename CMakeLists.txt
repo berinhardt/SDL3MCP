@@ -10,7 +10,6 @@ include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
 option(SDL3MCP_BUILD_TESTS "Build the SDL3MCP tests" ${PROJECT_IS_TOP_LEVEL})
-option(SDL3MCP_BUILD_EXAMPLES "Build the SDL3MCP examples" OFF)
 # The browser arm's own suite: an Emscripten doctest executable that dials a
 # local WebSocket server from Node. It is off by default because it needs the
 # Emscripten toolchain and Node, and it is the only suite an Emscripten
@@ -350,10 +349,6 @@ if(SDL3MCP_BUILD_CLI AND NOT EMSCRIPTEN)
     )
 endif()
 
-if(SDL3MCP_BUILD_EXAMPLES)
-    add_subdirectory(examples)
-endif()
-
 if(SDL3MCP_BUILD_TESTS OR (EMSCRIPTEN AND SDL3MCP_BUILD_NODE_TESTS))
     enable_testing()
     add_subdirectory(tests)
@@ -363,8 +358,8 @@ endif()
 # build's SDL3 target is not in any export set, so an export here would fail to
 # generate.
 #
-# Only the library is packaged: the Handler and the examples are build-tree
-# artifacts, and COMMON is the internal composition target. nlohmann/json and
+# Only the library is packaged: the Handler is a build-tree artifact, and
+# COMMON is the internal composition target. nlohmann/json and
 # stb stay private, so a consumer needs neither of them.
 if(PROJECT_IS_TOP_LEVEL)
     install(TARGETS SDL3MCP EXPORT SDL3MCPTargets

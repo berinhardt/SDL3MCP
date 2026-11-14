@@ -12,13 +12,12 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "SDL3MCP_BUILD_TESTS": "ON",
-        "SDL3MCP_BUILD_EXAMPLES": "ON",
         "SDL3MCP_BUILD_CLI": "ON"
       }
     },
     {
       "name": "debug",
-      "displayName": "Debug (static, tests, examples)",
+      "displayName": "Debug (static, tests, Handler)",
       "inherits": "base",
       "binaryDir": "${sourceDir}/build/debug"
     },

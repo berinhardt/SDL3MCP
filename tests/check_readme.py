@@ -21,9 +21,8 @@ the loop order is a bug. The checks are deliberately mechanical:
   fact that the attached frame was rendered after the actions were delivered;
 - the public ``SDL3MCP_WriteFrame`` signature takes explicit width and height;
 - the ``sdl_terminate`` schema is the empty object with all four hints;
-- the quick start matches ``examples/minimal/main.c``;
-- the documented run command points at ``<build>/examples/minimal`` with
-  ``--mcp=HOST:PORT``;
+- the README names no bundled example path or example app; the example
+  application is Catalyst, outside this tree;
 - the Handler section documents Server/Relay modes, ``--targets``, ``--web``,
   ``--dry-run`` and ``--dump-tools``;
 - the release is 1.0.0;
@@ -41,8 +40,12 @@ import sys
 import tempfile
 from pathlib import Path
 
-EXAMPLE_COMMAND = "./build/examples/minimal --mcp=127.0.0.1:7777"
-WRONG_EXAMPLE_PATH = "examples/minimal/minimal"
+# No bundled example remains: Catalyst is the example application, so a README
+# that names an example path or the old `minimal` app has drifted.
+EXAMPLE_REFERENCES = (
+    re.compile(r"\bexamples/", re.IGNORECASE),
+    re.compile(r"\bminimal\b", re.IGNORECASE),
+)
 EXAMPLE_MARKER = "Example:"
 LIBRARY_TOOLS = ("sdl_info", "sdl_input", "sdl_capture", "sdl_terminate")
 # clang-format decides the pointer spacing, so match the callback rather than
@@ -528,11 +531,14 @@ def check_catalog_schemas(documents: list[object], catalog: list[object],
                 break
 
 
-def check_example_command(readme: str, failures: list[str]) -> None:
-    if EXAMPLE_COMMAND not in readme:
-        failures.append(f"README must document the example command '{EXAMPLE_COMMAND}'")
-    if WRONG_EXAMPLE_PATH in readme:
-        failures.append(f"README must not reference '{WRONG_EXAMPLE_PATH}'")
+def check_example_references(readme: str, failures: list[str]) -> None:
+    """The bundled example is gone, so naming one is drift."""
+    for pattern in EXAMPLE_REFERENCES:
+        match = pattern.search(readme)
+        if match:
+            failures.append(
+                f"README must not name an example path or app: "
+                f"'{match.group(0)}'")
 
 
 def check_handler_docs(readme: str, failures: list[str]) -> None:
@@ -580,20 +586,13 @@ def check_stale_phrases(readme: str, failures: list[str]) -> None:
                 f"README still contains the stale option {pattern.pattern!r}")
 
 
-def check_quick_start(quick_start: str, source: Path, failures: list[str]) -> None:
+def check_quick_start(quick_start: str, failures: list[str]) -> None:
     # SDL spells the keycodes SDLK_R/G/B; compare case-insensitively so the check
     # still fails when a toggle disappears.
     haystack = quick_start.lower()
     for key in ("SDLK_r", "SDLK_g", "SDLK_b"):
         if key.lower() not in haystack:
             failures.append(f"quick start does not handle {key}")
-
-    example = source / "examples" / "minimal" / "main.c"
-    if not example.is_file():
-        failures.append(f"missing example source {example}")
-        return
-    if quick_start.strip() != example.read_text(encoding="utf-8").strip():
-        failures.append("quick start does not match examples/minimal/main.c")
 
 
 def check_loop_order(block: str, index: int, failures: list[str]) -> None:
@@ -657,7 +656,7 @@ def main(argv: list[str] | None = None) -> int:
     check_frame_attribution_prose(readme, failures)
     check_write_frame_signature(readme, failures)
     check_terminate_schema(documents, failures)
-    check_example_command(readme, failures)
+    check_example_references(readme, failures)
     check_handler_docs(readme, failures)
     check_library_docs(readme, failures)
     check_stale_phrases(readme, failures)
@@ -668,7 +667,7 @@ def main(argv: list[str] | None = None) -> int:
     quick_start = next((body for body in complete_examples
                         if MAIN_CALLBACK.search(body)), None)
     if quick_start is not None:
-        check_quick_start(quick_start, arguments.source, failures)
+        check_quick_start(quick_start, failures)
 
     compile_examples(complete_examples, arguments.source, arguments.build, failures)
 

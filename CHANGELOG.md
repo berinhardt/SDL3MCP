@@ -30,6 +30,12 @@ linkage, SDL ownership and the nlohmann/json resolution all change.
 - **`SDL3MCP::COMMON` is a real static library** built from exactly the objects
   the library and the Handler both compile, and no file in it includes SDL.
 
+### Removed
+
+- **The bundled example is gone.** `examples/`, the `minimal` target and
+  `SDL3MCP_BUILD_EXAMPLES` are removed; Catalyst is the example application, and
+  the README's complete C block is still the quick start and still compiles.
+
 ## 1.0.0
 
 The rewrite. The library is now single-threaded and dial-only, and the Handler

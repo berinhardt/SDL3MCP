@@ -4,8 +4,7 @@
       "sdl3mcp": {
         "type": "local",
         "command": [
-          "build/sdl3mcp",
-          "--targets=build/sdl3mcp-targets.json"
+          "build/sdl3mcp"
         ]
       }
     }

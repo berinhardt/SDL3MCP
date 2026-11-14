@@ -276,10 +276,6 @@ if(Python3_Interpreter_FOUND)
     )
     if(TARGET sdl3mcp)
         list(APPEND sdl3mcp_readme_arguments --tools $<TARGET_FILE:sdl3mcp>)
-        if(SDL3MCP_BUILD_EXAMPLES)
-            list(APPEND sdl3mcp_readme_arguments
-                --targets "${PROJECT_BINARY_DIR}/sdl3mcp-targets.json")
-        endif()
     endif()
     add_test(NAME readme_check
              COMMAND "${Python3_EXECUTABLE}"

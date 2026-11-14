@@ -1,8 +1,9 @@
 # SDL3MCP Style Guide
 
-The rules the 1.0 tree follows. `CONTRACT.md` fixes behavior; this file fixes how
-the code is written. Where they disagree about behavior, `CONTRACT.md` wins;
-where this file has no rule, match the surrounding code.
+The rules the 1.0 tree follows. `README.md` fixes the public behavior; this file
+fixes how the code is written. Where they disagree, `README.md` wins; where this
+file has no rule, match the surrounding code. `CONTRACT.md` is the v0 archive and
+is not a current source of truth.
 
 ## Files
 
@@ -65,6 +66,9 @@ where this file has no rule, match the surrounding code.
 
 - doctest, one executable per family, behavior-first: assert through the public
   seam the change names, not private helpers.
+- The library and the Handler are single-threaded, so a suite needs no locking;
+  a test that uses a thread (the test MCP server, the page stack) owns it
+  explicitly.
 - Deterministic: no network, no wall-clock dependence, and no sleep used as
   synchronization.
 - A bug fix carries the regression test that would have caught it.

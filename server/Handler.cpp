@@ -81,8 +81,8 @@ std::string webSpawnDescription(std::string_view alias) {
           "a call while one is attached or starting fails. Arguments: optional "
           "timeout_ms (1-60000, default the Handler's --timeout-ms) covering the "
           "launch and the handshake. Returns `spawned <alias> (browser pid N)`; "
-          "a timeout stops the page server and bridge and removes the profile, "
-          "and the browser is left running (spawn-and-forget). "
+          "the Handler owns the page server, bridge and browser, so a timeout or "
+          "shutdown stops all three and removes the profile. "
           "Example: {\"timeout_ms\":5000}";
 }
 

@@ -1,47 +1,50 @@
 #!/usr/bin/env python3
-"""Check that README.md still describes the implemented SDL3MCP contract.
+"""Check that README.md still describes the implemented SDL3MCP 1.0 contract.
 
 The README is the user-facing contract, so drift in a schema, a run command, or
 the loop order is a bug. The checks are deliberately mechanical:
 
-- both complete C examples are compiled with ``gcc -std=c11 -fsyntax-only``;
+- both complete C examples compile with ``gcc -std=c11 -fsyntax-only`` and call
+  ``SDL3MCP_AppIterate`` after ``SDL_RenderPresent``;
 - every fenced ``json`` block parses;
-- the ``sdl_input`` schema matches the implemented limits;
-- the ``sdl_capture`` schemas match both sides: region + timeout_ms for the
-  library's raw framing and the same two arguments, PNG at native size, for the
-  supervisor's image block;
-- every tool description in the catalog (read from the built supervisor test
-  binary) and in the README's tool documents states an ``Example:`` JSON object
-  that parses and names each argument its schema accepts;
-- the region prose names the captured frame's dimensions, not the window's;
-- the frame attribution prose says the attached frame follows the actions and
-  that an unchanged frame means they had no effect;
-- the first servable frame rule says an early capture waits for the first frame
-  the library trusts, and names ``kFirstServableFrame``;
+- the README documents exactly the four application tools, and the library's
+  ``sdl_input`` and ``sdl_capture`` carry no ``timeout_ms`` while the Handler's
+  copies carry one (1..60000);
+- ``sdl_info`` takes no arguments and its ``limits`` carry only
+  ``maxFrameBytes``: 1.0 has no library frame timeout;
+- every tool description in the README and in the Handler catalog (read with
+  ``--dump-tools``) states an ``Example:`` JSON object and names each argument
+  its schema accepts;
+- the capture framing prose names the raw header and the Handler's PNG policy,
+  and says captures are never resized;
+- the ``sdl_input`` text names the applied frame, the attached frame, and the
+  fact that the attached frame was rendered after the actions were delivered;
 - the public ``SDL3MCP_WriteFrame`` signature takes explicit width and height;
 - the ``sdl_terminate`` schema is the empty object with all four hints;
-- the quick start matches ``examples/minimal/main.c`` and contains R/G/B;
-- the documented run command points at ``<build>/examples/minimal``;
-- the supervisor section documents the ``sdl3mcp`` command with ``--target`` and its
-  Idle/Starting/Running states;
-- stale phrases from earlier drafts are gone;
-- ``SDL3MCP_AppIterate`` is the last call, after ``SDL_RenderPresent``.
+- the quick start matches ``examples/minimal/main.c``;
+- the documented run command points at ``<build>/examples/minimal`` with
+  ``--mcp=HOST:PORT``;
+- the Handler section documents Server/Relay modes, ``--targets``, ``--web``,
+  ``--dry-run`` and ``--dump-tools``;
+- the release is 1.0.0;
+- stale phrases from v0 are gone.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-EXAMPLE_COMMAND = "./build/examples/minimal --mcp"
+EXAMPLE_COMMAND = "./build/examples/minimal --mcp=127.0.0.1:7777"
 WRONG_EXAMPLE_PATH = "examples/minimal/minimal"
-SUPERVISOR_STATES = ("Idle", "Starting", "Running")
 EXAMPLE_MARKER = "Example:"
+LIBRARY_TOOLS = ("sdl_info", "sdl_input", "sdl_capture", "sdl_terminate")
 
 STALE_PHRASES = (
     "F+2",
@@ -50,7 +53,21 @@ STALE_PHRASES = (
     "requires window focus",
     "actions queued",
     "at SDL_GetWindowSizeInPixels",
+    "--print-plan",
+    "--startup-timeout-ms",
+    "--terminate-timeout-ms",
+    "--mcp-timeout-ms",
+    "--web-root",
+    "frame_timeout_ms",
+    "frameTimeoutMs",
+    "SDL3MCP_TRANSPORT",
+    "SDL3MCP_Transport",
+    "--mcp=stdio",
+    "the supervisor",
 )
+
+# --target is gone but --targets stays, so match the option and not its prefix.
+STALE_OPTIONS = (re.compile(r"--target(?![s=\w])"),)
 
 
 def fenced_blocks(readme: str) -> list[tuple[str, str]]:
@@ -91,22 +108,16 @@ def contains_key(value: object, needle: str) -> bool:
     return False
 
 
-def find_tool_schema(documents: list[object], name: str) -> object | None:
-    for document in documents:
-        if (isinstance(document, dict)
-                and document.get("name") == name
-                and "inputSchema" in document):
-            return document["inputSchema"]
-    return None
+def tool_documents(documents: list[object]) -> list[dict]:
+    return [document for document in documents
+            if isinstance(document, dict)
+            and isinstance(document.get("name"), str)
+            and isinstance(document.get("inputSchema"), dict)]
 
 
-def find_tool_document(documents: list[object], name: str) -> dict | None:
-    for document in documents:
-        if (isinstance(document, dict)
-                and document.get("name") == name
-                and "inputSchema" in document):
-            return document
-    return None
+def find_tool_documents(documents: list[object], name: str) -> list[dict]:
+    return [document for document in tool_documents(documents)
+            if document["name"] == name]
 
 
 def find_action_variant(schema: dict, action_type: str) -> dict | None:
@@ -134,7 +145,7 @@ def example_arguments(description: str) -> object | None:
 
 
 def check_tool_description(tool: dict, label: str, failures: list[str]) -> None:
-    """Every catalog entry documents its purpose, arguments, and one example."""
+    """Every tool entry documents its purpose, arguments, and one example."""
     name = tool.get("name")
     if not isinstance(name, str) or not name:
         failures.append(f"{label} has a tool definition without a name")
@@ -166,28 +177,29 @@ def check_tool_description(tool: dict, label: str, failures: list[str]) -> None:
 
 def check_tool_descriptions(documents: list[object], label: str,
                             failures: list[str]) -> None:
-    for document in documents:
-        if (isinstance(document, dict)
-                and isinstance(document.get("name"), str)
-                and "inputSchema" in document):
-            check_tool_description(document, label, failures)
+    for document in tool_documents(documents):
+        check_tool_description(document, label, failures)
 
 
 def find_tool_helper(build: Path) -> Path | None:
-    """The supervisor test binary can dump the real catalog tools/list uses."""
-    direct = build / "tests" / "sdl3mcp_test_supervisor"
-    if direct.is_file():
-        return direct
-    matches = sorted(build.glob("**/sdl3mcp_test_supervisor"))
-    return matches[0] if matches else None
+    """The Handler's --dump-tools is the catalog tools/list uses.
+
+    Only this build tree is searched: a sibling tree may be a different
+    configuration, and its catalog would not describe this build.
+    """
+    candidate = build / "sdl3mcp"
+    return candidate if candidate.is_file() else None
 
 
-def load_tool_catalog(helper: Path | None, failures: list[str]) -> list[object]:
+def load_tool_catalog(helper: Path | None, targets: Path | None,
+                      failures: list[str]) -> list[object]:
     if helper is None:
-        print("tool catalog dump not built; checked README tool documents only")
+        print("Handler catalog dump not built; checked README tool documents only")
         return []
-    result = subprocess.run([str(helper), "--dump-tools"],
-                            capture_output=True, text=True)
+    command = [str(helper), "--dump-tools"]
+    if targets is not None:
+        command.append(f"--targets={targets}")
+    result = subprocess.run(command, capture_output=True, text=True)
     if result.returncode != 0:
         failures.append(f"{helper} --dump-tools failed:\n{result.stderr.strip()}")
         return []
@@ -261,92 +273,64 @@ def check_json_blocks(blocks: list[tuple[str, str]],
     return documents
 
 
+def check_tool_set(documents: list[object], failures: list[str]) -> None:
+    """Exactly the four application tools, each with a library and a Handler copy."""
+    documented = {document["name"] for document in tool_documents(documents)}
+    for name in LIBRARY_TOOLS:
+        if name not in documented:
+            failures.append(f"README documents no {name} tool schema")
+    for name in sorted(documented - set(LIBRARY_TOOLS)):
+        # The Handler adds wait_session and one app_spawn_<alias> per source.
+        if name == "wait_session" or name.startswith("app_spawn_"):
+            continue
+        failures.append(f"README documents a tool 1.0 does not have: {name}")
+
+    for name in ("sdl_input", "sdl_capture"):
+        copies = find_tool_documents(documents, name)
+        library = [copy for copy in copies
+                   if "timeout_ms" not in copy["inputSchema"].get("properties", {})]
+        handler = [copy for copy in copies
+                   if "timeout_ms" in copy["inputSchema"].get("properties", {})]
+        if not library:
+            failures.append(
+                f"no library {name} schema without timeout_ms; the library has no "
+                "frame timeout")
+        if not handler:
+            failures.append(
+                f"no Handler {name} schema with timeout_ms; the Handler owns the "
+                "forward budget")
+        for copy in handler:
+            timeout = copy["inputSchema"]["properties"]["timeout_ms"]
+            if (timeout.get("minimum"), timeout.get("maximum")) != (1, 60000):
+                failures.append(f"Handler {name} timeout_ms must be 1..60000")
+
+
 def check_input_schema(documents: list[object], failures: list[str]) -> None:
-    schema = find_tool_schema(documents, "sdl_input")
-    if not isinstance(schema, dict):
+    schemas = [copy["inputSchema"] for copy in find_tool_documents(documents, "sdl_input")]
+    if not schemas:
         failures.append("no sdl_input tool schema with an inputSchema in the README")
         return
 
-    if contains_key(schema, "repeat"):
-        failures.append("sdl_input schema still has a repeat property")
-
-    actions = schema.get("properties", {}).get("actions")
-    if not isinstance(actions, dict):
-        failures.append("sdl_input schema has no actions property")
-        return
-    if actions.get("minItems") != 1:
-        failures.append("sdl_input actions minItems must be 1")
-    if actions.get("maxItems") != 256:
-        failures.append("sdl_input actions maxItems must be 256")
-
-    text = find_action_variant(schema, "text")
-    if text is None:
-        failures.append("sdl_input schema has no text action")
-    else:
-        text_schema = text["properties"].get("text", {})
-        if text_schema.get("maxLength") != 1024:
-            failures.append("sdl_input text maxLength must be 1024")
-        if text_schema.get("minLength") != 1:
-            failures.append("sdl_input text minLength must be 1")
-
-
-def check_capture_schemas(documents: list[object], failures: list[str]) -> None:
-    """Both captures are contract: raw framing in the library, images via the supervisor."""
-    library = None
-    supervisor = None
-    for document in documents:
-        if not (isinstance(document, dict)
-                and document.get("name") == "sdl_capture"
-                and isinstance(document.get("inputSchema"), dict)):
+    for schema in schemas:
+        if contains_key(schema, "repeat"):
+            failures.append("sdl_input schema still has a repeat property")
+        actions = schema.get("properties", {}).get("actions")
+        if not isinstance(actions, dict):
+            failures.append("sdl_input schema has no actions property")
             continue
-        description = document.get("description", "")
-        if "rgba8888" in description or "byteLength" in description:
-            library = document
-        elif "PNG" in description:
-            supervisor = document
-
-    if library is None:
-        failures.append("no library sdl_capture schema documenting rgba8888/byteLength")
-    else:
-        schema = library["inputSchema"]
-        properties = schema.get("properties", {})
-        if set(properties) != {"region", "timeout_ms"}:
-            failures.append(
-                "library sdl_capture must advertise only region and timeout_ms")
-        if schema.get("additionalProperties") is not False:
-            failures.append("library sdl_capture must set additionalProperties false")
-        if schema.get("required"):
-            failures.append("library sdl_capture has no required members")
-        timeout = properties.get("timeout_ms", {})
-        if (timeout.get("minimum"), timeout.get("maximum")) != (1, 60000):
-            failures.append("library sdl_capture timeout_ms must be 1..60000")
-        check_region_schema(schema, "library sdl_capture", failures)
-        description = library.get("description", "")
-        if "rgba8888" not in description or "byteLength" not in description:
-            failures.append(
-                "library sdl_capture description must document the raw "
-                "format/byteLength framing")
-        if "kFirstServableFrame" not in description:
-            failures.append(
-                "library sdl_capture description must name kFirstServableFrame "
-                "for the first servable frame rule")
-
-    if supervisor is None:
-        failures.append("no supervisor sdl_capture schema promising a PNG")
-    else:
-        schema = supervisor["inputSchema"]
-        properties = schema.get("properties", {})
-        if set(properties) != {"region", "timeout_ms"}:
-            failures.append(
-                "supervisor sdl_capture must advertise only region and timeout_ms")
-        timeout = properties.get("timeout_ms", {})
-        if (timeout.get("minimum"), timeout.get("maximum")) != (1, 60000):
-            failures.append("supervisor sdl_capture timeout_ms must be 1..60000")
-        check_region_schema(schema, "supervisor sdl_capture", failures)
-        description = supervisor.get("description", "")
-        if "native pixel size" not in description:
-            failures.append(
-                "supervisor sdl_capture description must promise a native-size PNG")
+        if actions.get("minItems") != 1:
+            failures.append("sdl_input actions minItems must be 1")
+        if actions.get("maxItems") != 256:
+            failures.append("sdl_input actions maxItems must be 256")
+        text = find_action_variant(schema, "text")
+        if text is None:
+            failures.append("sdl_input schema has no text action")
+        else:
+            text_schema = text["properties"].get("text", {})
+            if text_schema.get("maxLength") != 1024:
+                failures.append("sdl_input text maxLength must be 1024")
+            if text_schema.get("minLength") != 1:
+                failures.append("sdl_input text minLength must be 1")
 
 
 def check_region_schema(schema: dict, label: str, failures: list[str]) -> None:
@@ -364,8 +348,64 @@ def check_region_schema(schema: dict, label: str, failures: list[str]) -> None:
             failures.append(f"{label} region {field} must be an integer")
 
 
+def check_capture_schemas(documents: list[object], failures: list[str]) -> None:
+    """Both captures are contract: raw framing in the library, PNG in the Handler."""
+    copies = find_tool_documents(documents, "sdl_capture")
+    if not copies:
+        failures.append("no sdl_capture tool schema with an inputSchema in the README")
+        return
+
+    library = [copy for copy in copies
+               if "timeout_ms" not in copy["inputSchema"].get("properties", {})]
+    handler = [copy for copy in copies
+               if "timeout_ms" in copy["inputSchema"].get("properties", {})]
+    if not library:
+        failures.append("no library sdl_capture schema without timeout_ms")
+    if not handler:
+        failures.append("no Handler sdl_capture schema with timeout_ms")
+
+    for copy in library:
+        schema = copy["inputSchema"]
+        if set(schema.get("properties", {})) != {"region"}:
+            failures.append("library sdl_capture must advertise only region")
+        if schema.get("additionalProperties") is not False:
+            failures.append("library sdl_capture must set additionalProperties false")
+        if schema.get("required"):
+            failures.append("library sdl_capture has no required members")
+        check_region_schema(schema, "library sdl_capture", failures)
+        description = copy.get("description", "")
+        if "rgba8888" not in description or "byteLength" not in description:
+            failures.append(
+                "library sdl_capture description must document the raw "
+                "format/byteLength framing")
+
+    for copy in handler:
+        schema = copy["inputSchema"]
+        if set(schema.get("properties", {})) != {"region", "timeout_ms"}:
+            failures.append(
+                "Handler sdl_capture must advertise only region and timeout_ms")
+        check_region_schema(schema, "Handler sdl_capture", failures)
+        if "PNG" not in copy.get("description", ""):
+            failures.append("Handler sdl_capture description must promise a PNG")
+
+
+def check_info_schema(documents: list[object], failures: list[str]) -> None:
+    copies = find_tool_documents(documents, "sdl_info")
+    if not copies:
+        failures.append("no sdl_info tool schema with an inputSchema in the README")
+        return
+    for copy in copies:
+        schema = copy["inputSchema"]
+        if schema.get("properties") != {}:
+            failures.append("sdl_info schema properties must be empty")
+        if schema.get("additionalProperties") is not False:
+            failures.append("sdl_info schema must set additionalProperties false")
+        if contains_key(schema, "frameTimeoutMs"):
+            failures.append("sdl_info schema still has frameTimeoutMs")
+
+
 def check_capture_framing_prose(readme: str, failures: list[str]) -> None:
-    """The raw framing and its supervisor split are prose the contract depends on."""
+    """The raw framing and the Handler's PNG policy are prose the contract depends on."""
     for required in ('"format":"rgba8888"', '"byteLength"', "raw RGBA"):
         if required not in readme:
             failures.append(f"README does not document the capture framing phrase {required!r}")
@@ -376,8 +416,8 @@ def check_capture_framing_prose(readme: str, failures: list[str]) -> None:
             "README must state that captures are returned at the app's native pixel size")
     if "never resized" not in lowered and "never downscaled" not in lowered:
         failures.append("README must state that captures are never resized or downscaled")
-    if "library" not in lowered or "supervisor" not in lowered:
-        failures.append("README must state which side owns the capture presentation")
+    if "base64" not in lowered:
+        failures.append("README must state where base64/PNG encoding happens")
     # The region is in pixels of the frame the app wrote, not of the window, so
     # the documented bounds must be the capture statistics.
     for required in ("capture.lastWidth", "capture.lastHeight"):
@@ -400,45 +440,6 @@ def check_frame_attribution_prose(readme: str, failures: list[str]) -> None:
             "README must say that an unchanged frame means the actions had no effect")
 
 
-def check_first_frame_prose(readme: str, failures: list[str]) -> None:
-    """An early capture waits for a trustworthy frame; the README must say so."""
-    lowered = readme.lower()
-    for required in (
-        "before the application has rendered its first frames",
-        "request waits rather than failing",
-        "never cancelled",
-        "no draw data",
-        "clear colour",
-        "kfirstservableframe",
-        "servableframe",
-    ):
-        if required not in lowered:
-            failures.append(
-                "README does not document the first servable frame rule phrase "
-                f"{required!r}")
-
-
-def check_catalog_first_frame(catalog: list[object], failures: list[str]) -> None:
-    """The library description shipped on the wire carries the same rule."""
-    for document in catalog:
-        if not (isinstance(document, dict)
-                and document.get("name") == "sdl_capture"
-                and isinstance(document.get("description"), str)):
-            continue
-        description = document["description"]
-        if "rgba8888" not in description:
-            continue
-        if "kFirstServableFrame" not in description:
-            failures.append(
-                "library sdl_capture description must name kFirstServableFrame "
-                "for the first servable frame rule")
-        if "waits rather than failing" not in description:
-            failures.append(
-                "library sdl_capture description must state that an early "
-                "capture waits rather than failing")
-        return
-
-
 def check_write_frame_signature(readme: str, failures: list[str]) -> None:
     """Explicit dimensions are the contract: the app, not the window, decides."""
     signature = "SDL3MCP_WriteFrame(const uint8_t *data, size_t size, int width, int height)"
@@ -449,15 +450,19 @@ def check_write_frame_signature(readme: str, failures: list[str]) -> None:
 
 
 def check_terminate_schema(documents: list[object], failures: list[str]) -> None:
-    tool = find_tool_document(documents, "sdl_terminate")
-    if tool is None:
+    copies = find_tool_documents(documents, "sdl_terminate")
+    if not copies:
         failures.append("no sdl_terminate tool schema with an inputSchema in the README")
         return
 
-    schema = tool["inputSchema"]
-    if not isinstance(schema, dict):
-        failures.append("sdl_terminate inputSchema must be an object")
-    else:
+    expected_annotations = {
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": False,
+        "openWorldHint": False,
+    }
+    for copy in copies:
+        schema = copy["inputSchema"]
         if schema.get("type") != "object":
             failures.append("sdl_terminate schema type must be object")
         if schema.get("properties") != {}:
@@ -465,19 +470,59 @@ def check_terminate_schema(documents: list[object], failures: list[str]) -> None
         if schema.get("additionalProperties") is not False:
             failures.append("sdl_terminate schema must set additionalProperties false")
 
-    annotations = tool.get("annotations")
-    if not isinstance(annotations, dict):
-        failures.append("sdl_terminate schema has no annotations")
-        return
-    expected = {
-        "readOnlyHint": False,
-        "destructiveHint": True,
-        "idempotentHint": False,
-        "openWorldHint": False,
-    }
-    for key, value in expected.items():
-        if annotations.get(key) != value:
-            failures.append(f"sdl_terminate annotation {key} must be {value}")
+        annotations = copy.get("annotations")
+        if not isinstance(annotations, dict):
+            failures.append("sdl_terminate schema has no annotations")
+            continue
+        for key, value in expected_annotations.items():
+            if annotations.get(key) != value:
+                failures.append(f"sdl_terminate annotation {key} must be {value}")
+
+
+def check_catalog(catalog: list[object], expect_spawn: bool,
+                  failures: list[str]) -> None:
+    """The catalog the Handler advertises agrees with the documented tools."""
+    by_name: dict[str, list[dict]] = {}
+    for document in tool_documents(catalog):
+        by_name.setdefault(document["name"], []).append(document)
+
+    for name in (*LIBRARY_TOOLS, "wait_session"):
+        if name not in by_name:
+            failures.append(f"Handler catalog does not advertise {name}")
+
+    if expect_spawn:
+        spawners = [name for name in by_name if name.startswith("app_spawn_")]
+        if not spawners:
+            failures.append("Handler catalog has no app_spawn_<alias> entry")
+
+    for name in ("sdl_input", "sdl_capture"):
+        for copy in by_name.get(name, []):
+            if "timeout_ms" not in copy["inputSchema"].get("properties", {}):
+                failures.append(
+                    f"Handler catalog {name} must carry timeout_ms")
+
+    for copy in by_name.get("sdl_info", []):
+        if contains_key(copy["inputSchema"], "frameTimeoutMs"):
+            failures.append("Handler catalog sdl_info still has frameTimeoutMs")
+
+
+def check_catalog_schemas(documents: list[object], catalog: list[object],
+                          failures: list[str]) -> None:
+    """A documented schema must be byte-identical to the catalog's definition."""
+    by_name: dict[str, list[dict]] = {}
+    for entry in tool_documents(catalog):
+        by_name.setdefault(entry["name"], []).append(entry)
+
+    for name, entries in by_name.items():
+        documented = find_tool_documents(documents, name)
+        if not documented:
+            continue
+        for entry in entries:
+            if not any(entry["inputSchema"] == doc["inputSchema"]
+                       for doc in documented):
+                failures.append(
+                    f"README {name} schema does not match the Handler catalog")
+                break
 
 
 def check_example_command(readme: str, failures: list[str]) -> None:
@@ -487,17 +532,38 @@ def check_example_command(readme: str, failures: list[str]) -> None:
         failures.append(f"README must not reference '{WRONG_EXAMPLE_PATH}'")
 
 
-def check_supervisor_docs(readme: str, failures: list[str]) -> None:
-    """The supervisor is part of the shipped binary, so its contract is checked."""
-    if "## Supervisor" not in readme:
-        failures.append("README has no Supervisor section")
-    if "sdl3mcp [--startup-timeout-ms" not in readme:
-        failures.append("README does not document the sdl3mcp command")
-    if "--target" not in readme:
-        failures.append("README does not document the supervisor's --target option")
-    for state in SUPERVISOR_STATES:
-        if f"`{state}`" not in readme:
-            failures.append(f"README does not document the supervisor {state} state")
+def check_handler_docs(readme: str, failures: list[str]) -> None:
+    """The Handler is the shipped binary, so its contract is checked."""
+    if "## The Handler" not in readme:
+        failures.append("README has no Handler section")
+    for option in ("--listen", "--connect", "--targets", "--web", "--dry-run",
+                   "--timeout-ms", "--dump-tools"):
+        if option not in readme:
+            failures.append(f"README does not document the Handler's {option} option")
+    for mode in ("Server", "Relay"):
+        if f"`{mode}`" not in readme:
+            failures.append(f"README does not document the Handler's {mode} mode")
+    for name in ("wait_session", "app_spawn_"):
+        if name not in readme:
+            failures.append(f"README does not document the Handler tool {name}")
+    for message in (
+            "no application session is attached; call wait_session first",
+            "an application is already attached; one spawn at a time",
+            "the application does not provide",
+            "spawn-and-forget",
+    ):
+        if message not in readme:
+            failures.append(f"README does not document the Handler message {message!r}")
+
+
+def check_library_docs(readme: str, failures: list[str]) -> None:
+    for phrase in ("--mcp=off", "--mcp=HOST:PORT", "--mcp-version",
+                   "SDL3MCP_DefaultConfiguration", "connect_timeout_ms",
+                   "max_frame_bytes", "SDL3MCP_AppIterate"):
+        if phrase not in readme:
+            failures.append(f"README does not document {phrase}")
+    if "1.0.0" not in readme:
+        failures.append("README does not name the 1.0.0 release")
 
 
 def check_stale_phrases(readme: str, failures: list[str]) -> None:
@@ -505,6 +571,10 @@ def check_stale_phrases(readme: str, failures: list[str]) -> None:
     for phrase in STALE_PHRASES:
         if phrase.lower() in haystack:
             failures.append(f"README still contains the stale phrase '{phrase}'")
+    for pattern in STALE_OPTIONS:
+        if pattern.search(readme):
+            failures.append(
+                f"README still contains the stale option {pattern.pattern!r}")
 
 
 def check_quick_start(quick_start: str, source: Path, failures: list[str]) -> None:
@@ -537,13 +607,15 @@ def check_loop_order(block: str, index: int, failures: list[str]) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Verify README.md against the implemented SDL3MCP contract.")
+        description="Verify README.md against the implemented SDL3MCP 1.0 contract.")
     parser.add_argument("--source", required=True, type=Path,
                         help="repository source directory")
     parser.add_argument("--build", required=True, type=Path,
                         help="CMake build directory with generated headers")
     parser.add_argument("--tools", type=Path,
-                        help="supervisor test binary that dumps the tool catalog")
+                        help="Handler binary whose --dump-tools prints the catalog")
+    parser.add_argument("--targets", type=Path,
+                        help="targets file --dump-tools reads to add app_spawn_* entries")
     arguments = parser.parse_args(argv)
 
     readme_path = arguments.source / "README.md"
@@ -569,18 +641,22 @@ def main(argv: list[str] | None = None) -> int:
             failures.append(f"tool catalog helper {helper} does not exist")
     else:
         helper = find_tool_helper(arguments.build)
-    catalog = load_tool_catalog(helper, failures)
-    check_tool_descriptions(catalog, "catalog", failures)
-    check_catalog_first_frame(catalog, failures)
+    catalog = load_tool_catalog(helper, arguments.targets, failures)
+    if catalog:
+        check_tool_descriptions(catalog, "catalog", failures)
+        check_catalog(catalog, arguments.targets is not None, failures)
+        check_catalog_schemas(documents, catalog, failures)
+    check_tool_set(documents, failures)
     check_input_schema(documents, failures)
     check_capture_schemas(documents, failures)
+    check_info_schema(documents, failures)
     check_capture_framing_prose(readme, failures)
     check_frame_attribution_prose(readme, failures)
-    check_first_frame_prose(readme, failures)
     check_write_frame_signature(readme, failures)
     check_terminate_schema(documents, failures)
     check_example_command(readme, failures)
-    check_supervisor_docs(readme, failures)
+    check_handler_docs(readme, failures)
+    check_library_docs(readme, failures)
     check_stale_phrases(readme, failures)
 
     for index, body in enumerate(complete_examples, start=1):

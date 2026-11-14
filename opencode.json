@@ -5,9 +5,7 @@
         "type": "local",
         "command": [
           "build/sdl3mcp",
-          "--target",
-          "build/examples/minimal",
-          "--mcp"
+          "--targets=build/sdl3mcp-targets.json"
         ]
       }
     }

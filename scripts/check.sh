@@ -8,8 +8,8 @@
 # Environment:
 #   SDL3MCP_CHECK_BUILD_DIR  build tree, default build/check, relative to the
 #                            repository root
-#   CMAKE_PREFIX_PATH        forwarded to CMake, so doctest can be found where
-#                            no doctest package is installed
+#   CMAKE_PREFIX_PATH        forwarded to CMake so an installed doctest can be
+#                            found; without one the pinned fetch resolves it
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -69,6 +69,8 @@ check_build() {
    printf 'check: configure, build and test in %s\n' "$build_dir" >&2
    run cmake "$@"
    run cmake --build "$build_dir" --parallel
+   # The full run includes handler_only_check: the nested Handler-only
+   # configure that proves the Handler half needs no SDL.
    run ctest --test-dir "$build_dir" --output-on-failure
 }
 

@@ -9,19 +9,83 @@ endif()
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
-option(SDL3MCP_BUILD_TESTS "Build the SDL3MCP tests" ${PROJECT_IS_TOP_LEVEL})
+# The library and the SDL app half. This is the only half that compiles SDL, so
+# OFF leaves the Handler alone — the SDL-free common core, the Handler, and the
+# Handler tests — and a machine without an SDL package can build and test it.
+option(SDL3MCP_BUILD_LIBRARY
+    "Build the SDL3MCP library and its SDL app half" ON)
 
-# A parent project that vendors doctest through add_subdirectory already defines
-# the target, so the check comes first and the package lookup only runs for a
-# standalone configure. Without doctest the suite would silently register no
-# tests, which reads like a passing run, so this stops instead. The tests are
-# the same option on every platform: a desktop configure builds the POSIX
-# suites, and an Emscripten configure builds the two Node suites.
-if(SDL3MCP_BUILD_TESTS AND NOT TARGET doctest::doctest)
+# Tests are two groups by dependency, not by directory:
+#   HANDLER_TESTS  handler_tests, web_tests, protocol_core_tests: every suite
+#                  that links no SDL.
+#   LIBRARY_TESTS  every suite that links the library or the app half, which
+#                  means SDL, including the Emscripten Node suites.
+# SDL3MCP_BUILD_TESTS is the convenience that enables both: it sets their
+# defaults, and an explicit group option overrides it.
+option(SDL3MCP_BUILD_TESTS
+    "Enable both test groups; set a group to override its default"
+    ${PROJECT_IS_TOP_LEVEL})
+
+if(SDL3MCP_BUILD_TESTS)
+    set(SDL3MCP_HANDLER_TESTS_DEFAULT ON)
+else()
+    set(SDL3MCP_HANDLER_TESTS_DEFAULT OFF)
+endif()
+# The library suites link the library and the app half, so they cannot exist
+# without them. Off here keeps `-DSDL3MCP_BUILD_LIBRARY=OFF` a valid configure
+# without also remembering the library tests; an explicit ON stops below.
+if(SDL3MCP_BUILD_TESTS AND SDL3MCP_BUILD_LIBRARY)
+    set(SDL3MCP_LIBRARY_TESTS_DEFAULT ON)
+else()
+    set(SDL3MCP_LIBRARY_TESTS_DEFAULT OFF)
+endif()
+
+option(SDL3MCP_BUILD_HANDLER_TESTS
+    "Build the SDL-free Handler suites, labelled HANDLER_TESTS"
+    ${SDL3MCP_HANDLER_TESTS_DEFAULT})
+option(SDL3MCP_BUILD_LIBRARY_TESTS
+    "Build the library and app suites, labelled LIBRARY_TESTS"
+    ${SDL3MCP_LIBRARY_TESTS_DEFAULT})
+
+if(SDL3MCP_BUILD_LIBRARY_TESTS AND NOT SDL3MCP_BUILD_LIBRARY)
+    message(FATAL_ERROR
+        "SDL3MCP: SDL3MCP_BUILD_LIBRARY_TESTS is ON but "
+        "SDL3MCP_BUILD_LIBRARY is OFF: the library suites link the library and "
+        "the app half")
+endif()
+
+if(SDL3MCP_BUILD_HANDLER_TESTS OR SDL3MCP_BUILD_LIBRARY_TESTS)
+    set(SDL3MCP_TESTS_ENABLED TRUE)
+else()
+    set(SDL3MCP_TESTS_ENABLED FALSE)
+endif()
+
+# doctest is shared by both groups and resolves in three steps, like
+# nlohmann/json: a target the parent project already defined, a package
+# installed in the environment, then a pinned download. The download is what
+# makes the gate reproducible on a machine with no doctest package: without a
+# resolution step at all the suites would silently register no tests, which
+# reads like a passing run, so this stops instead.
+if(SDL3MCP_TESTS_ENABLED AND NOT TARGET doctest::doctest)
     find_package(doctest CONFIG QUIET)
 endif()
-if(SDL3MCP_BUILD_TESTS AND NOT TARGET doctest::doctest)
-    message(FATAL_ERROR "SDL3MCP: a test option is ON but doctest was not found; install doctest (Arch: pacman -S doctest) or configure with -DSDL3MCP_BUILD_TESTS=OFF")
+if(SDL3MCP_TESTS_ENABLED AND NOT TARGET doctest::doctest)
+    include(FetchContent)
+    # The release tag pins the version this tree was built against; the hash
+    # pins the archive.
+    FetchContent_Declare(doctest
+        URL https://github.com/doctest/doctest/archive/refs/tags/v2.5.3.tar.gz
+        URL_HASH
+            SHA256=174ebc4e769928959614789c5b4e9c3d0a0f81a62bb608756b127bfebfb21331
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    )
+    FetchContent_MakeAvailable(doctest)
+endif()
+if(SDL3MCP_TESTS_ENABLED AND NOT TARGET doctest::doctest)
+    message(FATAL_ERROR
+        "SDL3MCP: a test option is ON but doctest could not be resolved: "
+        "define doctest::doctest, install its package, or allow the pinned "
+        "v2.5.3 download")
 endif()
 
 option(SDL3MCP_BUILD_CLI "Build the sdl3mcp Handler executable" OFF)
@@ -36,8 +100,27 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/SDL3MCPRegistration.cmake")
 
 # A parent project that vendors SDL through add_subdirectory already defines the
 # target; reusing it keeps one SDL in the process and avoids the system install.
-if(NOT TARGET SDL3::SDL3)
-    find_package(SDL3 CONFIG REQUIRED)
+#
+# The lookup is conditional: the Handler and its suites compile no SDL, so a
+# Handler-only configure must not require the package. It runs when the
+# library half (or its tests) is on, and tests/handler_only_check.cmake proves
+# the absence with CMAKE_DISABLE_FIND_PACKAGE_SDL3=TRUE.
+#
+# Reading that variable here is also what keeps a Handler-only configure from
+# reporting it as unused, and the check names the one combination that cannot
+# work: the library half asked for with its only provider disabled.
+if(CMAKE_DISABLE_FIND_PACKAGE_SDL3
+   AND NOT TARGET SDL3::SDL3
+   AND (SDL3MCP_BUILD_LIBRARY OR SDL3MCP_BUILD_LIBRARY_TESTS))
+    message(FATAL_ERROR
+        "SDL3MCP: the library half needs SDL, but "
+        "CMAKE_DISABLE_FIND_PACKAGE_SDL3 is set and no SDL3::SDL3 target "
+        "exists")
+endif()
+if(SDL3MCP_BUILD_LIBRARY OR SDL3MCP_BUILD_LIBRARY_TESTS)
+    if(NOT TARGET SDL3::SDL3)
+        find_package(SDL3 CONFIG REQUIRED)
+    endif()
 endif()
 
 # nlohmann/json is header-only and private to the build. It resolves in three
@@ -118,29 +201,10 @@ else()
 endif()
 add_library(sdl3mcp_common_objects OBJECT ${sdl3mcp_common_sources})
 
-add_library(sdl3mcp_app_objects OBJECT
-    src/Api.cpp
-    src/AppInput.cpp
-    src/Capture.cpp
-    src/Frame.cpp
-    src/Info.cpp
-    src/Input.cpp
-    src/Input-Actions.cpp
-    src/Input-Arguments.cpp
-    src/Input-Chord.cpp
-    src/Input-Keyboard.cpp
-    src/Input-Modifiers.cpp
-    src/Input-Pointer.cpp
-    src/Input-Properties.cpp
-    src/KeyMap.cpp
-    src/Mouse.cpp
-    src/Pipeline.cpp
-    src/Replay.cpp
-    src/Runtime.cpp
-)
-
-set(SDL3MCP_OBJECT_TARGETS sdl3mcp_common_objects sdl3mcp_app_objects)
-foreach(sdl3mcp_object_target IN LISTS SDL3MCP_OBJECT_TARGETS)
+# The common and app object libraries share a compile surface: the public
+# headers, json's include path and hidden visibility. The app library adds SDL
+# afterwards, because it is the only half that needs it.
+function(sdl3mcp_configure_object_target sdl3mcp_object_target)
     target_compile_features(${sdl3mcp_object_target} PRIVATE cxx_std_20)
     target_include_directories(${sdl3mcp_object_target}
         PUBLIC
@@ -155,29 +219,57 @@ foreach(sdl3mcp_object_target IN LISTS SDL3MCP_OBJECT_TARGETS)
         VISIBILITY_INLINES_HIDDEN YES
         POSITION_INDEPENDENT_CODE ON
     )
-endforeach()
+endfunction()
 
 # The common half is compiled with no SDL include path: no file in it may
 # include SDL, and the configuration types are SDL-free. The Handler inherits
 # that, so a stray SDL include in a common file fails the Handler build.
-# The app half is the only half that needs SDL, and only to compile: the final
-# link is the app's job, because the library publishes no SDL target.
-target_link_libraries(sdl3mcp_app_objects PRIVATE SDL3::SDL3)
+sdl3mcp_configure_object_target(sdl3mcp_common_objects)
 
-add_library(SDL3MCP STATIC
-    $<TARGET_OBJECTS:sdl3mcp_common_objects>
-    $<TARGET_OBJECTS:sdl3mcp_app_objects>
-)
-add_library(SDL3MCP::SDL3MCP ALIAS SDL3MCP)
-target_include_directories(SDL3MCP
-    PUBLIC
-        "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
-        "$<BUILD_INTERFACE:${SDL3MCP_GENERATED_DIR}>"
-        "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
-)
-# No target_link_libraries(SDL3MCP SDL3::SDL3): on a static library a PRIVATE
-# dependency is exported as $<LINK_ONLY:...>, so it would still publish SDL and
-# force find_dependency(SDL3) on every consumer. The app names SDL itself.
+# The app half is the library's other half and the only code that names SDL. A
+# Handler-only build leaves it out, so no SDL include path or target exists
+# anywhere in that build.
+if(SDL3MCP_BUILD_LIBRARY)
+    add_library(sdl3mcp_app_objects OBJECT
+        src/Api.cpp
+        src/AppInput.cpp
+        src/Capture.cpp
+        src/Frame.cpp
+        src/Info.cpp
+        src/Input.cpp
+        src/Input-Actions.cpp
+        src/Input-Arguments.cpp
+        src/Input-Chord.cpp
+        src/Input-Keyboard.cpp
+        src/Input-Modifiers.cpp
+        src/Input-Pointer.cpp
+        src/Input-Properties.cpp
+        src/KeyMap.cpp
+        src/Mouse.cpp
+        src/Pipeline.cpp
+        src/Replay.cpp
+        src/Runtime.cpp
+    )
+    sdl3mcp_configure_object_target(sdl3mcp_app_objects)
+    # SDL is a compile-time dependency only: the final link is the app's job,
+    # because the library publishes no SDL target.
+    target_link_libraries(sdl3mcp_app_objects PRIVATE SDL3::SDL3)
+
+    add_library(SDL3MCP STATIC
+        $<TARGET_OBJECTS:sdl3mcp_common_objects>
+        $<TARGET_OBJECTS:sdl3mcp_app_objects>
+    )
+    add_library(SDL3MCP::SDL3MCP ALIAS SDL3MCP)
+    target_include_directories(SDL3MCP
+        PUBLIC
+            "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+            "$<BUILD_INTERFACE:${SDL3MCP_GENERATED_DIR}>"
+            "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
+    )
+    # No target_link_libraries(SDL3MCP SDL3::SDL3): on a static library a PRIVATE
+    # dependency is exported as $<LINK_ONLY:...>, so it would still publish SDL and
+    # force find_dependency(SDL3) on every consumer. The app names SDL itself.
+endif()
 
 # The SDL-free core both the library and the Handler compose: a real static
 # library built from exactly the common object library, so the Handler links one
@@ -262,19 +354,20 @@ if(SDL3MCP_BUILD_CLI AND NOT EMSCRIPTEN)
     )
 endif()
 
-if(SDL3MCP_BUILD_TESTS)
+if(SDL3MCP_TESTS_ENABLED)
     enable_testing()
     add_subdirectory(tests)
 endif()
 
 # Packaging only happens when SDL3MCP is the top-level project: an embedded
 # build's SDL3 target is not in any export set, so an export here would fail to
-# generate.
+# generate. A Handler-only build has no library to export, so it packages
+# nothing.
 #
 # Only the library is packaged: the Handler is a build-tree artifact, and
 # COMMON is the internal composition target. nlohmann/json and
 # stb stay private, so a consumer needs neither of them.
-if(PROJECT_IS_TOP_LEVEL)
+if(PROJECT_IS_TOP_LEVEL AND SDL3MCP_BUILD_LIBRARY)
     install(TARGETS SDL3MCP EXPORT SDL3MCPTargets
         RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
         LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"

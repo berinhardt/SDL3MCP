@@ -37,7 +37,10 @@ as the current contract.
 
 ## Requirements
 
-- **SDL 3.2 or newer.** The library is built against the 3.2 API:
+- **SDL 3.2 or newer**, for the library and its app half and for
+  `LIBRARY_TESTS` only. The Handler and `HANDLER_TESTS` compile no SDL: a
+  Handler-only configure (`-DSDL3MCP_BUILD_LIBRARY=OFF`) builds and tests on a
+  machine with no SDL package. The library is built against the 3.2 API:
   `SDL_RenderReadPixels(renderer, rect)` returns an `SDL_Surface *`.
 - **Linux.** The Handler is POSIX-only (one `poll` loop, `signalfd`, `pidfd`,
   `fork`/`exec`). A Windows configure stops with a `FATAL_ERROR`; the Windows
@@ -48,8 +51,14 @@ as the current contract.
   policy: an existing `nlohmann_json::nlohmann_json` target, then
   `find_package(nlohmann_json CONFIG)`, then a pinned `v3.12.0` download. It is
   a private, header-only dependency: a consumer never needs it installed.
-- **doctest** for the test suite, **Python 3** for `readme_check`, and
-  **Node.js** 22 or newer plus Emscripten for the two Emscripten suites.
+- **doctest** for both test groups, resolved the same way: an existing
+  `doctest::doctest` target, then `find_package(doctest CONFIG)`, then a pinned
+  `v2.5.3` download. No system install is required.
+- **Python 3** for `readme_check`, **Node.js** 22 or newer plus the Emscripten
+  SDK for the two Emscripten suites.
+
+§Build carries the dependency matrix: which piece needs which dependency, and
+how it is resolved.
 
 ## Build
 
@@ -63,8 +72,24 @@ ctest --test-dir build --output-on-failure
 ```
 
 `SDL3MCP_BUILD_CLI=ON` builds the Handler and defines `SDL3MCP::SERVER`, so this
-flow also builds and tests `sdl3mcp`. Without it the library and the tests still
-build, and the Handler suites are skipped.
+flow also builds and tests `sdl3mcp`. Without it the library and the library
+tests still build, and the Handler suites are skipped.
+
+The Handler half needs no SDL package, so it also has a configure of its own:
+
+```sh
+cmake -S . -B build/handler -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+  -DSDL3MCP_BUILD_LIBRARY=OFF -DSDL3MCP_BUILD_CLI=ON \
+  -DSDL3MCP_BUILD_HANDLER_TESTS=ON -DSDL3MCP_BUILD_LIBRARY_TESTS=OFF
+cmake --build build/handler --parallel
+ctest --test-dir build/handler --output-on-failure
+```
+
+`-DCMAKE_DISABLE_FIND_PACKAGE_SDL3=TRUE` makes any `find_package(SDL3)` a
+configure error, so it is the proof that nothing on this path asks for SDL.
+`handler_only_check` in CTest runs exactly this configure/build/test, so the
+gate catches a Handler unit that starts to depend on SDL. This build packages
+nothing: the Handler is a build-tree artifact and the library half is off.
 
 `CMakePresets.json` wraps the same configurations:
 
@@ -82,8 +107,30 @@ free.
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `SDL3MCP_BUILD_TESTS` | `ON` when top-level | Build the doctest suites. |
+| `SDL3MCP_BUILD_LIBRARY` | `ON` | Build the library and its SDL app half. `OFF` leaves the SDL-free common core, the Handler and the Handler tests, and needs no SDL package. |
+| `SDL3MCP_BUILD_TESTS` | `ON` when top-level | Convenience: sets the default of both test groups. Set a group explicitly to override it. |
+| `SDL3MCP_BUILD_HANDLER_TESTS` | follows `SDL3MCP_BUILD_TESTS` | Build the SDL-free suites, labelled `HANDLER_TESTS`: `handler_tests`, `web_tests`, `protocol_core_tests`, the configure-time checks and the no-SDL fixture. |
+| `SDL3MCP_BUILD_LIBRARY_TESTS` | follows `SDL3MCP_BUILD_TESTS`, and `OFF` when the library is off | Build every suite that links the library or the app half, labelled `LIBRARY_TESTS`, including the Emscripten Node suites. |
 | `SDL3MCP_BUILD_CLI` | `OFF` | Build the `sdl3mcp` Handler. |
+
+`SDL3MCP_BUILD_LIBRARY_TESTS=ON` with `SDL3MCP_BUILD_LIBRARY=OFF` is a configure
+error: the library suites link a target that build does not create.
+
+### Dependencies
+
+The matrix is per piece, not per build: a Handler-only configure needs doctest,
+nlohmann/json and the Handler's own code, and nothing else.
+
+| Dependency | Needed by | How it is resolved |
+| --- | --- | --- |
+| doctest | both test groups | An existing `doctest::doctest` target, then `find_package(doctest CONFIG)`, then a pinned `v2.5.3` download. It is never required to be installed. |
+| SDL3 | `SDL3MCP_BUILD_LIBRARY` and `LIBRARY_TESTS` | `find_package(SDL3 CONFIG REQUIRED)`, which never runs for a Handler-only configure. The library publishes no SDL, so a consumer links `SDL3::SDL3-static` itself. |
+| Emscripten SDL3 | the browser build and the two Node suites | An SDL3 built for Emscripten, passed as `SDL3_DIR`; the Catalyst tree's `build/emscripten/deps/SDL` is a working example. The app's final link adds `-lwebsocket.js`. |
+| nlohmann/json | the whole build, privately | An existing target, then `find_package`, then a pinned `v3.12.0` download. Only the include path is taken; no consumer needs it installed. |
+| stb | the Handler's PNG presentation only | Vendored in `third_party/stb`, compiled into one Handler unit, never installed. |
+| Python 3 | `readme_check` (a library test) | `find_package(Python3 COMPONENTS Interpreter QUIET)`; the check is skipped with no interpreter. |
+| Node.js 22+ | the two Emscripten suites | `find_program(node)`; the suites are skipped with a configure warning when it is absent. |
+| Emscripten SDK | the browser build and the Node suites | `emcmake cmake`; it supplies the compiler and the browser libraries. |
 
 ### Targets
 
@@ -121,7 +168,7 @@ cmake --build build/web --parallel
 ctest --test-dir build/web --output-on-failure
 ```
 
-An Emscripten configure has no POSIX suite, so `SDL3MCP_BUILD_TESTS` — on by
+An Emscripten configure has no POSIX suite, so the library test group — on by
 default at the top level — registers the two Node suites instead: the WebSocket
 transport arm and the whole app path. CTest runs both through Node; without Node
 they are skipped with a configure warning.
@@ -1350,32 +1397,53 @@ browser arm (`src/WebSocketStream.cpp`) replaces the native socket:
 
 ## Tests
 
-`ctest --test-dir build --output-on-failure` runs the doctest suites:
+`ctest --test-dir build --output-on-failure` runs both groups; `ctest -L
+HANDLER_TESTS` and `ctest -L LIBRARY_TESTS` select one. The split is by
+dependency, so the matrix in §Dependencies is also the test contract:
+`HANDLER_TESTS` needs no SDL, and `LIBRARY_TESTS` links the library (or the app
+object library) and therefore SDL.
 
-- the pure value halves: key map, input planning, replay, mouse normalization,
-  frame validation and crop;
-- the protocol core: JSON-RPC, tools, results, session, streams, configuration;
-- the library end to end over a real loopback socket, with a test MCP server and
-  SDL's dummy video driver;
-- the lifecycle, one scenario per process;
-- the Handler over pipes and sockets, with a fake application and a controllable
-  page server/bridge;
-- `targets_check`, which configures a parent project and asserts the three public
-  target names plus the documented build graph (static library, no published
-  SDL, COMMON with sources);
+`HANDLER_TESTS`, which a Handler-only configure runs with no SDL package:
+
+- `protocol_core_tests`: JSON-RPC, tools, results, session, streams,
+  configuration. It links `SDL3MCP::COMMON` alone, so a wire unit that starts
+  calling SDL breaks this build instead of dragging a window into a protocol
+  test;
+- `handler_tests`: the Handler over pipes and sockets, with a fake application
+  and a controllable page server/bridge;
+- `web_tests`: the web source and the throwaway profile, with no Handler process
+  and no browser;
 - `web_registration_check`, which configures a tiny project once per case and
   asserts that `sdl3mcp_web` writes the page root — including when the target's
   `SUFFIX` is set after the registration, or is a generator expression — and
   that a desktop configure, a bad alias, a reserved alias, a duplicate alias and
   a target without an `.html` artifact each fail naming the alias or target;
+- `handler_only_check`, which configures, builds and tests a tree with
+  `SDL3MCP_BUILD_LIBRARY=OFF` and `CMAKE_DISABLE_FIND_PACKAGE_SDL3=TRUE`, so the
+  Handler half cannot drift back onto SDL. It forwards this configure's
+  generator and resolved dependencies, so it needs no network of its own.
+
+`LIBRARY_TESTS`, every suite that links the library or the app half:
+
+- the public C and C++ headers;
+- the pure value halves: key map, input planning, replay, mouse normalization,
+  frame validation and crop;
+- the app-thread pipeline with a recording completion;
+- the library end to end over a real loopback socket, with a test MCP server and
+  SDL's dummy video driver;
+- the lifecycle, one scenario per process;
+- `targets_check`, which configures a parent project and asserts the three public
+  target names plus the documented build graph (static library, no published
+  SDL, COMMON with sources);
 - `readme_check`, which compiles the README's two complete C examples, parses
   every JSON block, compares the documented tool schemas with the Handler's
   `--dump-tools` catalog, checks the framing prose, the `sdl_input` text and the
   loop order, and rejects any reference to a bundled example.
 
 The Emscripten configure builds no POSIX suite. Its two suites run under Node
-against a local WebSocket server, and `SDL3MCP_BUILD_TESTS` registers them like
-every other suite:
+against a local WebSocket server, and they are library tests: they are
+registered when `SDL3MCP_BUILD_LIBRARY_TESTS` is on, which is the default at the
+top level:
 
 - `node_websocket_tests` drives the transport arm — framing, split messages, the
   raw payload after a line, writes and a server close — against a scripted peer.

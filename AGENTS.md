@@ -20,8 +20,9 @@ the v0 tree was deleted in the rewrite and survives in `v0.1.0` and history.
 
 - **`README.md` is the contract**: CLI grammar, MCP schemas, framing, loop
   order, public targets, browser arm and limits; §Build has configure, build
-  and `ctest`, the presets (`debug`, `asan`), the Emscripten
-  configure, and §Tests lists the suites.
+  and `ctest`, the presets (`debug`, `asan`), the Emscripten configure and the
+  dependency matrix (doctest, SDL, nlohmann, stb, Python, Node, Emscripten),
+  and §Tests lists the suites.
 - **`STYLE.md`** is the single standards document: naming, formatting, headers,
   errors, tests and CMake, split into mechanical rules a check enforces and
   judgement rules a reviewer owns; its §Tests carries the payload-floor and
@@ -65,7 +66,12 @@ section the branch names, not the whole file:
   run by the tracked `scripts/hooks/pre-commit`; `scripts/install-hooks.sh` sets
   `core.hooksPath=scripts/hooks` in a fresh clone. It reuses
   `SDL3MCP_CHECK_BUILD_DIR` (default `build/check`) and forwards
-  `CMAKE_PREFIX_PATH` to CMake for doctest.
+  `CMAKE_PREFIX_PATH` so an installed doctest can be found; without one the
+  pinned fetch resolves it. The full `ctest` includes `handler_only_check`, the
+  no-SDL Handler configure/build/test, so the SDL-free half is enforced.
+- The tests are two groups by dependency: `HANDLER_TESTS` (SDL-free) and
+  `LIBRARY_TESTS` (links the library or the app half, so SDL). README
+  §Dependencies is the matrix; `SDL3MCP_BUILD_TESTS` only sets both defaults.
 - One atomic change per commit, with a message that describes it; no dead code,
   no commented-out code, no speculative parameters. Before each commit, check
   the diff against this file and fix any statement the change contradicts.
@@ -75,8 +81,8 @@ section the branch names, not the whole file:
 - Work on a ticket branch; never commit to `master` or `develop`, never push
   (merging and pushing are the human's decisions); keep `third_party/` untouched:
   it is a read-only upstream, and `stb` is a vendored header, not a fork to
-  edit. `nlohmann/json` is resolved at configure time (target, then package,
-  then a pinned download), not vendored.
+  edit. `nlohmann/json` and `doctest` are resolved at configure time (target,
+  then package, then a pinned download), not vendored.
 
 ## Session self-check
 

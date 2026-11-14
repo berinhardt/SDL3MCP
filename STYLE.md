@@ -92,7 +92,7 @@ caller's convenience; it is not a collaborator and does not get a class.
   pre-emptively costs a header, an include and a name in the link, and the next
   reader has to leave the file to understand the caller. **The size cap outranks
   this rule.** When inlining a single-caller helper would push the unit past the
-  300-line hard limit, the helper is declared in the unit's own matching
+  300-line hard limit, the helper may be declared in the unit's own matching
   hyphenated header instead — `Handler-Forward.h` beside
   `Handler-Forward.cpp` — because a limit the check enforces is not a preference
   a reviewer may weigh. The header says in its comment that the cap chose the

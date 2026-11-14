@@ -60,8 +60,8 @@ section the branch names, not the whole file:
 - Minimal diffs. Do not reformat untouched code. `.clang-format` (Google base,
   3-space indent, no column limit, left-aligned pointers) applies to touched
   files; `scripts/check.sh` enforces it over every first-party C/C++ source.
-- `scripts/check.sh` is the gate (formatting, `debug` build, `ctest`), run by
-  the tracked `scripts/hooks/pre-commit`; `scripts/install-hooks.sh` sets
+- `scripts/check.sh` is the gate (file size, formatting, `debug` build, `ctest`),
+  run by the tracked `scripts/hooks/pre-commit`; `scripts/install-hooks.sh` sets
   `core.hooksPath=scripts/hooks` in a fresh clone. It reuses
   `SDL3MCP_CHECK_BUILD_DIR` (default `build/check`) and forwards
   `CMAKE_PREFIX_PATH` to CMake for doctest.

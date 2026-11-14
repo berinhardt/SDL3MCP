@@ -1,5 +1,5 @@
 #!/bin/sh
-# The mechanical gate for SDL3MCP: formatting, build, tests.
+# The mechanical gate for SDL3MCP: file size, formatting, build, tests.
 #
 # scripts/hooks/pre-commit runs this on every commit, and scripts/install-hooks.sh
 # points a fresh clone at that hook. The build tree is reused, so a commit pays
@@ -29,6 +29,15 @@ run() {
 
 require() {
    command -v "$1" >/dev/null 2>&1 || fail "$1 is not installed"
+}
+
+check_file_size() {
+   # The fixture proves the rule before it runs over the tree, so a broken rule
+   # fails here instead of silently passing every file.
+   printf 'check: file-size fixture\n' >&2
+   sh "$root/tests/check_file_size.sh"
+   printf 'check: file-size rule over the product sources\n' >&2
+   sh "$root/scripts/check-file-size.sh"
 }
 
 check_format() {
@@ -63,6 +72,7 @@ check_build() {
    run ctest --test-dir "$build_dir" --output-on-failure
 }
 
+check_file_size
 check_format
 check_build
 printf 'check: ok\n'

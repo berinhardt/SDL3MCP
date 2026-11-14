@@ -265,6 +265,16 @@ if(SDL3_DIR)
                      "-DSDL3_DIR=${SDL3_DIR}")
 endif()
 
+# The web registration is configure-time behavior, so it is checked by
+# configuring a tiny project rather than by a compiled suite. The script runs one
+# configure per case and asserts the file on success and the diagnostic on each
+# failure, which a FATAL_ERROR makes impossible to observe from inside.
+add_test(NAME web_registration_check
+         COMMAND "${CMAKE_COMMAND}"
+                 "-DSDL3MCP_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/.."
+                 "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/web_registration"
+                 -P "${CMAKE_CURRENT_SOURCE_DIR}/check_web_registration.cmake")
+
 # The README is the contract, so its code, schemas, and run command are checked.
 # The Handler's --dump-tools supplies the catalog the check compares against, so
 # the guard reads the same definitions tools/list does.

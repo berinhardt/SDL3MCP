@@ -8,6 +8,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 int main(void) {
    SDL3MCP_Configuration configuration = SDL3MCP_DefaultConfiguration();
@@ -29,6 +30,15 @@ int main(void) {
    }
    if (configuration.log_level != -1) {
       return 6;
+   }
+
+   /* The release is 1.0.0; the header carries the generated macros. */
+   if (SDL3MCP_VERSION_MAJOR != 1 || SDL3MCP_VERSION_MINOR != 0 ||
+       SDL3MCP_VERSION_PATCH != 0) {
+      return 7;
+   }
+   if (strcmp(SDL3MCP_VERSION_STRING, "1.0.0") != 0) {
+      return 8;
    }
 
    /* Assigning each symbol to its declared type proves the signatures agree. */

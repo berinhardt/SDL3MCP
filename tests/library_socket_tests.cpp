@@ -204,6 +204,7 @@ class TestServer {
       CHECK(initialized["id"] == 1);
       CHECK(initialized["result"]["protocolVersion"] == "2025-11-25");
       CHECK(initialized["result"]["serverInfo"]["name"] == "sdl3mcp");
+      CHECK(initialized["result"]["serverInfo"]["version"] == "1.0.0");
 
       writeLine(connection,
                 {{"jsonrpc", "2.0"}, {"method", "notifications/initialized"}});

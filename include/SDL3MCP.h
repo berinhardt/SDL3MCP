@@ -6,6 +6,10 @@
   exists exactly when connect_host names an endpoint, and the only library
   timeout is the one dial attempt, connect_timeout_ms.
 
+  The configuration value and the release macros live in the SDL-free
+  SDL3MCP_types.h, which this header includes; that header includes neither SDL
+  nor the entry points below.
+
   Linkage follows SDL: public symbols carry SDL_DECLSPEC and SDLCALL. The shared
   build defines DLL_EXPORT, the static build defines SDL_STATIC_LIB.
 */
@@ -14,7 +18,7 @@
 #define SDL3MCP_H
 
 #include <SDL3/SDL.h>
-#include <SDL3MCP/SDL3MCP_version.h>
+#include <SDL3MCP_types.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -22,35 +26,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-typedef struct SDL3MCP_Configuration {
-   /*
-     The client endpoint the app dials, HOST:PORT. An empty connect_host means
-     no MCP session at all; a non-empty one means exactly one dial attempt,
-     never a fallback to no session.
-   */
-   char connect_host[64];
-   uint16_t connect_port;
-   /* One dial attempt is bounded by this; the library has no other timeout. */
-   uint32_t connect_timeout_ms;
-   uint32_t max_frame_bytes;
-   bool warp_cursor;
-   int log_level;
-} SDL3MCP_Configuration;
-
-/* Header-inline so the defaults cost no symbol and work from C and C++. */
-static inline SDL3MCP_Configuration SDL3MCP_DefaultConfiguration(void) {
-   SDL3MCP_Configuration configuration;
-
-   SDL_zero(configuration.connect_host);
-   configuration.connect_port = 0;
-   configuration.connect_timeout_ms = 5000u;
-   configuration.max_frame_bytes = 32u * 1024u * 1024u;
-   configuration.warp_cursor = true;
-   configuration.log_level = -1;
-
-   return configuration;
-}
 
 SDL_DECLSPEC SDL_AppResult SDLCALL SDL3MCP_AppInit(SDL3MCP_Configuration* config, int argc, char** argv);
 SDL_DECLSPEC SDL_AppResult SDLCALL SDL3MCP_SetWindow(SDL_Window* window);

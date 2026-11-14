@@ -8,15 +8,16 @@ is not a current source of truth.
 ## Files
 
 - CamelCase names with `.h` and `.cpp` extensions: `SocketStream.h`,
-  `SocketStream.cpp`. The public header keeps its name,
-  `include/SDL3MCP/SDL3MCP.h`.
+  `SocketStream.cpp`. The public headers keep their names, `include/SDL3MCP.h`
+  (the entry points) and `include/SDL3MCP_types.h` (the SDL-free types).
 - One primary type per file where practical: a header declares the type its
   matching `.cpp` defines, and the two share a basename.
 - Platform arms of one type share a header and take the platform suffix:
   `SocketStream.cpp` is the native implementation and `WebSocketStream.cpp` is
   the Emscripten one.
-- `include/SDL3MCP/` is the public surface and exposes the C API only; it never
-  includes a private `src/` header.
+- `include/` is the flat public surface and exposes the C API only; it never
+  includes a private `src/` header. `SDL3MCP_types.h` includes neither SDL nor
+  the entry points, so a unit can take the types without an SDL include path.
 
 ## C++ names
 

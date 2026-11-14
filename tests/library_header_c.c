@@ -1,10 +1,23 @@
 /*
-  The 1.0 public header must compile as C11 and expose the six entry points with
+  The 1.0 public headers must compile as C11 and expose the six entry points with
   their C linkage. This translation unit is compiled by the C compiler, so a C++
-  construct that slips into the header fails here instead of at a consumer.
+  construct that slips into a header fails here instead of at a consumer.
+
+  The types header comes first, and the guard checks are what prove the split:
+  it compiles on its own, it is SDL-free, and it does not pull the entry-point
+  header in behind it.
 */
 
-#include <SDL3MCP/SDL3MCP.h>
+#include <SDL3MCP_types.h>
+
+#ifdef SDL_h_
+#error "SDL3MCP_types.h must not include SDL"
+#endif
+#ifdef SDL3MCP_H
+#error "SDL3MCP_types.h must not include the entry-point header"
+#endif
+
+#include <SDL3MCP.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>

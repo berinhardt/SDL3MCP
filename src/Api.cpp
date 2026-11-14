@@ -11,7 +11,7 @@
   command line does; AppShutdown closes the tab as well as the stream.
 */
 
-#include <SDL3MCP/SDL3MCP.h>
+#include <SDL3MCP.h>
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten/emscripten.h>

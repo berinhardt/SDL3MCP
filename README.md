@@ -135,7 +135,7 @@ whole file.
 #define SDL_MAIN_USE_CALLBACKS 1
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
-#include <SDL3MCP/SDL3MCP.h>
+#include <SDL3MCP.h>
 
 typedef enum BackgroundMode {
    BACKGROUND_DEFAULT,
@@ -353,7 +353,7 @@ A complete manual loop looks like this:
 
 ```c
 #include <SDL3/SDL.h>
-#include <SDL3MCP/SDL3MCP.h>
+#include <SDL3MCP.h>
 
 static void answerFrame(SDL_Renderer *renderer)
 {
@@ -473,8 +473,14 @@ with `sdl3mcp_app`. Calling `app_spawn_minimal` then runs
 
 ## The library API
 
-`include/SDL3MCP/SDL3MCP.h` is the complete public surface. It compiles as C11
-and as C++20, and public symbols carry SDL's `SDL_DECLSPEC` and `SDLCALL`.
+`include/SDL3MCP.h` is the complete public surface, and a consumer includes it
+from the include root as `<SDL3MCP.h>`. It compiles as C11 and as C++20, and
+public symbols carry SDL's `SDL_DECLSPEC` and `SDLCALL`.
+
+The configuration value and the release macros live beside it in
+`include/SDL3MCP_types.h`: it includes neither SDL nor the entry points, so a
+translation unit that only builds or reads a configuration needs no SDL headers.
+`<SDL3MCP.h>` includes it for the rest.
 
 ### Configuration
 

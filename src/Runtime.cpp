@@ -1,6 +1,6 @@
 #include "Runtime.h"
 
-#include <SDL3MCP/SDL3MCP.h>
+#include <SDL3MCP.h>
 
 #include <nlohmann/json.hpp>
 #include <string>

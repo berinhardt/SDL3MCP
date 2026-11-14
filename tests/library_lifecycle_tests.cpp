@@ -10,7 +10,7 @@
 */
 
 #define DOCTEST_CONFIG_IMPLEMENT
-#include <SDL3MCP/SDL3MCP.h>
+#include <SDL3MCP.h>
 #include <arpa/inet.h>
 #include <doctest/doctest.h>
 #include <netinet/in.h>

@@ -1,6 +1,6 @@
 #include "Cli.h"
 
-#include <SDL3MCP/SDL3MCP_version.h>
+#include <SDL3MCP_version.h>
 
 #include <charconv>
 #include <string>

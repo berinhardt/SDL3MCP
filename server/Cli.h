@@ -52,6 +52,12 @@ struct HandlerOptions {
    bool hasDryRun = false;
    std::string dryRunAlias;
 
+   /*
+     --dump-tools prints the catalog tools/list would advertise and exits. It
+     needs no listener: it is the documentation check's view of the real list.
+   */
+   bool hasDumpTools = false;
+
    /* A Relay dials an upstream; a Server speaks stdio to its client. */
    bool relay() const noexcept { return hasConnect; }
 

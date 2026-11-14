@@ -23,6 +23,7 @@ constexpr std::string_view kDryRunOption = "--dry-run";
 constexpr std::string_view kDryRunPrefix = "--dry-run=";
 constexpr std::string_view kTimeoutOption = "--timeout-ms";
 constexpr std::string_view kTimeoutPrefix = "--timeout-ms=";
+constexpr std::string_view kDumpToolsOption = "--dump-tools";
 constexpr std::string_view kHelpOption = "--help";
 constexpr std::string_view kVersionOption = "--version";
 
@@ -53,6 +54,16 @@ HandlerCliResult parseHandlerCommandLine(
    std::size_t index = 0;
    while (index < arguments.size()) {
       const std::string& argument = arguments[index];
+
+      if (argument == kDumpToolsOption) {
+         if (result.options.hasDumpTools) {
+            result.error = "--dump-tools may be given only once";
+            return result;
+         }
+         result.options.hasDumpTools = true;
+         index += 1;
+         continue;
+      }
 
       if (argument == kHelpOption) {
          result.ok = true;
@@ -221,6 +232,12 @@ HandlerCliResult parseHandlerCommandLine(
       return result;
    }
 
+   /* A catalog dump prints and exits, so it needs neither a listener nor an app. */
+   if (result.options.hasDumpTools) {
+      result.ok = true;
+      return result;
+   }
+
    if (result.options.hasDryRun && !result.options.hasAppSource()) {
       result.error = "--dry-run requires an app source (--targets=PATH or --web=PATH)";
       return result;
@@ -260,6 +277,7 @@ std::string handlerUsageText() {
           "  --dry-run=ALIAS      print the argv app_spawn_<alias> would run, or\n"
           "                       the web commands/page/bridge/profile, and start\n"
           "                       nothing\n"
+          "  --dump-tools         print the tools/list catalog as JSON and exit\n"
           "  --help               print this help and exit\n"
           "  --version            print the Handler version and exit";
 }

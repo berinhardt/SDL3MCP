@@ -319,6 +319,9 @@ int Handler::run() {
       std::fflush(stderr);
       return 2;
    }
+   if (options_.hasDumpTools) {
+      return printToolCatalog();
+   }
    if (options_.hasDryRun) {
       return printDryRun();
    }
@@ -565,6 +568,16 @@ int Handler::printDryRun() {
                 options_.dryRunAlias.c_str());
    std::fflush(stderr);
    return 2;
+}
+
+int Handler::printToolCatalog() {
+   buildBaseTools();
+   rebuildCatalog();
+
+   const nlohmann::json catalog = mergedTools();
+   std::printf("%s\n", catalog.dump().c_str());
+   std::fflush(stdout);
+   return 0;
 }
 
 void Handler::buildBaseTools() {

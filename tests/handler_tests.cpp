@@ -1742,6 +1742,68 @@ TEST_CASE("the handler command line") {
    CHECK(help.message.find("--targets") != std::string::npos);
    CHECK(help.message.find("--web") != std::string::npos);
    CHECK(help.message.find("--dry-run") != std::string::npos);
+
+   /* 1.0.0 is the release the binary reports. */
+   const auto version = parseHandlerCommandLine({"--version"});
+   CHECK(version.ok);
+   CHECK(version.exit);
+   CHECK(version.exitCode == 0);
+   CHECK(version.message == "SDL3MCP 1.0.0");
+
+   /* --dump-tools is a diagnostic: it prints and exits, with no listener. */
+   const auto dump = parseHandlerCommandLine({"--dump-tools"});
+   CHECK(dump.ok);
+   CHECK(dump.options.hasDumpTools);
+   CHECK(!parseHandlerCommandLine({"--dump-tools=1"}).ok);
+}
+
+/*
+  The README check runs --dump-tools to compare the catalog with the documented
+  schemas and Example: descriptions, so the dump is the wire's own list.
+*/
+TEST_CASE("--dump-tools prints the catalog") {
+   TestProcess process;
+   process.start(g_handler, {"--dump-tools"});
+
+   const std::string output = readAllFd(process.fromChild, kLineTimeoutMs);
+   CHECK(process.waitForExit(kLineTimeoutMs));
+
+   const nlohmann::json catalog = nlohmann::json::parse(output, nullptr, false);
+   REQUIRE(catalog.is_array());
+
+   std::vector<std::string> names;
+   for (const nlohmann::json& tool : catalog) {
+      REQUIRE(tool.contains("name"));
+      REQUIRE(tool.contains("description"));
+      REQUIRE(tool.contains("inputSchema"));
+      names.push_back(tool["name"].get<std::string>());
+   }
+   std::sort(names.begin(), names.end());
+   CHECK((names == std::vector<std::string>{"sdl_capture", "sdl_info", "sdl_input",
+                                            "sdl_terminate", "wait_session"}));
+}
+
+/* A --targets source contributes its app_spawn_* tool to the same dump. */
+TEST_CASE("--dump-tools includes app sources") {
+   TempDir directory;
+   const std::string path = directory.path + "/targets.json";
+   writeFile(path, "{\"demo\":[\"" + g_fakeApp + "\"]}");
+
+   TestProcess process;
+   process.start(g_handler, {"--dump-tools", "--targets=" + path});
+
+   const std::string output = readAllFd(process.fromChild, kLineTimeoutMs);
+   CHECK(process.waitForExit(kLineTimeoutMs));
+
+   const nlohmann::json catalog = nlohmann::json::parse(output, nullptr, false);
+   REQUIRE(catalog.is_array());
+   bool sawSpawn = false;
+   for (const nlohmann::json& tool : catalog) {
+      if (tool.value("name", std::string()) == "app_spawn_demo") {
+         sawSpawn = true;
+      }
+   }
+   CHECK(sawSpawn);
 }
 
 TEST_CASE("png and base64 round-trip") {

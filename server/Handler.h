@@ -110,6 +110,8 @@ class Handler : public AppPeerHandler {
    bool loadSources(std::string& error);
    /* Prints the argv app_spawn_<alias> would run and starts nothing. */
    int printDryRun();
+   /* Prints the catalog tools/list would advertise and starts nothing. */
+   int printToolCatalog();
 
    bool startClient(std::string& error);
    bool startListener(std::string& error);

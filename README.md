@@ -1268,6 +1268,35 @@ with each target's full path. It is a function, not a target, so an application
 that is not built is simply absent. Catalyst registers its `catalyst` target,
 which is why the file above names it.
 
+`sdl3mcp_web(<alias> <target>)` is the web half and mirrors it: registration
+records the page root and, at the end of the top-level configure, writes
+`${CMAKE_BINARY_DIR}/sdl3mcp-web.json`, mapping each alias to its target's
+output directory — the root `--web` serves. The two functions share one alias
+namespace, so an alias is taken once: the grammar is `[a-z0-9_]+`, the
+`app_spawn_` prefix stays reserved, and a second registration fails naming the
+alias and the target that already owns it. A web registration also fails at
+configure time when the build is not Emscripten, when the target does not exist,
+and when the target does not emit an `.html` artifact, because only a browser
+page has a root to serve.
+
+The page target is the Emscripten shape: an executable whose artifact is the
+page, which is what `SUFFIX ".html"` makes it.
+
+```cmake
+set_target_properties(catalyst PROPERTIES SUFFIX ".html")
+sdl3mcp_web(catalyst catalyst)
+```
+
+The Handler then serves the generated file, and every registered alias gets the
+same `app_spawn_<alias>` tools a `--targets` entry does:
+
+```sh
+./build/sdl3mcp --web=build/sdl3mcp-web.json
+```
+
+A page registered this way is launched with the page server, the `websocat`
+bridge and the throwaway Firefox profile described in §Spawning.
+
 ## The browser
 
 A page has no descriptors, no threads, and no command line. The library's
@@ -1331,6 +1360,10 @@ browser arm (`src/WebSocketStream.cpp`) replaces the native socket:
 - `targets_check`, which configures a parent project and asserts the three public
   target names plus the documented build graph (static library, no published
   SDL, COMMON with sources);
+- `web_registration_check`, which configures a tiny project once per case and
+  asserts that `sdl3mcp_web` writes the page root, and that a desktop configure,
+  a bad alias, a reserved alias, a duplicate alias and a target without an
+  `.html` artifact each fail naming the alias or target;
 - `readme_check`, which compiles the README's two complete C examples, parses
   every JSON block, compares the documented tool schemas with the Handler's
   `--dump-tools` catalog, checks the framing prose, the `sdl_input` text and the

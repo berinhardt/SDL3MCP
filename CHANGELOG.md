@@ -8,6 +8,14 @@ All notable changes to SDL3MCP. The format follows Keep a Changelog; versions ar
 The standards alignment is user-visible breaking: the include spelling, the
 linkage, SDL ownership and the nlohmann/json resolution all change.
 
+### Added
+
+- **`sdl3mcp_web(<alias> <target>)`** registers an Emscripten page as a `--web`
+  app source and writes `${CMAKE_BINARY_DIR}/sdl3mcp-web.json` with each page's
+  root, so the Handler's web file comes from the build. It shares
+  `sdl3mcp_app`'s alias namespace and rules, and a non-Emscripten configure or a
+  target without an `.html` artifact is a configure error.
+
 ### Changed
 
 - **The public header is `<SDL3MCP.h>`.** It sits at the include root beside the

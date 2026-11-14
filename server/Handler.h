@@ -19,11 +19,14 @@
 
 #pragma once
 
+#include <sys/types.h>
+
 #include <chrono>
 #include <cstdint>
 #include <map>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -32,6 +35,7 @@
 #include "Cli.h"
 #include "Listener.h"
 #include "Session.h"
+#include "Targets.h"
 #include "Tool.h"
 #include "ToolCatalog.h"
 
@@ -73,10 +77,30 @@ class Handler : public AppPeerHandler {
       std::int64_t timeoutMs = 0;
    };
 
+   /*
+     One app_spawn_<alias> waiting for its application to connect and handshake.
+     The exec channel is close-on-exec, so EOF is the success signal and any
+     bytes are the reason the child could not exec.
+   */
+   struct PendingSpawn {
+      std::string alias;
+      pid_t pid = -1;
+      int errorFd = -1;
+      std::string execError;
+      ToolCompletionDelegate* completion = nullptr;
+      std::chrono::steady_clock::time_point deadline;
+      std::int64_t timeoutMs = 0;
+   };
+
    void buildBaseTools();
    void rebuildCatalog();
    std::vector<nlohmann::json> mergedTools() const;
    void publishToolsIfChanged(bool notify);
+
+   /* Loads --targets sources; a failure is fatal before anything is created. */
+   bool loadTargets(std::string& error);
+   /* Prints the argv app_spawn_<alias> would run and starts nothing. */
+   int printDryRun();
 
    bool startClient(std::string& error);
    bool startListener(std::string& error);
@@ -85,7 +109,20 @@ class Handler : public AppPeerHandler {
 
    void handleWaitSession(const ToolOrder& order,
                           ToolCompletionDelegate& completion);
+   void handleSpawn(const ToolOrder& order,
+                    ToolCompletionDelegate& completion,
+                    const SpawnTarget& target);
    void handleForward(const ToolOrder& order, ToolCompletionDelegate& completion);
+
+   bool startTarget(const SpawnTarget& target,
+                    std::string_view endpoint,
+                    std::int64_t timeoutMs,
+                    ToolCompletionDelegate& completion,
+                    std::string& error);
+   void serviceSpawnExec();
+   void expireSpawn(std::chrono::steady_clock::time_point now);
+   void completeSpawn(std::string text, bool isError);
+   void cancelSpawn();
 
    void completeWaiters(const std::string& text);
    void expireWaiters(std::chrono::steady_clock::time_point now);
@@ -105,6 +142,7 @@ class Handler : public AppPeerHandler {
    HandlerOptions options_;
    ToolCatalog catalog_;
    std::vector<Tool> baseTools_;
+   SpawnTargets targets_;
 
    std::unique_ptr<Session> clientSession_;
    int clientFd_ = -1;
@@ -118,6 +156,7 @@ class Handler : public AppPeerHandler {
 
    std::vector<PendingWait> waiters_;
    std::map<std::uint64_t, PendingForward> forwards_;
+   std::optional<PendingSpawn> pendingSpawn_;
    nlohmann::json publishedTools_;
 
    int signalFd_ = -1;

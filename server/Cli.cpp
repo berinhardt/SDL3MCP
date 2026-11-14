@@ -15,6 +15,10 @@ constexpr std::string_view kListenOption = "--listen";
 constexpr std::string_view kListenPrefix = "--listen=";
 constexpr std::string_view kConnectOption = "--connect";
 constexpr std::string_view kConnectPrefix = "--connect=";
+constexpr std::string_view kTargetsOption = "--targets";
+constexpr std::string_view kTargetsPrefix = "--targets=";
+constexpr std::string_view kDryRunOption = "--dry-run";
+constexpr std::string_view kDryRunPrefix = "--dry-run=";
 constexpr std::string_view kTimeoutOption = "--timeout-ms";
 constexpr std::string_view kTimeoutPrefix = "--timeout-ms=";
 constexpr std::string_view kHelpOption = "--help";
@@ -117,6 +121,44 @@ HandlerCliResult parseHandlerCommandLine(
          continue;
       }
 
+      if (argument == kTargetsOption) {
+         result.error = "--targets requires a path written as --targets=PATH";
+         return result;
+      }
+      if (argument.rfind(kTargetsPrefix, 0) == 0) {
+         const std::string_view value(argument.data() + kTargetsPrefix.size(),
+                                      argument.size() - kTargetsPrefix.size());
+         if (value.empty()) {
+            result.error = "--targets requires a non-empty path";
+            return result;
+         }
+         result.options.targetsPaths.emplace_back(value);
+         index += 1;
+         continue;
+      }
+
+      if (argument == kDryRunOption) {
+         result.error =
+             "--dry-run requires an alias written as --dry-run=ALIAS";
+         return result;
+      }
+      if (argument.rfind(kDryRunPrefix, 0) == 0) {
+         if (result.options.hasDryRun) {
+            result.error = "--dry-run may be given only once";
+            return result;
+         }
+         const std::string_view value(argument.data() + kDryRunPrefix.size(),
+                                      argument.size() - kDryRunPrefix.size());
+         if (value.empty()) {
+            result.error = "--dry-run requires a non-empty alias";
+            return result;
+         }
+         result.options.dryRunAlias.assign(value.data(), value.size());
+         result.options.hasDryRun = true;
+         index += 1;
+         continue;
+      }
+
       if (argument == kTimeoutOption) {
          if (timeoutGiven) {
             result.error = "--timeout-ms may be given only once";
@@ -161,9 +203,21 @@ HandlerCliResult parseHandlerCommandLine(
       return result;
    }
 
-   if (!result.options.hasListen) {
-      result.error = "missing --listen=HOST:PORT";
+   if (result.options.hasDryRun && !result.options.hasAppSource()) {
+      result.error = "--dry-run requires an app source (--targets=PATH)";
       return result;
+   }
+
+   if (!result.options.hasListen) {
+      if (!result.options.hasAppSource()) {
+         result.error =
+             "missing --listen=HOST:PORT (or an app source: --targets=PATH)";
+         return result;
+      }
+      /* An app source needs somewhere for the spawned app to dial back. */
+      result.options.listenHost = "127.0.0.1";
+      result.options.listenPort = 0;
+      result.options.hasListen = true;
    }
 
    result.ok = true;
@@ -171,12 +225,17 @@ HandlerCliResult parseHandlerCommandLine(
 }
 
 std::string handlerUsageText() {
-   return "usage: sdl3mcp --listen=HOST:PORT [--connect=HOST:PORT] "
-          "[--timeout-ms=N]\n"
+   return "usage: sdl3mcp [--listen=HOST:PORT] [--connect=HOST:PORT] "
+          "[--targets=PATH ...] [--timeout-ms=N] [--dry-run=ALIAS]\n"
           "  --listen=HOST:PORT   accept one application connection at HOST:PORT\n"
+          "                       (default 127.0.0.1:0 when an app source is given)\n"
           "  --connect=HOST:PORT  dial an upstream MCP client (a Relay)\n"
-          "  --timeout-ms=N       forward/attach budget in ms (1..60000, default "
-          "10000)\n"
+          "  --targets=PATH       an alias-to-argv app source; a JSON file or a\n"
+          "                       directory of *.json files (repeatable)\n"
+          "  --timeout-ms=N       forward/attach/spawn budget in ms (1..60000,\n"
+          "                       default 10000)\n"
+          "  --dry-run=ALIAS      print the argv app_spawn_<alias> would run and\n"
+          "                       start nothing\n"
           "  --help               print this help and exit\n"
           "  --version            print the Handler version and exit";
 }

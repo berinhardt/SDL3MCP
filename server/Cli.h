@@ -5,12 +5,15 @@
 
     --listen=HOST:PORT                 the downstream application listener
     --connect=HOST:PORT                dial an upstream MCP client (a Relay)
-    --timeout-ms=N                     forward/attach budget, default 10000
+    --targets=PATH                     an alias-to-argv app source (repeatable)
+    --timeout-ms=N                     forward/attach/spawn budget, default 10000
+    --dry-run=ALIAS                    print what app_spawn_<alias> would run
 
   Without --connect the client-facing face is stdio (a Server); with it the
   Handler dials the endpoint and is the MCP server on that TCP connection (a
-  Relay). Every Handler needs a downstream source; until --targets/--web land,
-  --listen is the only one and is therefore required.
+  Relay). Every Handler needs a downstream source: --listen, --targets, or (from
+  ticket 09) --web. When an app source is present --listen defaults to
+  127.0.0.1:0; otherwise it is required.
 
   Splitting the parse from argv keeps the grammar testable without a process.
 */
@@ -39,8 +42,21 @@ struct HandlerOptions {
    /* The default forward budget; a call's timeout_ms overrides it. */
    int timeoutMs = kDefaultHandlerTimeoutMs;
 
+   /* Every --targets source, in command-line order. */
+   std::vector<std::string> targetsPaths;
+
+   /* --dry-run=ALIAS prints what app_spawn_<alias> would run and starts nothing. */
+   bool hasDryRun = false;
+   std::string dryRunAlias;
+
    /* A Relay dials an upstream; a Server speaks stdio to its client. */
    bool relay() const noexcept { return hasConnect; }
+
+   /*
+     True when a --targets or (later) --web source contributes app_spawn_*
+     tools. --listen is then optional and defaults to loopback:0.
+   */
+   bool hasAppSource() const noexcept { return !targetsPaths.empty(); }
 };
 
 struct HandlerCliResult {

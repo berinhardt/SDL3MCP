@@ -137,8 +137,23 @@ if(NOT EMSCRIPTEN)
         doctest::doctest
         Threads::Threads
     )
+
+    # The fake target a --targets entry spawns: it dials the appended
+    # --mcp=HOST:PORT and speaks the library's wire protocol, so the spawn path
+    # is exercised end to end without SDL.
+    add_executable(sdl3mcp_handler_fake_app handler_fake_app.cpp)
+    target_compile_features(sdl3mcp_handler_fake_app PRIVATE cxx_std_20)
+    target_include_directories(sdl3mcp_handler_fake_app PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+    )
+    target_link_libraries(sdl3mcp_handler_fake_app PRIVATE
+        sdl3mcp_common_objects
+        nlohmann_json::nlohmann_json
+    )
+
     add_test(NAME handler_tests
-             COMMAND sdl3mcp_test_handler $<TARGET_FILE:sdl3mcp_handler>)
+             COMMAND sdl3mcp_test_handler $<TARGET_FILE:sdl3mcp_handler>
+                     $<TARGET_FILE:sdl3mcp_handler_fake_app>)
 endif()
 
 sdl3mcp_add_test(configuration_tests configuration_tests.cpp)

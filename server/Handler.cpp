@@ -1,8 +1,11 @@
 #include "Handler.h"
 
+#include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
+#include <sys/resource.h>
 #include <sys/signalfd.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -37,6 +40,64 @@ constexpr std::int64_t kMaxTimeoutMs = 60000;
   when it has nothing to send, and the Handler only bounds the wait.
 */
 constexpr std::int64_t kForwardGraceMs = 500;
+
+constexpr std::string_view kSpawnSchema = R"({
+  "type": "object",
+  "properties": {
+    "timeout_ms": { "type": "integer", "minimum": 1, "maximum": 60000 }
+  },
+  "additionalProperties": false
+})";
+
+constexpr std::string_view kSpawnAnnotations = R"({
+  "readOnlyHint": false,
+  "idempotentHint": false,
+  "openWorldHint": true
+})";
+
+std::string spawnDescription(std::string_view alias) {
+   return "Start the application configured for the alias " + std::string(alias) +
+          " and wait for it to connect and complete the MCP handshake. The "
+          "application is started with --mcp=<the Handler's listener endpoint> "
+          "appended to its configured argv. One application at a time: a call "
+          "while one is attached or starting fails. Arguments: optional timeout_ms "
+          "(1-60000, default the Handler's --timeout-ms). Returns "
+          "`spawned <alias> (pid N)`; a timeout or exec failure names the reason "
+          "and the pid, and the process is not stopped (spawn-and-forget). "
+          "Example: {\"timeout_ms\":5000}";
+}
+
+/*
+  A spawned app is not the Handler's to reap: SA_NOCLDWAIT makes the kernel
+  release the child as soon as it exits, and the Handler tracks the session
+  rather than the process.
+*/
+void installChildReaping() {
+   struct sigaction action{};
+   action.sa_handler = SIG_DFL;
+   sigemptyset(&action.sa_mask);
+   action.sa_flags = SA_NOCLDWAIT;
+   (void)::sigaction(SIGCHLD, &action, nullptr);
+}
+
+/*
+  Keeps the child from inheriting the Handler's client stream, upstream socket,
+  or listener. close_range is one syscall, so it is safe between fork and exec;
+  the rlimit loop is the fallback for a kernel that does not have it.
+*/
+void closeDescriptorsAbove(int lowest) {
+   if (::close_range(static_cast<unsigned int>(lowest), ~0U, 0) == 0) {
+      return;
+   }
+
+   struct rlimit limit{};
+   if (::getrlimit(RLIMIT_NOFILE, &limit) != 0) {
+      return;
+   }
+   for (rlim_t fd = static_cast<rlim_t>(lowest); fd < limit.rlim_cur; ++fd) {
+      ::close(static_cast<int>(fd));
+   }
+}
 
 constexpr std::string_view kWaitDescription =
     "Wait for an application to connect to the listener. Arguments: optional "
@@ -104,6 +165,36 @@ std::string endpointText(std::string_view host, std::uint16_t port) {
 
 nlohmann::json parseDefinition(std::string_view text) {
    return nlohmann::json::parse(text.begin(), text.end());
+}
+
+/*
+  Prints one argv the way a shell would read it. A word made only of characters
+  a shell leaves alone is printed bare; anything else is single-quoted, with an
+  embedded quote written as '\'' so the line stays unambiguous.
+*/
+std::string shellQuote(std::string_view argument) {
+   const auto isSafe = [](char character) {
+      return (character >= 'a' && character <= 'z') ||
+             (character >= 'A' && character <= 'Z') ||
+             (character >= '0' && character <= '9') || character == '_' ||
+             character == '-' || character == '.' || character == '/' ||
+             character == ':' || character == '=';
+   };
+   if (!argument.empty() &&
+       std::all_of(argument.begin(), argument.end(), isSafe)) {
+      return std::string(argument);
+   }
+
+   std::string quoted = "'";
+   for (const char character : argument) {
+      if (character == '\'') {
+         quoted += "'\\''";
+      } else {
+         quoted += character;
+      }
+   }
+   quoted += "'";
+   return quoted;
 }
 
 /* Reads a JSON integer, including unsigned values that still fit in int64_t. */
@@ -189,11 +280,21 @@ int Handler::run() {
      failure as a value instead, so the default termination is never useful.
    */
    ::signal(SIGPIPE, SIG_IGN);
+   installChildReaping();
+
+   std::string error;
+   if (!loadTargets(error)) {
+      std::fprintf(stderr, "sdl3mcp: %s\n", error.c_str());
+      std::fflush(stderr);
+      return 2;
+   }
+   if (options_.hasDryRun) {
+      return printDryRun();
+   }
 
    buildBaseTools();
    rebuildCatalog();
 
-   std::string error;
    if (!startClient(error)) {
       std::fprintf(stderr, "sdl3mcp: %s\n", error.c_str());
       std::fflush(stderr);
@@ -219,7 +320,7 @@ int Handler::run() {
    }
 
    while (running_) {
-      std::array<pollfd, 4> descriptors{};
+      std::array<pollfd, 5> descriptors{};
       descriptors[0].fd = clientFd_;
       descriptors[0].events = POLLIN;
       if (clientSession_ && clientSession_->stream().wantsWrite()) {
@@ -234,6 +335,9 @@ int Handler::run() {
       }
       descriptors[3].fd = signalFd_;
       descriptors[3].events = POLLIN;
+      descriptors[4].fd =
+          pendingSpawn_.has_value() ? pendingSpawn_->errorFd : -1;
+      descriptors[4].events = POLLIN;
 
       const auto beforePoll = Clock::now();
       const int ready = ::poll(descriptors.data(), descriptors.size(),
@@ -275,9 +379,16 @@ int Handler::run() {
          appPeer_->pump();
       }
 
+      if (pendingSpawn_.has_value() &&
+          (descriptors[4].revents &
+           (POLLIN | POLLHUP | POLLERR | POLLNVAL)) != 0) {
+         serviceSpawnExec();
+      }
+
       if (running_) {
          expireWaiters(now);
          expireForwards(now);
+         expireSpawn(now);
          if (appPeer_ != nullptr && !appPeer_->isReady() &&
              !appPeer_->isClosed() && now >= appPeer_->handshakeDeadline()) {
             detachApp("the application did not complete the MCP handshake in time");
@@ -294,10 +405,53 @@ int Handler::run() {
          /* The client went away; its completions are already cancelled. */
          waiters_.clear();
          forwards_.clear();
+         cancelSpawn();
       }
    }
 
    shutdown();
+   return 0;
+}
+
+bool Handler::loadTargets(std::string& error) {
+   targets_.clear();
+   error.clear();
+   if (options_.targetsPaths.empty()) {
+      return true;
+   }
+   return loadSpawnTargets(options_.targetsPaths, targets_, error);
+}
+
+int Handler::printDryRun() {
+   const SpawnTarget* target = nullptr;
+   for (const SpawnTarget& candidate : targets_) {
+      if (candidate.alias == options_.dryRunAlias) {
+         target = &candidate;
+         break;
+      }
+   }
+   if (target == nullptr) {
+      std::fprintf(stderr, "sdl3mcp: --dry-run: unknown alias \"%s\"\n",
+                   options_.dryRunAlias.c_str());
+      std::fflush(stderr);
+      return 2;
+   }
+
+   /*
+     A dry run binds nothing, so a port still at zero is the endpoint the spawn
+     would have been told about: print the placeholder rather than a guess.
+   */
+   const std::string endpoint =
+       options_.listenPort == 0
+           ? std::string("HOST:PORT")
+           : endpointText(options_.listenHost, options_.listenPort);
+
+   std::string line = "command:";
+   for (const std::string& argument : targetCommand(*target, endpoint)) {
+      line += " " + shellQuote(argument);
+   }
+   std::printf("%s\n", line.c_str());
+   std::fflush(stdout);
    return 0;
 }
 
@@ -328,6 +482,17 @@ void Handler::buildBaseTools() {
           handlerDefinition.inputSchema, handlerDefinition.annotations,
           [this](ToolOrder order, ToolCompletionDelegate& completion) {
              handleForward(order, completion);
+          }});
+   }
+
+   /* Each app source contributes one spawn tool, whether or not an app is up. */
+   for (const SpawnTarget& target : targets_) {
+      const SpawnTarget spawnTarget = target;
+      baseTools_.push_back(Tool{
+          "app_spawn_" + target.alias, spawnDescription(target.alias),
+          parseDefinition(kSpawnSchema), parseDefinition(kSpawnAnnotations),
+          [this, spawnTarget](ToolOrder order, ToolCompletionDelegate& completion) {
+             handleSpawn(order, completion, spawnTarget);
           }});
    }
 }
@@ -538,6 +703,217 @@ void Handler::handleWaitSession(const ToolOrder& order,
    });
 }
 
+void Handler::handleSpawn(const ToolOrder& order,
+                          ToolCompletionDelegate& completion,
+                          const SpawnTarget& target) {
+   if (appPeer_ != nullptr || appReady_ || pendingSpawn_.has_value()) {
+      completion.complete(ToolResult::text(
+          "an application is already attached; one spawn at a time", true));
+      return;
+   }
+
+   std::int64_t timeoutMs = options_.timeoutMs;
+   if (order.arguments.contains("timeout_ms")) {
+      std::int64_t requested = 0;
+      if (!readInteger(order.arguments, "timeout_ms", requested) || requested < 1 ||
+          requested > kMaxTimeoutMs) {
+         completion.complete(ToolResult::text(
+             "app_spawn_" + target.alias + " timeout_ms must be in 1..60000", true));
+         return;
+      }
+      timeoutMs = requested;
+   }
+
+   /*
+     The listener is bound before the loop accepts tool calls, so its endpoint is
+     the one the app is told to dial. A bound port is never zero here.
+   */
+   const std::string endpoint =
+       endpointText(options_.listenHost, listener_.boundPort());
+
+   std::string error;
+   if (!startTarget(target, endpoint, timeoutMs, completion, error)) {
+      completion.complete(
+          ToolResult::text("app_spawn_" + target.alias + ": " + error, true));
+   }
+}
+
+bool Handler::startTarget(const SpawnTarget& target,
+                          std::string_view endpoint,
+                          std::int64_t timeoutMs,
+                          ToolCompletionDelegate& completion,
+                          std::string& error) {
+   error.clear();
+
+   std::vector<std::string> command = targetCommand(target, endpoint);
+   std::vector<char*> argv;
+   argv.reserve(command.size() + 1);
+   for (std::string& argument : command) {
+      argv.push_back(const_cast<char*>(argument.c_str()));
+   }
+   argv.push_back(nullptr);
+
+   int execPipe[2] = {-1, -1};
+   if (::pipe(execPipe) != 0) {
+      error = std::string("cannot create the exec channel: ") + std::strerror(errno);
+      return false;
+   }
+   for (const int fd : execPipe) {
+      const int flags = ::fcntl(fd, F_GETFD);
+      if (flags < 0 || ::fcntl(fd, F_SETFD, flags | FD_CLOEXEC) < 0) {
+         error =
+             std::string("cannot make the exec channel close-on-exec: ") +
+             std::strerror(errno);
+         ::close(execPipe[0]);
+         ::close(execPipe[1]);
+         return false;
+      }
+   }
+   const int readFlags = ::fcntl(execPipe[0], F_GETFL);
+   if (readFlags >= 0) {
+      (void)::fcntl(execPipe[0], F_SETFL, readFlags | O_NONBLOCK);
+   }
+
+   const std::string execFailure = "cannot execute " + command.front();
+
+   const pid_t pid = ::fork();
+   if (pid < 0) {
+      error = std::string("cannot fork the application: ") + std::strerror(errno);
+      ::close(execPipe[0]);
+      ::close(execPipe[1]);
+      return false;
+   }
+
+   if (pid == 0) {
+      /* Child: only async-signal-safe calls from here to execvp. */
+      sigset_t empty;
+      sigemptyset(&empty);
+      ::sigprocmask(SIG_SETMASK, &empty, nullptr);
+
+      /* SA_NOCLDWAIT is the Handler's policy for its own children, not the app's. */
+      struct sigaction action{};
+      action.sa_handler = SIG_DFL;
+      sigemptyset(&action.sa_mask);
+      ::sigaction(SIGCHLD, &action, nullptr);
+      /* The Handler ignores SIGPIPE for its own streams; an app gets the default. */
+      ::sigaction(SIGPIPE, &action, nullptr);
+
+      /* The app's stdout must not reach the Handler's MCP stream. */
+      const int devNull = ::open("/dev/null", O_RDONLY);
+      if (devNull >= 0) {
+         ::dup2(devNull, STDIN_FILENO);
+         if (devNull != STDIN_FILENO) {
+            ::close(devNull);
+         }
+      }
+      ::dup2(STDERR_FILENO, STDOUT_FILENO);
+
+      /* Keep the exec channel on fd 3; everything else above 2 is not the app's. */
+      ::dup2(execPipe[1], 3);
+      (void)::fcntl(3, F_SETFD, 0);
+      closeDescriptorsAbove(4);
+
+      ::execvp(argv[0], argv.data());
+
+      const ssize_t ignored =
+          ::write(3, execFailure.data(), execFailure.size());
+      (void)ignored;
+      ::_exit(127);
+   }
+
+   ::close(execPipe[1]);
+
+   PendingSpawn pending;
+   pending.alias = target.alias;
+   pending.pid = pid;
+   pending.errorFd = execPipe[0];
+   pending.completion = &completion;
+   pending.deadline = Clock::now() + std::chrono::milliseconds(timeoutMs);
+   pending.timeoutMs = timeoutMs;
+   pendingSpawn_ = std::move(pending);
+   return true;
+}
+
+/*
+  The exec channel is close-on-exec: EOF means execvp succeeded and the process
+  is running, while any bytes are the reason it could not exec. A failed exec is
+  the only spawn outcome visible without waiting for the child, which
+  spawn-and-forget forbids.
+*/
+void Handler::serviceSpawnExec() {
+   if (!pendingSpawn_.has_value() || pendingSpawn_->errorFd < 0) {
+      return;
+   }
+
+   char buffer[512];
+   for (;;) {
+      const ssize_t count = ::read(pendingSpawn_->errorFd, buffer, sizeof buffer);
+      if (count > 0) {
+         pendingSpawn_->execError.append(buffer, static_cast<std::size_t>(count));
+         continue;
+      }
+      if (count == 0) {
+         /* EOF with no message: exec succeeded, so wait for the handshake. */
+         ::close(pendingSpawn_->errorFd);
+         pendingSpawn_->errorFd = -1;
+         if (!pendingSpawn_->execError.empty()) {
+            completeSpawn("app_spawn_" + pendingSpawn_->alias +
+                              " failed: " + pendingSpawn_->execError +
+                              " (pid " + std::to_string(pendingSpawn_->pid) + ")",
+                          true);
+         }
+         return;
+      }
+      if (errno == EINTR) {
+         continue;
+      }
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+         return;
+      }
+
+      /* A read failure is not an exec failure; let the handshake deadline decide. */
+      ::close(pendingSpawn_->errorFd);
+      pendingSpawn_->errorFd = -1;
+      return;
+   }
+}
+
+void Handler::expireSpawn(Clock::time_point now) {
+   if (!pendingSpawn_.has_value() || now < pendingSpawn_->deadline) {
+      return;
+   }
+
+   const std::string text =
+       "app_spawn_" + pendingSpawn_->alias + " timed out after " +
+       std::to_string(pendingSpawn_->timeoutMs) +
+       " ms waiting for the application to connect; process pid " +
+       std::to_string(pendingSpawn_->pid) + " may still be running";
+   completeSpawn(text, true);
+}
+
+void Handler::completeSpawn(std::string text, bool isError) {
+   if (!pendingSpawn_.has_value()) {
+      return;
+   }
+
+   PendingSpawn pending = std::move(*pendingSpawn_);
+   pendingSpawn_.reset();
+   if (pending.errorFd >= 0) {
+      ::close(pending.errorFd);
+   }
+   pending.completion->complete(ToolResult::text(std::move(text), isError));
+}
+
+void Handler::cancelSpawn() {
+   if (!pendingSpawn_.has_value()) {
+      return;
+   }
+   if (pendingSpawn_->errorFd >= 0) {
+      ::close(pendingSpawn_->errorFd);
+   }
+   pendingSpawn_.reset();
+}
+
 void Handler::handleForward(const ToolOrder& order,
                             ToolCompletionDelegate& completion) {
    if (!appReady_ || appPeer_ == nullptr || appPeer_->isClosed()) {
@@ -698,6 +1074,9 @@ int Handler::nextPollTimeoutMs(Clock::time_point now) const {
    for (const auto& entry : forwards_) {
       consider(entry.second.deadline);
    }
+   if (pendingSpawn_.has_value()) {
+      consider(pendingSpawn_->deadline);
+   }
    if (appPeer_ != nullptr && !appPeer_->isReady() && !appPeer_->isClosed()) {
       consider(appPeer_->handshakeDeadline());
    }
@@ -717,6 +1096,8 @@ int Handler::nextPollTimeoutMs(Clock::time_point now) const {
 void Handler::shutdown() {
    waiters_.clear();
    forwards_.clear();
+   /* Spawn-and-forget: drop the bookkeeping, never the process. */
+   cancelSpawn();
 
    if (appPeer_ != nullptr) {
       std::unique_ptr<AppPeer> peer = std::move(appPeer_);
@@ -745,6 +1126,12 @@ void Handler::onAppAttached(std::vector<nlohmann::json> tools) {
    /* Attach is silent: a bare app is an identity, and a spawn changes no name. */
    publishToolsIfChanged(false);
    completeWaiters("an application session attached");
+
+   if (pendingSpawn_.has_value()) {
+      completeSpawn("spawned " + pendingSpawn_->alias + " (pid " +
+                        std::to_string(pendingSpawn_->pid) + ")",
+                    false);
+   }
 }
 
 void Handler::onAppToolsChanged(std::vector<nlohmann::json> tools) {

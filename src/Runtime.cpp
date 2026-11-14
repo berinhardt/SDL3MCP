@@ -9,8 +9,8 @@
 #include <vector>
 
 #include "Capture.h"
+#include "Input-Arguments.h"
 #include "Input.h"
-#include "InputJson.h"
 #include "Mouse.h"
 #include "SocketStream.h"
 #include "Tool.h"

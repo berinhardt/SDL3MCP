@@ -8,7 +8,8 @@
   SDL and no KeyMap on purpose: key names, chords, and layout resolution stay on
   the app thread, so this header and its implementation can be exercised without
   a window or a thread. It lives beside Input.h rather than inside it so the
-  input model itself stays free of the JSON dependency.
+  input model itself stays free of the JSON dependency, and the per-action
+  parsers sit in their own units behind it.
 
   The defaults mirror the published tool schema, and every property the schema
   does not name is rejected, so a client typo cannot silently fall back to a

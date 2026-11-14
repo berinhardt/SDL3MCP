@@ -12,7 +12,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
-#include "app_input.hpp"
+#include "AppInput.h"
 
 #include <SDL3/SDL.h>
 

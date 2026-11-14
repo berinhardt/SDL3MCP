@@ -1,7 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
-#include "input.hpp"
+#include "Input.h"
 
 #include <SDL3/SDL.h>
 

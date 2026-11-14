@@ -16,6 +16,24 @@ add_test(NAME header_c COMMAND sdl3mcp_test_header_c)
 
 find_package(Threads REQUIRED)
 
+# The 1.0 CamelCase tree is filled in beside the v0 build, so the v0 source
+# lists do not name these files yet. They compile here for their behavior
+# suites only: the same test sources run against both implementations until the
+# switch removes the v0 ones.
+add_library(sdl3mcp_ported_objects OBJECT
+    "${CMAKE_CURRENT_SOURCE_DIR}/../src/AppInput.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../src/Frame.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../src/Input.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../src/KeyMap.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../src/Mouse.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../src/Replay.cpp"
+)
+target_compile_features(sdl3mcp_ported_objects PRIVATE cxx_std_20)
+target_include_directories(sdl3mcp_ported_objects PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+)
+target_link_libraries(sdl3mcp_ported_objects PUBLIC SDL3::SDL3)
+
 # One doctest suite is one executable, so a failing case is reported by doctest
 # and the remaining cases still run, unlike a hand-rolled main that aborts at
 # the first assertion. The private src/ include and the object-library link let
@@ -125,6 +143,14 @@ sdl3mcp_add_test(session_tests session_tests.cpp
     LIBS nlohmann_json::nlohmann_json)
 
 sdl3mcp_add_test(frame_tests frame_tests.cpp)
+
+# The same suites against the ported sources: the v0 files are the oracle until
+# the switch, so both must pass and neither may drift.
+foreach(sdl3mcp_ported_family keymap input replay mouse app_input frame)
+    sdl3mcp_add_test(${sdl3mcp_ported_family}_ported_tests
+        ${sdl3mcp_ported_family}_tests.cpp
+        LIBRARY sdl3mcp_ported_objects)
+endforeach()
 
 sdl3mcp_add_test(info_tests info_tests.cpp
     LIBS nlohmann_json::nlohmann_json)

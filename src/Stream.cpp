@@ -93,6 +93,7 @@ void StreamBase::finish() {
    }
 
    finished_ = true;
+   wantsWrite_ = false;
    if (handler_ != nullptr) {
       handler_->onClose();
    }
@@ -104,6 +105,7 @@ void StreamBase::fail(std::string_view error) {
    }
 
    finished_ = true;
+   wantsWrite_ = false;
    line_.clear();
    payload_.clear();
    payloadExpected_ = 0;

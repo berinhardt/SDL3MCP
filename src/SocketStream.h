@@ -45,6 +45,17 @@ class SocketStream : public StreamBase {
                 std::uint32_t timeoutMs,
                 std::string& error);
 
+   /*
+     Takes ownership of a socket that is already connected (an accepted
+     connection). The fd is made non-blocking and the stream reports onOpen, so
+     the handler must be set before adopt(). On failure the fd is closed and
+     `error` says why.
+   */
+   bool adopt(int fd, std::string_view endpoint, std::string& error);
+
+   /* The native descriptor, for a poll loop; -1 when nothing is open. */
+   int fd() const noexcept;
+
    bool sendText(std::string_view text) override;
    bool sendBinary(const std::uint8_t* data, std::size_t size) override;
    void close() override;

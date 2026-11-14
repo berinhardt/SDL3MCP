@@ -53,6 +53,12 @@ ToolResult ToolResult::text(std::string text, bool isError) {
    return result;
 }
 
+ToolResult ToolResult::error(nlohmann::json errorObject) {
+   ToolResult result;
+   result.rpcError = std::move(errorObject);
+   return result;
+}
+
 ToolResult ToolResult::rawFrame(int width,
                                 int height,
                                 std::uint64_t frame,
@@ -74,6 +80,14 @@ ToolResult ToolResult::rawFrame(int width,
 }
 
 bool ToolResult::encode(Stream& stream, const nlohmann::json& id) const {
+   if (rpcError.is_object()) {
+      nlohmann::json response;
+      response["jsonrpc"] = "2.0";
+      response["id"] = id;
+      response["error"] = rpcError;
+      return stream.sendText(response.dump());
+   }
+
    if (payload.empty()) {
       return stream.sendText(
           makeResult(id,
@@ -113,6 +127,31 @@ bool ToolResult::decode(const nlohmann::json& result,
       return true;
    }
 
+   std::size_t byteLength = 0;
+   if (!decodeHeader(result, byteLength, error)) {
+      return false;
+   }
+   if (payload.size() != byteLength) {
+      error = "raw frame payload is " + std::to_string(payload.size()) +
+              " bytes, expected " + std::to_string(byteLength);
+      return false;
+   }
+
+   out = ToolResult{};
+   out.content = result;
+   out.payload = std::move(payload);
+   return true;
+}
+
+bool ToolResult::decodeHeader(const nlohmann::json& result,
+                              std::size_t& byteLength,
+                              std::string& error) {
+   error.clear();
+   if (!result.is_object()) {
+      error = "tool result must be a JSON object";
+      return false;
+   }
+
    const auto format = result.find("format");
    if (format == result.end()) {
       error = "tool result is neither content nor a raw frame header";
@@ -133,10 +172,10 @@ bool ToolResult::decode(const nlohmann::json& result,
       return false;
    }
 
-   const auto byteLength = result.find("byteLength");
+   const auto lengthEntry = result.find("byteLength");
    std::uint64_t lengthValue = 0;
-   if (byteLength == result.end() ||
-       !readNonNegative(*byteLength, lengthValue)) {
+   if (lengthEntry == result.end() ||
+       !readNonNegative(*lengthEntry, lengthValue)) {
       error = "raw frame byteLength must be a non-negative integer";
       return false;
    }
@@ -152,11 +191,6 @@ bool ToolResult::decode(const nlohmann::json& result,
               std::to_string(heightValue);
       return false;
    }
-   if (lengthValue != payload.size()) {
-      error = "raw frame payload is " + std::to_string(payload.size()) +
-              " bytes, expected " + std::to_string(lengthValue);
-      return false;
-   }
 
    const auto frame = result.find("frame");
    if (frame != result.end()) {
@@ -167,9 +201,11 @@ bool ToolResult::decode(const nlohmann::json& result,
       }
    }
 
-   out = ToolResult{};
-   out.content = result;
-   out.payload = std::move(payload);
+   if (lengthValue > std::numeric_limits<std::size_t>::max()) {
+      error = "raw frame byteLength does not fit in memory";
+      return false;
+   }
+   byteLength = static_cast<std::size_t>(lengthValue);
    return true;
 }
 

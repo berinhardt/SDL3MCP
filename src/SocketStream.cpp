@@ -17,6 +17,13 @@
 namespace sdl3mcp {
 namespace {
 
+/*
+  The most a peer's write buffer may hold. A frame answer can be large, but a
+  client that never reads must not grow the process without bound: past this the
+  stream fails and the session closes.
+*/
+constexpr std::size_t kMaxOutboundBytes = 128u * 1024u * 1024u;
+
 /* Prints IPv6 literals in brackets so the error text reads as an endpoint. */
 std::string endpointText(std::string_view host, std::uint16_t port) {
    std::string text;
@@ -168,12 +175,43 @@ bool SocketStream::connect(std::string_view host,
    return false;
 }
 
+bool SocketStream::adopt(int fd, std::string_view endpoint, std::string& error) {
+   error.clear();
+   close();
+   if (fd < 0) {
+      error = "cannot adopt an invalid socket";
+      return false;
+   }
+
+   int lastError = 0;
+   if (!setNonBlocking(fd, lastError)) {
+      ::close(fd);
+      error = "cannot adopt the connection: " + std::string(std::strerror(lastError));
+      return false;
+   }
+
+   native_->fd = fd;
+   native_->endpoint = std::string(endpoint);
+   native_->outbound.clear();
+   open();
+   return true;
+}
+
+int SocketStream::fd() const noexcept {
+   return native_->fd;
+}
+
 bool SocketStream::sendText(std::string_view text) {
    if (native_->fd < 0) {
       return false;
    }
    native_->outbound.append(text);
    native_->outbound.push_back('\n');
+   if (native_->outbound.size() > kMaxOutboundBytes) {
+      fail("outbound buffer exceeded " + std::to_string(kMaxOutboundBytes) +
+           " bytes");
+      return false;
+   }
    return flush();
 }
 
@@ -182,6 +220,11 @@ bool SocketStream::sendBinary(const std::uint8_t* data, std::size_t size) {
       return false;
    }
    native_->outbound.append(reinterpret_cast<const char*>(data), size);
+   if (native_->outbound.size() > kMaxOutboundBytes) {
+      fail("outbound buffer exceeded " + std::to_string(kMaxOutboundBytes) +
+           " bytes");
+      return false;
+   }
    return flush();
 }
 
@@ -193,6 +236,7 @@ void SocketStream::close() {
    ::close(native_->fd);
    native_->fd = -1;
    native_->outbound.clear();
+   setWantsWrite(false);
 }
 
 void SocketStream::pump() {
@@ -256,6 +300,7 @@ bool SocketStream::flush() {
    }
 
    native_->outbound.erase(0, offset);
+   setWantsWrite(!native_->outbound.empty());
    return true;
 }
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <nlohmann/json.hpp>
 #include <string>
@@ -22,11 +23,22 @@ struct ToolResult {
    nlohmann::json content;
    std::vector<uint8_t> payload;
    bool isError = false;
+   /*
+     A JSON-RPC error object relayed unchanged from a peer. When it is an
+     object, encode() writes `{"jsonrpc":"2.0","id":id,"error":...}` instead of a
+     result, which is how a Handler passes an application's protocol error on
+     without reinterpreting it.
+   */
+   nlohmann::json rpcError;
 
    bool isRawFrame() const noexcept { return !payload.empty(); }
+   bool isRpcError() const noexcept { return rpcError.is_object(); }
 
    /* A simple result whose content is one text block. */
    static ToolResult text(std::string text, bool isError = false);
+
+   /* A JSON-RPC error object to relay verbatim. */
+   static ToolResult error(nlohmann::json errorObject);
 
    /* A raw frame; byteLength is derived from the payload, never supplied. */
    static ToolResult rawFrame(int width,
@@ -41,6 +53,15 @@ struct ToolResult {
      the diagnostic.
    */
    bool encode(Stream& stream, const nlohmann::json& id) const;
+
+   /*
+     Validates a raw-frame header and returns the payload size it announces.
+     Called before the payload is read, so a mismatched or hostile byteLength is
+     rejected without allocating it. A content result is not a header.
+   */
+   static bool decodeHeader(const nlohmann::json& result,
+                            std::size_t& byteLength,
+                            std::string& error);
 
    /*
      Parses a result object received from a peer. For a raw frame the caller has

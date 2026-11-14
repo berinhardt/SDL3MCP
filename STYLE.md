@@ -68,7 +68,11 @@ reviewer make it. Cite the rule in review instead of arguing from taste.
   matching `.cpp` defines, and the two share a basename.
 - Platform arms of one type share a header and take the platform suffix:
   `SocketStream.cpp` is the native implementation and `WebSocketStream.cpp` is
-  the Emscripten one.
+  the Emscripten one. The Emscripten arm's header, `WebSocketStream.h`, carries
+  that arm's shared state under the shared `SocketStream` type —
+  `struct SocketStream::Native` and the close codes — and its basename is what
+  `IncludeIsMainRegex` needs: both `WebSocketStream.cpp` and
+  `WebSocketStream-Events.cpp` strip to it, so it leads their includes.
 - `include/` is the flat public surface and exposes the C API only; it never
   includes a private `src/` header. `SDL3MCP_types.h` includes neither SDL nor
   the entry points, so a unit can take the types without an SDL include path.
@@ -176,8 +180,11 @@ caller's convenience; it is not a collaborator and does not get a class.
 - The public targets are `SDL3MCP::SDL3MCP` (the static library),
   `SDL3MCP::SERVER` (the Handler), and `SDL3MCP::COMMON` (the SDL-free core
   both compile, as a real static library; `docs/architecture.md` §Layering owns
-  what belongs in it). The object libraries `sdl3mcp_common_objects`,
-  `sdl3mcp_app_objects`, and `sdl3mcp_server_objects` stay internal.
+  what belongs in it). `SDL3MCP::SDL3MCP` and the installed package exist when
+  the library half is built; a Handler-only build (`SDL3MCP_BUILD_LIBRARY=OFF`)
+  keeps `SDL3MCP::SERVER` and `SDL3MCP::COMMON`. The object libraries
+  `sdl3mcp_common_objects`, `sdl3mcp_app_objects`, and `sdl3mcp_server_objects`
+  stay internal.
 - The library is static only and publishes no SDL: no SDL target, include path,
   linkage macro or Emscripten flag travels with it, so the app names SDL itself.
   Tests link the common archive and the app object library for private symbols,

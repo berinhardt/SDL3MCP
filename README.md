@@ -62,6 +62,8 @@ how it is resolved.
 
 ## Build
 
+§Dependencies below is the contract for which piece needs which dependency.
+
 The direct flow:
 
 ```sh
@@ -109,9 +111,10 @@ free.
 | --- | --- | --- |
 | `SDL3MCP_BUILD_LIBRARY` | `ON` | Build the library and its SDL app half. `OFF` leaves the SDL-free common core, the Handler and the Handler tests, and needs no SDL package. |
 | `SDL3MCP_BUILD_TESTS` | `ON` when top-level | Convenience: sets the default of both test groups. Set a group explicitly to override it. |
-| `SDL3MCP_BUILD_HANDLER_TESTS` | follows `SDL3MCP_BUILD_TESTS` | Build the SDL-free suites, labelled `HANDLER_TESTS`: `handler_tests`, `web_tests`, `protocol_core_tests`, the configure-time checks and the no-SDL fixture. |
-| `SDL3MCP_BUILD_LIBRARY_TESTS` | follows `SDL3MCP_BUILD_TESTS`, and `OFF` when the library is off | Build every suite that links the library or the app half, labelled `LIBRARY_TESTS`, including the Emscripten Node suites. |
+| `SDL3MCP_BUILD_HANDLER_TESTS` | follows `SDL3MCP_BUILD_TESTS` | Build the SDL-free suites, labelled `HANDLER_TESTS`: `handler_tests`, `web_tests`, `protocol_core_tests`, the configure-time checks and, at the top level, the no-SDL fixture. |
+| `SDL3MCP_BUILD_LIBRARY_TESTS` | follows `SDL3MCP_BUILD_TESTS`, and `OFF` when the library is off | Build the suites that need SDL to configure, build or run — those that link the library or the app half, plus `targets_check` and `readme_check` — labelled `LIBRARY_TESTS`, including the Emscripten Node suites. |
 | `SDL3MCP_BUILD_CLI` | `OFF` | Build the `sdl3mcp` Handler. |
+| `SDL3MCP_HANDLER_ONLY_FIXTURE` | `ON` | Internal, test-only: register `handler_only_check`, the nested SDL-free configure/build/test. It is registered only when SDL3MCP is the top-level project (the standalone gate owns the invariant); an embedded parent never runs it, and the nested tree turns it off so the recursion stops. |
 
 `SDL3MCP_BUILD_LIBRARY_TESTS=ON` with `SDL3MCP_BUILD_LIBRARY=OFF` is a configure
 error: the library suites link a target that build does not create.
@@ -136,9 +139,12 @@ nlohmann/json and the Handler's own code, and nothing else.
 
 | Target | What it is |
 | --- | --- |
-| `SDL3MCP::SDL3MCP` | The library: the SDL-free protocol core plus the app half, as a static library. This is the only target the installed package exports. |
+| `SDL3MCP::SDL3MCP` | The library: the SDL-free protocol core plus the app half, as a static library. It and the installed package exist when the library half is built (`SDL3MCP_BUILD_LIBRARY=ON`, the default); it is the only target the package exports. |
 | `SDL3MCP::SERVER` | The `sdl3mcp` Handler executable. Defined exactly when `SDL3MCP_BUILD_CLI=ON` on a desktop configure; there is no Emscripten Handler. |
 | `SDL3MCP::COMMON` | The SDL-free core both compose as a static library: JSON-RPC, session, tools, stream, configuration, dial. |
+
+A Handler-only build (`SDL3MCP_BUILD_LIBRARY=OFF`) keeps `SDL3MCP::SERVER` and
+`SDL3MCP::COMMON`; it has no `SDL3MCP::SDL3MCP` target and installs no package.
 
 The object libraries behind them (`sdl3mcp_common_objects`,
 `sdl3mcp_app_objects`, `sdl3mcp_server_objects`) are internal. **The library is
@@ -1398,10 +1404,13 @@ browser arm (`src/WebSocketStream.cpp`) replaces the native socket:
 ## Tests
 
 `ctest --test-dir build --output-on-failure` runs both groups; `ctest -L
-HANDLER_TESTS` and `ctest -L LIBRARY_TESTS` select one. The split is by
-dependency, so the matrix in §Dependencies is also the test contract:
-`HANDLER_TESTS` needs no SDL, and `LIBRARY_TESTS` links the library (or the app
-object library) and therefore SDL.
+HANDLER_TESTS` and `ctest -L LIBRARY_TESTS` select one. The matrix in
+§Dependencies is the test contract, and the split follows it: a test is a
+`LIBRARY_TESTS` test when it needs SDL to configure, build or run, or when it
+tests the library package. Everything else is `HANDLER_TESTS`, which needs no
+SDL. `LIBRARY_TESTS` links the library (or the app object library), except
+`targets_check` and `readme_check`: they test the library package and need SDL
+at configure/build, but link no SDL themselves.
 
 `HANDLER_TESTS`, which a Handler-only configure runs with no SDL package:
 
@@ -1421,9 +1430,13 @@ object library) and therefore SDL.
 - `handler_only_check`, which configures, builds and tests a tree with
   `SDL3MCP_BUILD_LIBRARY=OFF` and `CMAKE_DISABLE_FIND_PACKAGE_SDL3=TRUE`, so the
   Handler half cannot drift back onto SDL. It forwards this configure's
-  generator and resolved dependencies, so it needs no network of its own.
+  generator and resolved dependencies, so it needs no network of its own. Only
+  the standalone gate registers it: an embedded parent defines doctest and
+  nlohmann/json as targets, sets neither directory the fixture forwards, and
+  must not grow a nested build or a network dependency.
 
-`LIBRARY_TESTS`, every suite that links the library or the app half:
+`LIBRARY_TESTS`, every suite that needs SDL to configure, build or run, or that
+tests the library package:
 
 - the public C and C++ headers;
 - the pure value halves: key map, input planning, replay, mouse normalization,

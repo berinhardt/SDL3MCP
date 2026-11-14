@@ -338,9 +338,6 @@ int Handler::run() {
       descriptors.reserve(8);
 
       descriptors.push_back(pollfd{clientFd_, POLLIN, 0});
-      if (clientSession_ && clientSession_->stream().wantsWrite()) {
-         descriptors[0].events |= POLLOUT;
-      }
       descriptors.push_back(pollfd{listener_.fd(), POLLIN, 0});
       descriptors.push_back(pollfd{appFd_, POLLIN, 0});
       if (appPeer_ && appPeer_->wantsWrite()) {
@@ -349,6 +346,25 @@ int Handler::run() {
       descriptors.push_back(pollfd{signalFd_, POLLIN, 0});
       descriptors.push_back(
           pollfd{pendingSpawn_.has_value() ? pendingSpawn_->errorFd : -1, POLLIN, 0});
+
+      /*
+        A stdio client reads stdin and writes stdout, so the pending-write
+        descriptor is not the one polled above; a socket client answers with the
+        same fd and is watched once. Without this entry a response larger than
+        the pipe buffer stalls after the first partial write.
+      */
+      std::size_t clientWriteIndex = 0;
+      if (clientSession_ != nullptr && clientSession_->stream().wantsWrite()) {
+         const int writeFd = clientSession_->stream().writeFd();
+         if (writeFd < 0) {
+            /* Nothing to watch; the stream reports the failure itself. */
+         } else if (writeFd == clientFd_) {
+            descriptors[0].events |= POLLOUT;
+         } else {
+            descriptors.push_back(pollfd{writeFd, POLLOUT, 0});
+            clientWriteIndex = descriptors.size() - 1;
+         }
+      }
 
       const std::size_t webBase = descriptors.size();
       if (webRun_) {
@@ -389,8 +405,11 @@ int Handler::run() {
       }
 
       if (running_ && clientSession_ != nullptr &&
-          (descriptors[0].revents &
-           (POLLIN | POLLOUT | POLLHUP | POLLERR | POLLNVAL)) != 0) {
+          ((descriptors[0].revents &
+            (POLLIN | POLLOUT | POLLHUP | POLLERR | POLLNVAL)) != 0 ||
+           (clientWriteIndex != 0 &&
+            (descriptors[clientWriteIndex].revents &
+             (POLLOUT | POLLHUP | POLLERR | POLLNVAL)) != 0))) {
          clientSession_->pump();
          if (!clientSession_->isOpen()) {
             running_ = false;

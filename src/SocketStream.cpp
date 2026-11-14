@@ -214,6 +214,11 @@ int SocketStream::fd() const noexcept {
    return native_->fd;
 }
 
+int SocketStream::writeFd() const noexcept {
+   /* One descriptor carries both directions. */
+   return native_->fd;
+}
+
 bool SocketStream::sendText(std::string_view text) {
    if (native_->fd < 0) {
       return false;

@@ -68,6 +68,13 @@ class Stream {
       not spin the loop.
    */
    virtual bool wantsWrite() const { return false; }
+   /*
+     The descriptor a poll loop watches for POLLOUT while `wantsWrite()` is
+     true. A duplex transport answers with the descriptor it also reads, so one
+     poll entry covers both directions; stdio reads stdin and writes stdout, so
+     the write end needs an entry of its own. -1 means there is none.
+   */
+   virtual int writeFd() const noexcept { return -1; }
 
    void setHandler(StreamHandler* handler) noexcept { handler_ = handler; }
    StreamHandler* handler() const noexcept { return handler_; }

@@ -858,7 +858,8 @@ struct FakeApp {
    void serveRawFrame(int width,
                       int height,
                       std::uint64_t frame,
-                      std::string text = {}) {
+                      std::string text = {},
+                      bool noise = false) {
       const nlohmann::json call = readCall();
       const std::size_t byteLength =
           static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4;
@@ -875,6 +876,16 @@ struct FakeApp {
       writeResponse(call["id"], header);
 
       std::vector<std::uint8_t> pixels(byteLength, 0x80);
+      if (noise) {
+         /* Incompressible pixels, so the PNG is larger than a pipe buffer. */
+         std::uint32_t state = 0x9e3779b9u;
+         for (std::uint8_t& pixel : pixels) {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            pixel = static_cast<std::uint8_t>(state);
+         }
+      }
       CHECK(channel.writeAll(pixels.data(), pixels.size()));
    }
 
@@ -2121,15 +2132,51 @@ TEST_CASE("an oversized frame is refused before it is read") {
                                                 });
    const nlohmann::json infoCall = app.readCall();
    app.writeResponse(infoCall["id"], nlohmann::json{
-                                        {"content", nlohmann::json::array({
-                                                        nlohmann::json{{"type", "text"},
-                                                                       {"text", "still attached"}},
-                                                    })},
-                                        {"isError", false},
-                                    });
+                                         {"content", nlohmann::json::array({
+                                                         nlohmann::json{{"type", "text"},
+                                                                        {"text", "still attached"}},
+                                                     })},
+                                         {"isError", false},
+                                     });
    const nlohmann::json after = client.readResponse(infoId, 3000);
    CHECK(after["result"]["isError"] == false);
    CHECK(resultText(after) == "still attached");
+
+   app.close();
+   process.closeStdin();
+   CHECK(process.waitForExit(kLineTimeoutMs));
+}
+
+TEST_CASE("a response larger than the pipe buffer reaches the client") {
+   TestProcess process;
+   std::uint16_t port = 0;
+   McpClient client;
+   startServer(process, port, client);
+   CHECK(!client.initialize().contains("error"));
+
+   FakeApp app;
+   attachFakeApp(app, port);
+   CHECK(client.callTool("wait_session", nlohmann::json{{"timeout_ms", 3000}})
+             ["result"]["isError"] == false);
+
+   /*
+     A stdio client reads stdin and writes stdout, so a response past the pipe
+     buffer is written in parts. The Handler must watch the write descriptor and
+     finish the line instead of stalling after the first partial write.
+   */
+   const int callId = client.send("tools/call", nlohmann::json{
+                                                    {"name", "sdl_capture"},
+                                                    {"arguments", nlohmann::json{
+                                                                      {"timeout_ms", 5000}}},
+                                                });
+   app.serveRawFrame(256, 256, 9, {}, true);
+
+   const nlohmann::json answer = client.readResponse(callId, 10000);
+   CHECK(answer["result"]["isError"] == false);
+   const nlohmann::json& content = answer["result"]["content"];
+   REQUIRE(content.size() == 2);
+   CHECK(content[1]["type"] == "image");
+   CHECK(content[1]["data"].get<std::string>().size() > 65536);
 
    app.close();
    process.closeStdin();
@@ -2173,12 +2220,12 @@ TEST_CASE("a malformed frame header is a tool error") {
                                                 });
    const nlohmann::json infoCall = app.readCall();
    app.writeResponse(infoCall["id"], nlohmann::json{
-                                        {"content", nlohmann::json::array({
-                                                        nlohmann::json{{"type", "text"},
-                                                                       {"text", "still attached"}},
-                                                    })},
-                                        {"isError", false},
-                                    });
+                                         {"content", nlohmann::json::array({
+                                                         nlohmann::json{{"type", "text"},
+                                                                        {"text", "still attached"}},
+                                                     })},
+                                         {"isError", false},
+                                     });
    const nlohmann::json after = client.readResponse(infoId, 3000);
    CHECK(after["result"]["isError"] == false);
    CHECK(resultText(after) == "still attached");

@@ -70,6 +70,9 @@ class SocketStream : public StreamBase {
    /* The native descriptor, for a poll loop; -1 when nothing is open. */
    int fd() const noexcept;
 
+   /* The same descriptor: a socket reads and writes on one fd. */
+   int writeFd() const noexcept override;
+
    bool sendText(std::string_view text) override;
    bool sendBinary(const std::uint8_t* data, std::size_t size) override;
    void close() override;

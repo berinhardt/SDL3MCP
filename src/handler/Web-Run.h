@@ -10,7 +10,7 @@
   pidfd fires, so a non-zero exit can be reported.
 
   This unit's definitions live in two translation units: Web-Run.cpp holds the
-  class's lifetime, poll and stop, and Web-Child.cpp holds the child launch —
+  class's lifetime, poll and stop, and Web-Run-Child.cpp holds the child launch —
   fork, exec, pidfd watching and the loopback readiness probe.
 */
 

@@ -30,7 +30,7 @@ src/Stream.h/.cpp                Stream + StreamBase (line/payload buffer)
 src/SocketStream.h/.cpp          native dial
 src/WebSocketStream.cpp          Emscripten dial (same header)
 src/WebSocketStream-Events.cpp   browser callbacks and byte queue
-src/WebSocketStream-Native.h     the browser arm's PIMPL state
+src/WebSocketStream.h            the browser arm's PIMPL state and close codes
 src/StdioStream.h/.cpp           Handler's client-facing stream
 src/Pipeline.h/.cpp              the app-thread input/capture pipeline
 src/Input.h                      action model, validation and chord interface
@@ -68,10 +68,10 @@ src/handler/Targets.h/.cpp       --targets sources
 src/handler/Web-Apps.h/.cpp      --web sources and the alias dictionary
 src/handler/Web-Plan.h           the web launch options and plan declarations
 src/handler/Web-Plan.cpp         preflight, browser, ports, plan composition
-src/handler/Web-Profile.cpp      profile seed, lock, sweep and removal
+src/handler/Web-Plan-Profile.cpp  profile seed, lock, sweep and removal
 src/handler/Web-Run.h            WebRun and its events
 src/handler/Web-Run.cpp          the run's lifetime, poll and stop
-src/handler/Web-Child.cpp        child launch, pidfd watch, readiness probe
+src/handler/Web-Run-Child.cpp    child launch, pidfd watch, readiness probe
 src/handler/Png.h/.cpp           PNG + base64 presentation
 src/handler/StbImageWrite.cpp    the one stb implementation unit
 tests/                           doctest suites, check_readme.py, consumers

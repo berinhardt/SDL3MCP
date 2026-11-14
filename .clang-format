@@ -7,10 +7,3 @@ PointerAlignment: Left
 ReferenceAlignment: Pointer
 UseCRLF: false
 IncludeIsMainRegex: '([-_][A-Za-z0-9]+)?$'
-# Blocks are preserved as written instead of regrouped into the style's
-# categories. A unit with no header of its own still leads with its class header
-# (Web-Child.cpp opens with Web-Run.h), and the main-header detection above
-# matches on the file name, so it cannot recognise that header for a unit whose
-# basename differs. Preserving the author's grouping is what lets the first
-# include stay first.
-IncludeBlocks: Preserve

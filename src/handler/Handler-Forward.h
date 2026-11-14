@@ -3,6 +3,11 @@
   application answers, the grace a call's timeout gets, the poll bound
   while a web stack starts, and the frame text a capture is summarised
   with.
+
+  Every declaration here has exactly one caller, this unit's .cpp, so the
+  helper-placement rule would keep them in that file; inlined they take
+  Handler-Forward.cpp past the 300-line hard limit and the cap wins
+  (STYLE.md §Helper placement).
 */
 
 #pragma once

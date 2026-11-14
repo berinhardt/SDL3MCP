@@ -90,10 +90,18 @@ caller's convenience; it is not a collaborator and does not get a class.
 - **One caller: the helper stays in the caller's unit.** Define it in that
   `.cpp`, in an anonymous namespace, and declare it in no header. Moving it out
   pre-emptively costs a header, an include and a name in the link, and the next
-  reader has to leave the file to understand the caller.
+  reader has to leave the file to understand the caller. **The size cap outranks
+  this rule.** When inlining a single-caller helper would push the unit past the
+  300-line hard limit, the helper may be declared in the unit's own matching
+  hyphenated header instead — `Handler-Forward.h` beside
+  `Handler-Forward.cpp` — because a limit the check enforces is not a preference
+  a reviewer may weigh. The header says in its comment that the cap chose the
+  split, so the next reader does not wait for a second caller that is not
+  coming.
 - **More than one caller: it clusters by function.** A private unit named for
-  what the helpers do holds them — `ToolArguments.h`/`.cpp` for the argument
-  readers (`readInteger`, `readTimeoutMs`). Never a generic support file:
+  what the helpers do holds them — `ToolArguments.h` for the argument readers
+  (`readInteger`, `readTimeoutMs`), inline in the header because a header-only
+  unit is enough while every helper stays inline. Never a generic support file:
   `Utils.h`, `Helpers.h` and `Common.h` say nothing about what belongs in them,
   so everything does, and the file grows into the largest unit in the tree with
   no owner to split it. A name for the function makes the boundary
@@ -106,7 +114,10 @@ caller's convenience; it is not a collaborator and does not get a class.
 - Run it on the files a change touches; do not reformat untouched code in the
   same change.
 - Keep include groups meaningful rather than hand-sorting them; the formatter
-  orders them within a group.
+  orders them within a group but keeps the blocks as written (`IncludeBlocks:
+  Preserve`). A preserved block is what lets a unit with no header of its own
+  lead with its class header (`Web-Run.h` in `Web-Child.cpp`): the formatter
+  recognises a main header only by a matching file name.
 
 ### Headers
 

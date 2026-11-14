@@ -4,7 +4,8 @@
       "sdl3mcp": {
         "type": "local",
         "command": [
-          "build/sdl3mcp"
+          "build/sdl3mcp",
+          "--listen=127.0.0.1:7777"
         ]
       }
     }

@@ -26,7 +26,8 @@ include("${sdl3mcp_registration_module}")
 # executable without one. None of them is built: registration is configure-time.
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/registration.c"
     "int main(void) { return 0; }\n")
-foreach(sdl3mcp_registration_target page page2 binary desktop_app)
+foreach(sdl3mcp_registration_target page page2 binary desktop_app late_page
+        deferred_page)
     add_executable(${sdl3mcp_registration_target}
         "${CMAKE_CURRENT_BINARY_DIR}/registration.c")
 endforeach()
@@ -35,6 +36,17 @@ set_target_properties(page page2 PROPERTIES SUFFIX ".html")
 if(SDL3MCP_WEB_CASE STREQUAL "success")
     sdl3mcp_web(demo page)
     sdl3mcp_web(other page2)
+elseif(SDL3MCP_WEB_CASE STREQUAL "suffix_after_registration")
+    # A target's artifact properties are not final when it is registered, so the
+    # call cannot be what reads them.
+    sdl3mcp_web(demo late_page)
+    set_target_properties(late_page PROPERTIES SUFFIX ".html")
+elseif(SDL3MCP_WEB_CASE STREQUAL "suffix_generator_expression")
+    # A suffix only the generate step can evaluate: the configure has nothing to
+    # compare, and a page that is fine must not fail for it.
+    sdl3mcp_web(demo deferred_page)
+    set_target_properties(deferred_page PROPERTIES
+        SUFFIX "$<IF:$<BOOL:${EMSCRIPTEN}>,.html,.js>")
 elseif(SDL3MCP_WEB_CASE STREQUAL "non_emscripten")
     sdl3mcp_web(demo page)
 elseif(SDL3MCP_WEB_CASE STREQUAL "bad_alias")

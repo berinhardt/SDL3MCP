@@ -1275,9 +1275,12 @@ output directory — the root `--web` serves. The two functions share one alias
 namespace, so an alias is taken once: the grammar is `[a-z0-9_]+`, the
 `app_spawn_` prefix stays reserved, and a second registration fails naming the
 alias and the target that already owns it. A web registration also fails at
-configure time when the build is not Emscripten, when the target does not exist,
-and when the target does not emit an `.html` artifact, because only a browser
-page has a root to serve.
+configure time when the build is not Emscripten — at the call itself — and, once
+the file is written, when the target does not exist and when it does not emit an
+`.html` artifact, because only a browser page has a root to serve. The target
+checks belong to the write, so `set_target_properties(... SUFFIX ".html")` may
+come after `sdl3mcp_web`; a suffix given as a generator expression has no
+configure-time value and is left to the generate step.
 
 The page target is the Emscripten shape: an executable whose artifact is the
 page, which is what `SUFFIX ".html"` makes it.
@@ -1361,9 +1364,10 @@ browser arm (`src/WebSocketStream.cpp`) replaces the native socket:
   target names plus the documented build graph (static library, no published
   SDL, COMMON with sources);
 - `web_registration_check`, which configures a tiny project once per case and
-  asserts that `sdl3mcp_web` writes the page root, and that a desktop configure,
-  a bad alias, a reserved alias, a duplicate alias and a target without an
-  `.html` artifact each fail naming the alias or target;
+  asserts that `sdl3mcp_web` writes the page root — including when the target's
+  `SUFFIX` is set after the registration, or is a generator expression — and
+  that a desktop configure, a bad alias, a reserved alias, a duplicate alias and
+  a target without an `.html` artifact each fail naming the alias or target;
 - `readme_check`, which compiles the README's two complete C examples, parses
   every JSON block, compares the documented tool schemas with the Handler's
   `--dump-tools` catalog, checks the framing prose, the `sdl_input` text and the

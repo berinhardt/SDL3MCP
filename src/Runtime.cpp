@@ -8,6 +8,9 @@
 #include <utility>
 #include <vector>
 
+#include "Capture.h"
+#include "Input.h"
+#include "InputJson.h"
 #include "Mouse.h"
 #include "SocketStream.h"
 #include "Tool.h"
@@ -50,6 +53,190 @@ constexpr std::string_view kTerminateSchema = R"({
 constexpr std::string_view kTerminateAnnotations = R"({
   "readOnlyHint": false,
   "destructiveHint": true,
+  "idempotentHint": false,
+  "openWorldHint": false
+})";
+
+constexpr std::string_view kInputDescription =
+    "Queue a batch of synthetic input actions; the call returns the frame that "
+    "follows the batch: text naming both the frame the actions were applied at "
+    "and the frame attached, plus that frame's pixels, which the Handler presents "
+    "as an image/png part and a direct library client receives as raw RGBA. The "
+    "batch is applied atomically at the next frame and the call returns after the "
+    "following frame, once the application has consumed the generated events. "
+    "Arguments: actions (required; 1-256 action objects) and optional region. "
+    "Each action object is one of six types: key {key name or chord, "
+    "action=down|up|press (default press), modifiers=[ctrl|shift|alt|gui] (at most "
+    "four)}; text {text, 1-1024 UTF-8 bytes}; mouse_move {x,y in window points or "
+    "dx,dy relative, never both}; mouse_button {button=left|middle|right|x1|x2, "
+    "action=down|up|click (default click), clicks=1-3 (default 1), optional x,y "
+    "window points to move first}; scroll {y in notches (1.0 is one notch, "
+    "positive scrolls down), x default 0}; release_all {no extra fields}. The "
+    "optional region crops the returned frame in pixels of the full frame with a "
+    "top-left origin, exactly like sdl_capture; sdl_input coordinates are window "
+    "points, so use pixelDensity from sdl_info to convert. There is no timeout: a "
+    "direct client imposes its own. Example: "
+    "{\"actions\":[{\"type\":\"key\",\"key\":\"ctrl+s\",\"action\":\"press\"},"
+    "{\"type\":\"mouse_button\",\"button\":\"left\",\"x\":120,\"y\":80}],"
+    "\"region\":{\"x\":0,\"y\":0,\"width\":640,\"height\":360}}";
+
+/*
+  A key action has no repeat property: repeat a press by sending another action
+  instead, which keeps the batch a plain ordered list of single events. The
+  region member is the same object sdl_capture takes, parsed by the same helper,
+  so the schemas cannot drift from the accepted documents.
+*/
+constexpr std::string_view kInputSchema = R"({
+  "type": "object",
+  "properties": {
+    "actions": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 256,
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Press, hold, or release one key, optionally with modifiers.",
+            "properties": {
+              "type": { "const": "key" },
+              "key": {
+                "type": "string",
+                "description": "Key name, or a modifier+modifier+key chord for press, for example \"ctrl+s\"."
+              },
+              "action": { "enum": ["down", "up", "press"], "default": "press" },
+              "modifiers": {
+                "type": "array",
+                "maxItems": 4,
+                "items": { "enum": ["ctrl", "shift", "alt", "gui"] }
+              }
+            },
+            "required": ["type", "key"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "description": "Type text as SDL text input.",
+            "properties": {
+              "type": { "const": "text" },
+              "text": { "type": "string", "minLength": 1, "maxLength": 1024 }
+            },
+            "required": ["type", "text"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "description": "Move the cursor to absolute window points (x, y) or by relative deltas (dx, dy).",
+            "properties": {
+              "type": { "const": "mouse_move" },
+              "x": { "type": "number" },
+              "y": { "type": "number" },
+              "dx": { "type": "number" },
+              "dy": { "type": "number" }
+            },
+            "required": ["type"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "description": "Press, release, or click a mouse button at the cursor, or at optional window points (x, y) that move the cursor there first.",
+            "properties": {
+              "type": { "const": "mouse_button" },
+              "button": { "enum": ["left", "middle", "right", "x1", "x2"] },
+              "action": { "enum": ["down", "up", "click"], "default": "click" },
+              "x": { "type": "number" },
+              "y": { "type": "number" },
+              "clicks": { "type": "integer", "minimum": 1, "maximum": 3, "default": 1 }
+            },
+            "required": ["type", "button"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "description": "Scroll the wheel; 1.0 is one notch and positive y scrolls down.",
+            "properties": {
+              "type": { "const": "scroll" },
+              "x": { "type": "number", "default": 0 },
+              "y": { "type": "number" }
+            },
+            "required": ["type", "y"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "description": "Release every key and mouse button the library holds.",
+            "properties": {
+              "type": { "const": "release_all" }
+            },
+            "required": ["type"],
+            "additionalProperties": false
+          }
+        ]
+      }
+    },
+    "region": {
+      "type": "object",
+      "description": "Crop rectangle in pixels of the full frame, top-left origin.",
+      "properties": {
+        "x": { "type": "integer", "minimum": 0 },
+        "y": { "type": "integer", "minimum": 0 },
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 }
+      },
+      "required": ["x", "y", "width", "height"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["actions"],
+  "additionalProperties": false
+})";
+
+constexpr std::string_view kInputAnnotations = R"({
+  "readOnlyHint": false,
+  "idempotentHint": false,
+  "openWorldHint": false
+})";
+
+/*
+  The region is in pixels of the captured frame, matching sdl_info's
+  capture.lastWidth and capture.lastHeight, so the crop is exact. Image
+  encoding is the Handler's policy; a direct library client receives raw RGBA.
+*/
+constexpr std::string_view kCaptureDescription =
+    "Ask the application for a fresh frame through SDL3MCP_FrameRequested() and "
+    "return its raw pixels. Arguments: optional region. The result is one "
+    "JSON-RPC line {\"format\":\"rgba8888\",\"width\":W,\"height\":H,"
+    "\"byteLength\":B,\"frame\":F}, immediately followed by exactly B tightly "
+    "packed RGBA bytes with no newline and no base64. F is the app frame whose "
+    "pixels these are; the Handler names it in the image summary. region is a "
+    "crop rectangle in pixels of the full frame with a top-left origin and must "
+    "fit inside the frame. sdl_input coordinates are window points, not frame "
+    "pixels: sdl_info reports pixelWidth, pixelHeight and pixelDensity so a caller "
+    "can convert between the two. There is no timeout: a direct client imposes its "
+    "own. Example: "
+    "{\"region\":{\"x\":0,\"y\":0,\"width\":640,\"height\":360}}";
+
+constexpr std::string_view kCaptureSchema = R"({
+  "type": "object",
+  "properties": {
+    "region": {
+      "type": "object",
+      "description": "Crop rectangle in pixels of the full frame, top-left origin.",
+      "properties": {
+        "x": { "type": "integer", "minimum": 0 },
+        "y": { "type": "integer", "minimum": 0 },
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 }
+      },
+      "required": ["x", "y", "width", "height"],
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+})";
+
+constexpr std::string_view kCaptureAnnotations = R"({
+  "readOnlyHint": true,
   "idempotentHint": false,
   "openWorldHint": false
 })";
@@ -107,8 +294,8 @@ std::string_view buttonName(MouseButton button) {
 
 Runtime::Runtime(Configuration configuration)
     : configuration_(std::move(configuration)),
-      keyReplayer_(keyMap_, 0),
-      mouseReplayer_(0, MouseMetrics{}) {
+      keyMap_(),
+      pipeline_(keyMap_, configuration_.value().max_frame_bytes) {
 }
 
 Runtime::~Runtime() = default;
@@ -139,10 +326,7 @@ SDL_AppResult Runtime::setWindow(SDL_Window* window) {
    if (window == nullptr) {
       window_ = nullptr;
       windowID_ = 0;
-      keyReplayer_.reset();
-      keyReplayer_.setWindowID(0);
-      mouseReplayer_.reset();
-      mouseReplayer_.setWindowID(0);
+      pipeline_.clearWindow();
       return SDL_APP_CONTINUE;
    }
 
@@ -163,35 +347,47 @@ SDL_AppResult Runtime::setWindow(SDL_Window* window) {
    window_ = window;
    windowID_ = windowID;
 
-   keyReplayer_.setWindowID(windowID);
-   keyReplayer_.reset();
-
-   mouseReplayer_.setWindowID(windowID);
-   mouseReplayer_.setMetrics(
-       MouseMetrics{static_cast<float>(info.width),
-                    static_cast<float>(info.height), info.relativeMouseMode,
-                    configuration_.value().warp_cursor});
-   mouseReplayer_.reset();
-
-   float mouseX = 0.0F;
-   float mouseY = 0.0F;
-   SDL_GetMouseState(&mouseX, &mouseY);
-   mouseReplayer_.setCursor(mouseX, mouseY);
+   MouseMetrics metrics;
+   metrics.width = static_cast<float>(info.width);
+   metrics.height = static_cast<float>(info.height);
+   metrics.relativeMode = info.relativeMouseMode;
+   metrics.warpCursor = configuration_.value().warp_cursor;
+   pipeline_.setWindow(window, windowID, metrics);
 
    return SDL_APP_CONTINUE;
 }
 
 SDL_AppResult Runtime::iterate() {
    /*
+     The frame the app wrote since the last iterate serves every request that was
+     registered before it. Completing first keeps a request registered in this
+     pump from being answered by the frame the app wrote for the previous one.
+     A batch that failed to apply answers here too, one frame after it was
+     applied, with an error and no frame.
+   */
+   pipeline_.completeFailures();
+   pipeline_.completeWrittenFrame();
+
+   /*
      The pump is the server loop: every available line is answered here, on the
-     app thread, before the frame counter moves. Input and capture will register
-     their requests in the same pass when the pipeline lands.
+     app thread. Input and capture register their requests in this pass and are
+     applied to the frame below.
    */
    if (session_) {
       session_->pump();
    }
 
    ++frameCounter_;
+   pipeline_.applyRegisteredInputs(frameCounter_);
+
+   /*
+     A transport error during the pump retires the session's orders. Drop the
+     requests they were going to answer instead of completing into a closed
+     stream.
+   */
+   if (session_ && !session_->isOpen()) {
+      pipeline_.discardRequests();
+   }
 
    /*
      One quit request makes one SDL_EVENT_QUIT. A failed push restores the flag
@@ -210,10 +406,10 @@ SDL_AppResult Runtime::iterate() {
 }
 
 void Runtime::shutdown() {
-   releaseHeldInput();
+   pipeline_.releaseHeldInput();
+   pipeline_.discardRequests();
    session_.reset();
-   keyReplayer_.reset();
-   mouseReplayer_.reset();
+   pipeline_.clearWindow();
    window_ = nullptr;
    windowID_ = 0;
 }
@@ -222,10 +418,7 @@ void Runtime::writeFrame(const std::uint8_t* data,
                          std::size_t size,
                          int width,
                          int height) noexcept {
-   (void)data;
-   (void)size;
-   (void)width;
-   (void)height;
+   pipeline_.writeFrame(data, size, width, height, frameCounter_ + 1);
 }
 
 void Runtime::buildCatalog() {
@@ -234,6 +427,39 @@ void Runtime::buildCatalog() {
        parseDefinition(kInfoAnnotations),
        [this](ToolOrder, ToolCompletionDelegate& completion) {
           completion.complete(ToolResult::text(infoToJson(infoSnapshot()).dump(2)));
+       }});
+
+   catalog_.add(Tool{
+       "sdl_input", std::string(kInputDescription), parseDefinition(kInputSchema),
+       parseDefinition(kInputAnnotations),
+       [this](ToolOrder order, ToolCompletionDelegate& completion) {
+          std::string error;
+          std::optional<InputRequest> request =
+              parseInputArguments(order.arguments, error);
+          if (!request.has_value()) {
+             completion.complete(ToolResult::text(std::move(error), true));
+             return;
+          }
+          pipeline_.registerInput(std::move(request->batch),
+                                  std::move(request->region), completion);
+       }});
+
+   catalog_.add(Tool{
+       "sdl_capture", std::string(kCaptureDescription),
+       parseDefinition(kCaptureSchema), parseDefinition(kCaptureAnnotations),
+       [this](ToolOrder order, ToolCompletionDelegate& completion) {
+          std::string error;
+          std::optional<CaptureArguments> arguments =
+              parseCaptureArguments(order.arguments, error);
+          if (!arguments.has_value()) {
+             completion.complete(ToolResult::text(std::move(error), true));
+             return;
+          }
+          if (window_ == nullptr) {
+             completion.complete(ToolResult::text("no window bound", true));
+             return;
+          }
+          pipeline_.registerCapture(std::move(arguments->region), completion);
        }});
 
    catalog_.add(Tool{
@@ -250,15 +476,16 @@ Info Runtime::infoSnapshot() const {
    info.sdlVersion = formatSdlVersion();
    info.maxFrameBytes = configuration_.value().max_frame_bytes;
    info.frame = frameCounter_;
-   info.appliedFrame = appliedFrame_;
+   info.appliedFrame = pipeline_.appliedFrame();
+   info.capture = pipeline_.captureInfo();
 
-   for (const SDL_Scancode scancode : keyReplayer_.heldKeys()) {
+   for (const SDL_Scancode scancode : pipeline_.heldKeys()) {
       const std::string_view name = keyMap_.canonicalName(scancode);
       if (!name.empty()) {
          info.heldKeys.emplace_back(name);
       }
    }
-   for (const MouseButton button : mouseReplayer_.heldButtons()) {
+   for (const MouseButton button : pipeline_.heldButtons()) {
       info.heldButtons.emplace_back(buttonName(button));
    }
 
@@ -272,20 +499,6 @@ Info Runtime::infoSnapshot() const {
    }
 
    return info;
-}
-
-void Runtime::releaseHeldInput() {
-   std::vector<SDL_Event> events;
-   const Uint64 timestamp = SDL_GetTicksNS();
-   keyReplayer_.releaseAllKeys(timestamp, events);
-   mouseReplayer_.releaseAllButtons(timestamp, events);
-
-   if (windowID_ != 0) {
-      for (SDL_Event& event : events) {
-         SDL_PushEvent(&event);
-      }
-   }
-   SDL_SetModState(keyReplayer_.modifiers());
 }
 
 }  // namespace sdl3mcp

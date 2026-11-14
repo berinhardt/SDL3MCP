@@ -172,6 +172,20 @@ if(NOT EMSCRIPTEN)
         LIBRARY sdl3mcp_v1
         LIBS nlohmann_json::nlohmann_json)
 
+    # The 1.0 argument parsers are pure: one JSON document in, one request or
+    # one line of text out, with no library timeout in either schema.
+    sdl3mcp_add_test(library_arguments_tests library_arguments_tests.cpp
+        LIBRARY sdl3mcp_v1
+        LIBS nlohmann_json::nlohmann_json)
+
+    # The app-thread pipeline with a recording completion. SDL's dummy video
+    # driver supplies the window a bound input batch needs.
+    sdl3mcp_add_test(pipeline_tests pipeline_tests.cpp
+        LIBRARY sdl3mcp_v1
+        LIBS nlohmann_json::nlohmann_json Threads::Threads)
+    set_tests_properties(pipeline_tests PROPERTIES ENVIRONMENT
+        "SDL_VIDEODRIVER=dummy;ASAN_OPTIONS=detect_leaks=0:halt_on_error=1")
+
     # One lifecycle per process, so every scenario is its own CTest and no
     # scenario can leak the claimed lifecycle into another.
     sdl3mcp_add_test(library_lifecycle_tests library_lifecycle_tests.cpp
@@ -194,6 +208,15 @@ if(NOT EMSCRIPTEN)
         LIBRARY sdl3mcp_v1
         LIBS nlohmann_json::nlohmann_json Threads::Threads)
     set_tests_properties(library_socket_tests PROPERTIES ENVIRONMENT
+        "SDL_VIDEODRIVER=dummy;ASAN_OPTIONS=detect_leaks=0:halt_on_error=1")
+
+    # The full input/capture pipeline: a capture is a no-op input, several
+    # requests registered in one pump share the next frame, a region crops it,
+    # and a rejected WriteFrame leaves the request pending.
+    sdl3mcp_add_test(library_pipeline_tests library_pipeline_tests.cpp
+        LIBRARY sdl3mcp_v1
+        LIBS nlohmann_json::nlohmann_json Threads::Threads)
+    set_tests_properties(library_pipeline_tests PROPERTIES ENVIRONMENT
         "SDL_VIDEODRIVER=dummy;ASAN_OPTIONS=detect_leaks=0:halt_on_error=1")
 endif()
 

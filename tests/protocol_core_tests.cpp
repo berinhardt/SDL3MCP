@@ -929,24 +929,55 @@ TEST_CASE("session ignores a completion after cancellation") {
    CHECK(fixture.answer(1)["id"] == 3);
 }
 
-TEST_CASE("session delays later requests until a deferred order completes") {
+TEST_CASE("session dispatches a later request while a deferred order is pending") {
    SessionFixture fixture;
-   sdl3mcp::ToolCompletionDelegate* saved = nullptr;
+   std::vector<sdl3mcp::ToolCompletionDelegate*> saved;
    fixture.catalog.add(makeTool(
        "defer", "answers later",
        [&saved](sdl3mcp::ToolOrder, sdl3mcp::ToolCompletionDelegate& completion) {
-          saved = &completion;
+          saved.push_back(&completion);
        }));
 
    fixture.initialize();
    fixture.feed(callLine(2, "defer"));
    fixture.feed(R"({"jsonrpc":"2.0","id":3,"method":"ping"})");
-   CHECK(fixture.stream->sent.size() == 1);
+   /* A deferred order does not block a later request: the ping answers now. */
+   REQUIRE(fixture.stream->sent.size() == 2);
+   CHECK(fixture.answer(1)["id"] == 3);
+   REQUIRE(saved.size() == 1);
 
-   saved->complete(sdl3mcp::ToolResult::text("done"));
+   saved[0]->complete(sdl3mcp::ToolResult::text("done"));
    REQUIRE(fixture.stream->sent.size() == 3);
-   CHECK(fixture.answer(1)["id"] == 2);
-   CHECK(fixture.answer(2)["id"] == 3);
+   CHECK(fixture.answer(2)["id"] == 2);
+}
+
+TEST_CASE("session keeps independent deferred orders") {
+   SessionFixture fixture;
+   std::vector<sdl3mcp::ToolCompletionDelegate*> saved;
+   fixture.catalog.add(makeTool(
+       "defer", "answers later",
+       [&saved](sdl3mcp::ToolOrder, sdl3mcp::ToolCompletionDelegate& completion) {
+          saved.push_back(&completion);
+       }));
+
+   fixture.initialize();
+   fixture.feed(callLine(2, "defer"));
+   fixture.feed(callLine(3, "defer"));
+   CHECK(fixture.stream->sent.size() == 1);
+   REQUIRE(saved.size() == 2);
+   CHECK(fixture.session->hasPendingOrder());
+
+   /* Each order answers with its own id, even out of order. */
+   saved[1]->complete(sdl3mcp::ToolResult::text("second"));
+   REQUIRE(fixture.stream->sent.size() == 2);
+   CHECK(fixture.answer(1)["id"] == 3);
+   CHECK(fixture.answer(1)["result"]["content"][0]["text"] == "second");
+
+   saved[0]->complete(sdl3mcp::ToolResult::text("first"));
+   REQUIRE(fixture.stream->sent.size() == 3);
+   CHECK(fixture.answer(2)["id"] == 2);
+   CHECK(fixture.answer(2)["result"]["content"][0]["text"] == "first");
+   CHECK(!fixture.session->hasPendingOrder());
 }
 
 TEST_CASE("session drops a completion after close") {

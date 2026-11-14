@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+#include "Capture.h"
+
 namespace sdl3mcp {
 
 /*
@@ -14,8 +16,7 @@ namespace sdl3mcp {
   it is the live state read at call time. Keeping it a plain value with no SDL in
   infoToJson() is what makes the wire shape testable without a window.
 
-  There is no frame timeout in 1.0, so `limits` carries only maxFrameBytes. The
-  capture fields stay at their defaults until the pipeline ticket fills them.
+  There is no frame timeout in 1.0, so `limits` carries only maxFrameBytes.
 */
 struct WindowInfo {
    bool bound = false;
@@ -26,19 +27,6 @@ struct WindowInfo {
    int pixelHeight = 0;
    float pixelDensity = 0.0F;
    bool relativeMouseMode = false;
-};
-
-struct CaptureInfo {
-   bool pending = false;
-   std::uint64_t count = 0;
-   std::uint64_t dropped = 0;
-   /* Frame dimensions after the region crop, and its raw RGBA byte count. */
-   int lastWidth = 0;
-   int lastHeight = 0;
-   std::uint64_t lastBytes = 0;
-   /* Wait for the frame plus the region crop. */
-   double lastMs = 0.0;
-   std::string lastError;
 };
 
 struct Info {

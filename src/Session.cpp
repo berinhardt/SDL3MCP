@@ -32,6 +32,7 @@ Session::~Session() {
 }
 
 void Session::pump() {
+   discardAnswered();
    if (open_) {
       stream_->pump();
    }
@@ -42,8 +43,7 @@ void Session::close() {
       return;
    }
    open_ = false;
-   pending_.reset();
-   queued_.clear();
+   disconnect();
    stream_->close();
 }
 
@@ -56,14 +56,10 @@ void Session::onMessage(std::string_view line) {
       return;
    }
    /*
-     One tool call at a time: a line that arrives while an order is pending
-     waits until that order answers, which is what serializes a deferred
-     capture behind the requests before it.
+     Every available line is dispatched in the pump. A tool that defers keeps
+     its own pending order instead of blocking the requests behind it, which is
+     what lets several calls registered at one frame share the next frame.
    */
-   if (pending_.has_value() || !queued_.empty()) {
-      queued_.emplace_back(line);
-      return;
-   }
    handleLine(line);
 }
 
@@ -75,33 +71,76 @@ void Session::onPayload(std::vector<uint8_t>) {
 void Session::onError(std::string_view error) {
    lastError_ = std::string(error);
    open_ = false;
-   pending_.reset();
-   queued_.clear();
+   disconnect();
 }
 
 void Session::onClose() {
    open_ = false;
-   pending_.reset();
-   queued_.clear();
+   disconnect();
 }
 
-void Session::complete(ToolResult result) {
-   if (!open_ || !pending_.has_value()) {
+void Session::disconnect() {
+   for (auto& entry : pending_) {
+      entry.second.completion->cancel();
+      retired_.push_back(std::move(entry.second.completion));
+   }
+   pending_.clear();
+   pendingCount_ = 0;
+}
+
+void Session::discardAnswered() {
+   for (auto entry = pending_.begin(); entry != pending_.end();) {
+      if (entry->second.answered) {
+         entry = pending_.erase(entry);
+      } else {
+         ++entry;
+      }
+   }
+}
+
+void Session::OrderCompletion::complete(ToolResult result) {
+   if (cancelled_) {
+      return;
+   }
+   /* A completion may erase this order; keep it alive for the whole call. */
+   const std::shared_ptr<OrderCompletion> keepAlive = shared_from_this();
+   session_.completeOrder(token_, std::move(result));
+}
+
+void Session::OrderCompletion::cancelled() {
+   if (cancelled_) {
+      return;
+   }
+   cancelled_ = true;
+   const std::shared_ptr<OrderCompletion> keepAlive = shared_from_this();
+   session_.cancelOrder(token_);
+}
+
+void Session::completeOrder(std::uint64_t token, ToolResult result) {
+   const auto entry = pending_.find(token);
+   if (!open_ || entry == pending_.end() || entry->second.answered) {
       return;
    }
 
-   const nlohmann::json id = pending_->id;
-   pending_.reset();
+   const nlohmann::json id = entry->second.order.id;
+   entry->second.answered = true;
+   --pendingCount_;
    if (!result.encode(*stream_, id)) {
       close();
-      return;
    }
-   drainQueue();
 }
 
-void Session::cancelled() {
-   pending_.reset();
-   drainQueue();
+void Session::cancelOrder(std::uint64_t token) {
+   const auto entry = pending_.find(token);
+   if (entry == pending_.end()) {
+      return;
+   }
+   if (!entry->second.answered) {
+      --pendingCount_;
+   }
+   entry->second.answered = true;
+   retired_.push_back(std::move(entry->second.completion));
+   pending_.erase(entry);
 }
 
 void Session::handleLine(std::string_view line) {
@@ -221,8 +260,16 @@ void Session::handleToolsCall(const RpcRequest& request) {
       arguments = *supplied;
    }
 
-   pending_ = ToolOrder{request.id, toolName, std::move(arguments)};
-   tool->invoke(*pending_, *this);
+   const std::uint64_t token = nextToken_++;
+   auto completion = std::make_shared<OrderCompletion>(*this, token);
+   const auto inserted = pending_.emplace(
+       token, PendingOrder{ToolOrder{request.id, toolName, std::move(arguments)},
+                           completion, false});
+   ++pendingCount_;
+
+   /* The local keeps the completion alive if the tool answers inline. */
+   const std::shared_ptr<OrderCompletion> keepAlive = completion;
+   tool->invoke(inserted.first->second.order, *keepAlive);
 }
 
 bool Session::writeResponse(const nlohmann::json& response) {
@@ -240,14 +287,6 @@ void Session::fail(const nlohmann::json& id,
                    RpcErrorCode code,
                    std::string_view message) {
    writeResponse(makeError(id, code, message));
-}
-
-void Session::drainQueue() {
-   while (open_ && !pending_.has_value() && !queued_.empty()) {
-      std::string line = std::move(queued_.front());
-      queued_.pop_front();
-      handleLine(line);
-   }
 }
 
 }  // namespace sdl3mcp

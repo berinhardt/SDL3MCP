@@ -215,8 +215,10 @@ class TestServer {
       for (const nlohmann::json& tool : listed["result"]["tools"]) {
          names.push_back(tool["name"].get<std::string>());
       }
-      CHECK(names.size() == 2);
+      CHECK(names.size() == 4);
       CHECK(std::find(names.begin(), names.end(), "sdl_info") != names.end());
+      CHECK(std::find(names.begin(), names.end(), "sdl_input") != names.end());
+      CHECK(std::find(names.begin(), names.end(), "sdl_capture") != names.end());
       CHECK(std::find(names.begin(), names.end(), "sdl_terminate") !=
             names.end());
 

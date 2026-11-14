@@ -322,11 +322,13 @@ if(NOT EMSCRIPTEN)
     add_library(sdl3mcp_v1_app_objects OBJECT
         src/Api.cpp
         src/AppInput.cpp
+        src/Capture.cpp
         src/Frame.cpp
         src/Info.cpp
         src/Input.cpp
         src/KeyMap.cpp
         src/Mouse.cpp
+        src/Pipeline.cpp
         src/Replay.cpp
         src/Runtime.cpp
     )

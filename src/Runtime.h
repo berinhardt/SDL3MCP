@@ -10,8 +10,7 @@
 #include "Configuration.h"
 #include "Info.h"
 #include "KeyMap.h"
-#include "Mouse.h"
-#include "Replay.h"
+#include "Pipeline.h"
 #include "Session.h"
 #include "ToolCatalog.h"
 
@@ -43,8 +42,8 @@ class Runtime {
    SDL_AppResult iterate();
    void shutdown();
 
-   /* Capture is a later ticket: both are safe no-ops until it lands. */
-   bool frameRequested() const noexcept { return false; }
+   /* True while a capture or input request waits for the next frame. */
+   bool frameRequested() const noexcept { return pipeline_.frameRequested(); }
    void writeFrame(const std::uint8_t* data,
                    std::size_t size,
                    int width,
@@ -53,14 +52,12 @@ class Runtime {
   private:
    void buildCatalog();
    Info infoSnapshot() const;
-   void releaseHeldInput();
 
    Configuration configuration_;
 
-   /* App thread only: replay state committed by the next applied batch. */
+   /* App thread only: the key map outlives the pipeline that resolves names. */
    KeyMap keyMap_;
-   KeyReplayer keyReplayer_;
-   MouseReplayer mouseReplayer_;
+   Pipeline pipeline_;
 
    /* Declared before the session so the session dies first. */
    ToolCatalog catalog_;
@@ -69,7 +66,6 @@ class Runtime {
    SDL_Window* window_ = nullptr;
    SDL_WindowID windowID_ = 0;
    std::uint64_t frameCounter_ = 0;
-   std::uint64_t appliedFrame_ = 0;
 
    /*
      Set by sdl_terminate and exchanged by the app thread, which owns the only

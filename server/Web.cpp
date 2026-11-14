@@ -764,6 +764,21 @@ Result<void, TransportError> WebRun::startChild(
       (void)::sigaction(SIGCHLD, &action, nullptr);
       (void)::sigaction(SIGPIPE, &action, nullptr);
 
+      /*
+        The client's stdio is the MCP channel when the Handler serves it: a page
+        server or a browser that read stdin would eat requests, and one that
+        wrote stdout would corrupt the answers. Their output goes to the
+        Handler's stderr with the rest of the web diagnostics.
+      */
+      const int devNull = ::open("/dev/null", O_RDONLY);
+      if (devNull >= 0) {
+         ::dup2(devNull, STDIN_FILENO);
+         if (devNull != STDIN_FILENO) {
+            ::close(devNull);
+         }
+      }
+      ::dup2(STDERR_FILENO, STDOUT_FILENO);
+
       closeDescriptorsFrom(3);
       ::execvp(argv[0], argv.data());
       ::_exit(127);

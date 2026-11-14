@@ -1105,12 +1105,16 @@ struct FakeWebStack {
       writeFile(root.file("index.html"), "<!doctype html>");
       writeScript(bin.file("python3"),
                   "#!/bin/sh\n"
+                  "if [ -n \"$SDL3MCP_TEST_TOOL_STDOUT\" ]; then "
+                  "echo 'web-stack: tool stdout'; fi\n"
                   "port=\"$3\"\n"
                   "exec " +
                       g_webStack + " --listen \"$port\" --pid-file " +
                       pythonPid() + "\n");
       writeScript(bin.file("websocat"),
                   "#!/bin/sh\n"
+                  "if [ -n \"$SDL3MCP_TEST_TOOL_STDOUT\" ]; then "
+                  "echo 'web-stack: tool stdout'; fi\n"
                   "listen=\"$2\"\n"
                   "tcp=\"$3\"\n"
                   "port=\"${listen##*:}\"\n"
@@ -2450,6 +2454,48 @@ TEST_CASE("a web spawn starts the stack, reports the browser pid, and cleans up"
    CHECK(!loopbackPortAccepts(line.pagePort));
    CHECK(!loopbackPortAccepts(line.bridgePort));
    CHECK(client.toolsList()["result"].dump() == idle["result"].dump());
+
+   process.closeStdin();
+   CHECK(process.waitForExit(kLineTimeoutMs));
+}
+
+TEST_CASE("web tool output reaches stderr, never the client stream") {
+   FakeWebStack stack;
+   EnvGuard markerGuard{"SDL3MCP_TEST_TOOL_STDOUT"};
+   ::setenv("SDL3MCP_TEST_TOOL_STDOUT", "1", 1);
+
+   TestProcess process;
+   std::uint16_t port = 0;
+   McpClient client;
+   startServerWith(process, port, client, {"--web=" + stack.webPath}, 5000);
+   CHECK(!client.initialize().contains("error"));
+
+   const nlohmann::json spawned =
+       client.callTool("app_spawn_demo", nlohmann::json::object(), 10000);
+   CHECK(spawned["result"]["isError"] == false);
+
+   /*
+     The page server and the bridge print to stdout as they start. The client's
+     stdio is the MCP channel, so that text belongs on stderr; if it reached
+     stdout the client could not parse the answers at all.
+   */
+   bool sawMarker = false;
+   std::string line;
+   for (int attempt = 0; attempt < 40 && !sawMarker; ++attempt) {
+      if (!process.readStderrLine(line, 250)) {
+         continue;
+      }
+      sawMarker = line.find("web-stack: tool stdout") != std::string::npos;
+   }
+   CHECK(sawMarker);
+
+   /* The stream is still clean: the next call is answered as JSON-RPC. */
+   const nlohmann::json info = client.callTool("sdl_info");
+   CHECK(info["result"]["isError"] == false);
+   CHECK(resultText(info) == "fake target app info");
+
+   CHECK(client.callTool("sdl_terminate")["result"]["isError"] == false);
+   CHECK(awaitNoApp(client));
 
    process.closeStdin();
    CHECK(process.waitForExit(kLineTimeoutMs));

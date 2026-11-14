@@ -45,6 +45,9 @@ EXAMPLE_COMMAND = "./build/examples/minimal --mcp=127.0.0.1:7777"
 WRONG_EXAMPLE_PATH = "examples/minimal/minimal"
 EXAMPLE_MARKER = "Example:"
 LIBRARY_TOOLS = ("sdl_info", "sdl_input", "sdl_capture", "sdl_terminate")
+# clang-format decides the pointer spacing, so match the callback rather than
+# one spelling of it.
+MAIN_CALLBACK = re.compile(r"SDL_AppInit\s*\(\s*void\s*\*\*\s*appstate")
 
 STALE_PHRASES = (
     "F+2",
@@ -95,7 +98,7 @@ def fenced_blocks(readme: str) -> list[tuple[str, str]]:
 
 
 def is_complete_example(block: str) -> bool:
-    return "SDL_AppInit(void **appstate" in block or "int main(" in block
+    return bool(MAIN_CALLBACK.search(block)) or "int main(" in block
 
 
 def contains_key(value: object, needle: str) -> bool:
@@ -628,7 +631,7 @@ def main(argv: list[str] | None = None) -> int:
     failures: list[str] = []
 
     complete_examples = [body for _, body in blocks if is_complete_example(body)]
-    if not any("SDL_AppInit(void **appstate" in body for body in complete_examples):
+    if not any(MAIN_CALLBACK.search(body) for body in complete_examples):
         failures.append("README has no complete main-callback example")
     if not any("int main(" in body for body in complete_examples):
         failures.append("README has no complete manual-loop example")
@@ -663,7 +666,7 @@ def main(argv: list[str] | None = None) -> int:
         check_loop_order(body, index, failures)
 
     quick_start = next((body for body in complete_examples
-                        if "SDL_AppInit(void **appstate" in body), None)
+                        if MAIN_CALLBACK.search(body)), None)
     if quick_start is not None:
         check_quick_start(quick_start, arguments.source, failures)
 

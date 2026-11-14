@@ -62,9 +62,9 @@ cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
 
-`SDL3MCP_BUILD_CLI=ON` builds the Handler, so this flow also builds and tests
-`sdl3mcp`. Without it the library, the tests and the examples still build, and
-the Handler suites are skipped.
+`SDL3MCP_BUILD_CLI=ON` builds the Handler and defines `SDL3MCP::SERVER`, so this
+flow also builds and tests `sdl3mcp`. Without it the library, the tests and the
+examples still build, and the Handler suites are skipped.
 
 `CMakePresets.json` wraps the same configurations:
 
@@ -95,7 +95,7 @@ free.
 | Target | What it is |
 | --- | --- |
 | `SDL3MCP::SDL3MCP` | The library: the SDL-free protocol core plus the app half. This is the only target the installed package exports. |
-| `SDL3MCP::SERVER` | The `sdl3mcp` Handler executable (built when `SDL3MCP_BUILD_CLI=ON`). |
+| `SDL3MCP::SERVER` | The `sdl3mcp` Handler executable. Defined exactly when `SDL3MCP_BUILD_CLI=ON` on a desktop configure; there is no Emscripten Handler. |
 | `SDL3MCP::COMMON` | The SDL-free core both compose: JSON-RPC, session, tools, stream, configuration, dial. |
 
 The object libraries behind them (`sdl3mcp_common_objects`,
@@ -1205,8 +1205,10 @@ while one is attached or starting fails with
 returns `spawned <alias> (pid N)`.
 
 A spawned application is **spawn-and-forget**: the Handler does not signal, wait
-for, or reap it, and it is not killed when the Handler exits. Each application
+for, or act on it, and it is not killed when the Handler exits. Each application
 owns its cleanup, and `sdl_terminate` is forwarded so the app can quit itself.
+The poll loop reaps exited children so none becomes a zombie, but a spawned
+app's status is ignored.
 
 A `--web` spawn is the exception. It starts three processes that together make
 the application reachable:

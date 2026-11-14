@@ -546,13 +546,11 @@ TEST_CASE("a simple result decodes from a peer") {
        {"content", nlohmann::json::array({{{"type", "text"}, {"text", "ok"}}})},
        {"isError", true},
    };
-   sdl3mcp::ToolResult decoded;
-   std::string error;
-   REQUIRE(sdl3mcp::ToolResult::decode(result, {}, decoded, error));
-   CHECK(error.empty());
-   CHECK(decoded.content == result["content"]);
-   CHECK(decoded.payload.empty());
-   CHECK(decoded.isError);
+   const auto decoded = sdl3mcp::ToolResult::decode(result, {});
+   REQUIRE(decoded.hasValue());
+   CHECK(decoded->content == result["content"]);
+   CHECK(decoded->payload.empty());
+   CHECK(decoded->isError);
 }
 
 TEST_CASE("a raw frame decodes from a peer") {
@@ -564,14 +562,12 @@ TEST_CASE("a raw frame decodes from a peer") {
        {"frame", 9},
    };
    const std::vector<uint8_t> pixels{1, 2, 3, 4, 5, 6, 7, 8};
-   sdl3mcp::ToolResult decoded;
-   std::string error;
-   REQUIRE(sdl3mcp::ToolResult::decode(header, pixels, decoded, error));
-   CHECK(error.empty());
-   CHECK(decoded.content == header);
-   CHECK(decoded.payload == pixels);
-   CHECK(!decoded.isError);
-   CHECK(decoded.isRawFrame());
+   const auto decoded = sdl3mcp::ToolResult::decode(header, pixels);
+   REQUIRE(decoded.hasValue());
+   CHECK(decoded->content == header);
+   CHECK(decoded->payload == pixels);
+   CHECK(!decoded->isError);
+   CHECK(decoded->isRawFrame());
 }
 
 TEST_CASE("a malformed raw frame does not decode") {
@@ -582,39 +578,35 @@ TEST_CASE("a malformed raw frame does not decode") {
                                   {"width", 2},
                                   {"height", 1},
                                   {"byteLength", 4}};
-      sdl3mcp::ToolResult decoded;
-      std::string error;
-      CHECK(!sdl3mcp::ToolResult::decode(header, pixels, decoded, error));
-      CHECK(!error.empty());
+      const auto decoded = sdl3mcp::ToolResult::decode(header, pixels);
+      CHECK(!decoded);
+      CHECK(!decoded.error().message.empty());
    }
    {
       const nlohmann::json header{{"format", "rgb8888"},
                                   {"width", 2},
                                   {"height", 1},
                                   {"byteLength", 8}};
-      sdl3mcp::ToolResult decoded;
-      std::string error;
-      CHECK(!sdl3mcp::ToolResult::decode(header, pixels, decoded, error));
+      const auto decoded = sdl3mcp::ToolResult::decode(header, pixels);
+      CHECK(!decoded);
    }
    {
       const nlohmann::json header{{"format", "rgba8888"},
                                   {"width", 0},
                                   {"height", 1},
                                   {"byteLength", 0}};
-      sdl3mcp::ToolResult decoded;
-      std::string error;
-      CHECK(!sdl3mcp::ToolResult::decode(header, {}, decoded, error));
+      const auto decoded = sdl3mcp::ToolResult::decode(header, {});
+      CHECK(!decoded);
    }
 }
 
 TEST_CASE("a result with neither shape does not decode") {
-   sdl3mcp::ToolResult decoded;
-   std::string error;
-   CHECK(!sdl3mcp::ToolResult::decode(nlohmann::json::object(), {}, decoded, error));
-   CHECK(!error.empty());
+   const auto empty = sdl3mcp::ToolResult::decode(nlohmann::json::object(), {});
+   CHECK(!empty);
+   CHECK(!empty.error().message.empty());
 
    const nlohmann::json badContent{{"content", "not an array"}};
-   CHECK(!sdl3mcp::ToolResult::decode(badContent, {}, decoded, error));
+   CHECK(!sdl3mcp::ToolResult::decode(badContent, {}));
 }
 
 TEST_CASE("session initialize answers with its own revision") {

@@ -2,6 +2,8 @@
 
 #include <SDL3MCP/SDL3MCP_version.h>
 
+#include <algorithm>
+#include <limits>
 #include <utility>
 
 #include "ToolResult.h"
@@ -45,26 +47,25 @@ AppPeer::~AppPeer() {
    stream_->close();
 }
 
-bool AppPeer::start(std::string& error) {
-   error.clear();
+Result<void, TransportError> AppPeer::start() {
    initializeId_ = nextId_++;
-   if (!write(nlohmann::json{
-           {"jsonrpc", "2.0"},
-           {"id", initializeId_},
-           {"method", "initialize"},
-           {"params", nlohmann::json{
-                          {"protocolVersion", std::string(kProtocolVersion)},
-                          {"capabilities", nlohmann::json::object()},
-                          {"clientInfo", nlohmann::json{
-                                             {"name", std::string(kServerName)},
-                                             {"version", std::string(SDL3MCP_VERSION_STRING)},
-                                         }},
-                      }},
-       })) {
-      error = "cannot send initialize to the application";
-      return false;
+   const Result<void, TransportError> sent = write(nlohmann::json{
+       {"jsonrpc", "2.0"},
+       {"id", initializeId_},
+       {"method", "initialize"},
+       {"params", nlohmann::json{
+                      {"protocolVersion", std::string(kProtocolVersion)},
+                      {"capabilities", nlohmann::json::object()},
+                      {"clientInfo", nlohmann::json{
+                                         {"name", std::string(kServerName)},
+                                         {"version", std::string(SDL3MCP_VERSION_STRING)},
+                                     }},
+                  }},
+   });
+   if (!sent) {
+      return TransportError{"cannot send initialize to the application"};
    }
-   return true;
+   return {};
 }
 
 void AppPeer::pump() {
@@ -74,15 +75,14 @@ void AppPeer::pump() {
    stream_->pump();
 }
 
-void AppPeer::close() {
-   detach("the Handler closed the application session");
+void AppPeer::close(std::string reason) {
+   detach(std::move(reason));
 }
 
-bool AppPeer::sendCall(std::uint64_t id,
-                       const std::string& name,
-                       const nlohmann::json& arguments) {
+Result<void, TransportError> AppPeer::sendCall(
+    std::uint64_t id, const std::string& name, const nlohmann::json& arguments) {
    if (state_ != State::Ready) {
-      return false;
+      return TransportError{"the application session is not ready"};
    }
    return write(nlohmann::json{
        {"jsonrpc", "2.0"},
@@ -217,12 +217,18 @@ void AppPeer::handleForwardResponse(std::uint64_t id,
       return;
    }
 
-   std::size_t byteLength = 0;
-   std::string headerError;
-   if (!ToolResult::decodeHeader(*result, byteLength, headerError)) {
+   /*
+      Only the announced length is read here; the rest of the header is
+      validated when the payload arrives, so a mismatched header becomes a tool
+      error for this call instead of ending the application session. A rejected
+      payload is skipped so the next line is still a line.
+   */
+   std::uint64_t byteLength = 0;
+   if (!ToolResult::declaredFrameByteLength(*result, byteLength)) {
       handler_.onAppForwardFailure(
-          id, "the application sent an invalid frame result: " + headerError);
-      detach("the application sent a malformed frame result");
+          id,
+          "the application sent an invalid frame result: the result is neither "
+          "content nor a raw frame header");
       return;
    }
    if (byteLength > kMaxFrameBytes) {
@@ -230,13 +236,15 @@ void AppPeer::handleForwardResponse(std::uint64_t id,
           id, "the application sent " + std::to_string(byteLength) +
                   " frame bytes, above the " + std::to_string(kMaxFrameBytes) +
                   " byte Handler cap");
-      detach("the application sent a frame above the Handler cap");
+      stream_->discardPayload(static_cast<std::size_t>(
+          std::min<std::uint64_t>(byteLength,
+                                  std::numeric_limits<std::size_t>::max())));
       return;
    }
 
    pendingFrameId_ = id;
    pendingFrameHeader_ = *result;
-   stream_->expectPayload(byteLength);
+   stream_->expectPayload(static_cast<std::size_t>(byteLength));
 }
 
 void AppPeer::onOpen() {
@@ -290,17 +298,17 @@ void AppPeer::onClose() {
    detach("the application closed its connection");
 }
 
-bool AppPeer::write(nlohmann::json message) {
+Result<void, TransportError> AppPeer::write(nlohmann::json message) {
    if (state_ == State::Closed) {
-      return false;
+      return TransportError{"the application session is closed"};
    }
    const std::string line =
        message.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
    if (stream_->sendText(line)) {
-      return true;
+      return {};
    }
    detach("cannot write to the application");
-   return false;
+   return TransportError{"cannot write to the application"};
 }
 
 void AppPeer::detach(std::string reason) {

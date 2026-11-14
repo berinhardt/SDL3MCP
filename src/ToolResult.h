@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include "Result.h"
+
 namespace sdl3mcp {
 
 class Stream;
@@ -59,20 +61,26 @@ struct ToolResult {
      Called before the payload is read, so a mismatched or hostile byteLength is
      rejected without allocating it. A content result is not a header.
    */
-   static bool decodeHeader(const nlohmann::json& result,
-                            std::size_t& byteLength,
-                            std::string& error);
+   static Result<std::size_t, ProtocolError> decodeHeader(
+       const nlohmann::json& result);
 
    /*
-     Parses a result object received from a peer. For a raw frame the caller has
-     already read `payload`, the header's byteLength bytes. False with `error`
-     set when the result is neither a content result nor a well-formed raw
-     frame header.
+      The byteLength a raw-frame header announces, even when the rest of the
+      header is malformed. False when the object announces no payload at all.
+      AppPeer uses it to skip a rejected payload without allocating it, so a
+      broken frame does not detach the application.
    */
-   static bool decode(const nlohmann::json& result,
-                      std::vector<uint8_t> payload,
-                      ToolResult& out,
-                      std::string& error);
+   static bool declaredFrameByteLength(const nlohmann::json& result,
+                                       std::uint64_t& byteLength);
+
+   /*
+      Parses a result object received from a peer. For a raw frame the caller has
+      already read `payload`, the header's byteLength bytes. An error says the
+      result is neither a content result nor a well-formed raw frame header.
+   */
+   static Result<ToolResult, ProtocolError> decode(
+       const nlohmann::json& result,
+       std::vector<uint8_t> payload);
 };
 
 }  // namespace sdl3mcp

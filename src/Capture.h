@@ -20,6 +20,7 @@
 #include <string>
 
 #include "Frame.h"
+#include "Result.h"
 
 namespace sdl3mcp {
 
@@ -44,19 +45,18 @@ struct CaptureArguments {
 };
 
 /*
-  Reads the optional `region` member of a tool-call arguments object. On success
-  returns true and leaves `region` empty when the member is absent, or filled
-  when it is present. On failure returns false and writes one line to `error`.
+  Reads the optional `region` member of a tool-call arguments object. Success
+  leaves `region` empty when the member is absent, or filled when it is present;
+  a failure carries the one-line reason.
 */
-bool parseRegionArgument(const nlohmann::json& arguments,
-                         std::optional<CaptureRegion>& region,
-                         std::string& error);
+Result<void, ProtocolError> parseRegionArgument(
+    const nlohmann::json& arguments, std::optional<CaptureRegion>& region);
 
 /*
   Parses the whole sdl_capture `arguments` object: `region` is the only accepted
-  property. Returns nullopt with one line in `error` on failure.
+  property.
 */
-std::optional<CaptureArguments> parseCaptureArguments(
-    const nlohmann::json& arguments, std::string& error);
+Result<CaptureArguments, ProtocolError> parseCaptureArguments(
+    const nlohmann::json& arguments);
 
 }  // namespace sdl3mcp

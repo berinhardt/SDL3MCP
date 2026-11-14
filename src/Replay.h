@@ -27,6 +27,7 @@
 
 #include "Input.h"
 #include "KeyMap.h"
+#include "Result.h"
 
 namespace sdl3mcp {
 
@@ -39,11 +40,11 @@ class KeyReplayer {
    KeyReplayer& operator=(const KeyReplayer&) = default;
 
    /*
-     Appends the events for one key action. Returns false with one line of text
-     in `error` when the action cannot be applied; `error` is empty on success.
+     Appends the events for one key action. The error says when the action
+     cannot be applied.
    */
-   bool apply(const KeyInput& input, Uint64 timestamp, std::vector<SDL_Event>& events,
-              std::string& error);
+   Result<void, ProtocolError> apply(const KeyInput& input, Uint64 timestamp,
+                                     std::vector<SDL_Event>& events);
 
    /* Releases every held key in reverse press order, ending at no modifiers. */
    void releaseAllKeys(Uint64 timestamp, std::vector<SDL_Event>& events);
@@ -57,12 +58,12 @@ class KeyReplayer {
    const std::vector<SDL_Scancode>& heldKeys() const noexcept { return heldKeys_; }
 
   private:
-   bool applyDown(const KeyInput& input, Uint64 timestamp, std::vector<SDL_Event>& events,
-                  std::string& error);
-   bool applyUp(const KeyInput& input, Uint64 timestamp, std::vector<SDL_Event>& events,
-                std::string& error);
-   bool applyPress(const KeyInput& input, Uint64 timestamp, std::vector<SDL_Event>& events,
-                   std::string& error);
+   Result<void, ProtocolError> applyDown(const KeyInput& input, Uint64 timestamp,
+                                         std::vector<SDL_Event>& events);
+   Result<void, ProtocolError> applyUp(const KeyInput& input, Uint64 timestamp,
+                                       std::vector<SDL_Event>& events);
+   Result<void, ProtocolError> applyPress(const KeyInput& input, Uint64 timestamp,
+                                          std::vector<SDL_Event>& events);
 
    bool isHeld(SDL_Scancode scancode) const noexcept;
 
@@ -84,16 +85,19 @@ class KeyReplayer {
 };
 
 /*
-  Appends the single SDL_EVENT_TEXT_INPUT for one text action, or returns false
-  with one line of text in `error` and appends nothing when no window is bound,
-  text input is inactive on the bound window, or the text is empty.
+  Appends the single SDL_EVENT_TEXT_INPUT for one text action, or appends
+  nothing and returns the reason when no window is bound, text input is inactive
+  on the bound window, or the text is empty.
 
   The event stores a pointer to input.text, exactly as SDL does, so the caller
   must keep that TextInput alive until the app has consumed the event at F+1.
   Nothing here copies the string; the pipeline, which owns the batch, is
   responsible for keeping the action alive for the whole frame.
 */
-bool buildTextEvent(const TextInput& input, SDL_WindowID windowID, bool textInputActive,
-                    Uint64 timestamp, std::vector<SDL_Event>& events, std::string& error);
+Result<void, ProtocolError> buildTextEvent(const TextInput& input,
+                                           SDL_WindowID windowID,
+                                           bool textInputActive,
+                                           Uint64 timestamp,
+                                           std::vector<SDL_Event>& events);
 
 }  // namespace sdl3mcp

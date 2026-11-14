@@ -10,8 +10,8 @@
   from SDL3MCP_WriteFrame's raw pointer and the app-supplied dimensions;
   cropFrame() trusts it and only guards its own arguments.
 
-  Presentation (PNG and base64) is the supervisor's policy and lives in
-  supervisor/, so the library never references stb.
+  Presentation (PNG and base64) is the Handler's policy and lives in
+  server/Png.cpp, so the library never references stb.
 
   The region schema in the tool catalog names (x, y, width, height), so
   cropFrame() rejects anything that would read outside the frame instead of
@@ -21,9 +21,10 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <optional>
 #include <string>
 #include <vector>
+
+#include "Result.h"
 
 namespace sdl3mcp {
 
@@ -49,35 +50,22 @@ struct CaptureRegion {
 };
 
 /*
-  Checks that raw frame data can become a Frame. Returns nullopt when it can, or
-  the reason it cannot, checking in order: non-null data, positive dimensions,
-  an exact uint64_t(width) * height * 4 byte count, and the max_frame_bytes
-  ceiling.
+  Checks that raw frame data can become a Frame. Returns success when it can,
+  or the reason it cannot, checking in order: non-null data, positive
+  dimensions, an exact uint64_t(width) * height * 4 byte count, and the
+  max_frame_bytes ceiling.
 */
-std::optional<std::string> validateFrame(const uint8_t* data,
-                                         size_t size,
-                                         int width,
-                                         int height,
-                                         uint32_t maxFrameBytes);
+Result<void, ProtocolError> validateFrame(const uint8_t* data,
+                                          size_t size,
+                                          int width,
+                                          int height,
+                                          uint32_t maxFrameBytes);
 
 /*
   Copies an in-bounds region out of the frame, one source row at a time. On
-  failure returns nullopt and sets `error` to a message naming both the region
-  and the frame size.
+  failure the error names both the region and the frame size.
 */
-std::optional<Frame> cropFrame(const Frame& frame,
-                               const CaptureRegion& region,
-                               std::string& error);
-
-/*
-  Defence in depth for the acknowledgement protocol: the frame attached to an
-  sdl_input answer is always rendered after the batch was applied, because the
-  answer waits for the F+1 completion before it requests a capture. This helper
-  states that relation as a check rather than a runtime branch; returns nullopt
-  when `attachedFrame` is greater, otherwise one line naming both indices.
-  Nothing in the protocol can make it fire, so tests exercise it directly.
-*/
-std::optional<std::string> checkFrameOrder(uint64_t appliedFrame,
-                                           uint64_t attachedFrame);
+Result<Frame, ProtocolError> cropFrame(const Frame& frame,
+                                       const CaptureRegion& region);
 
 }  // namespace sdl3mcp

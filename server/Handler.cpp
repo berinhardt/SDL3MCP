@@ -19,7 +19,9 @@
 #include <utility>
 #include <vector>
 
+#include "Configuration.h"
 #include "Png.h"
+#include "Posix.h"
 #include "SocketStream.h"
 #include "StdioStream.h"
 #include "ToolDefinitions.h"
@@ -98,38 +100,6 @@ const char* webChildName(WebChild child) {
    return "child";
 }
 
-/*
-  A spawned app is not the Handler's to reap: SA_NOCLDWAIT makes the kernel
-  release the child as soon as it exits, and the Handler tracks the session
-  rather than the process.
-*/
-void installChildReaping() {
-   struct sigaction action{};
-   action.sa_handler = SIG_DFL;
-   sigemptyset(&action.sa_mask);
-   action.sa_flags = SA_NOCLDWAIT;
-   (void)::sigaction(SIGCHLD, &action, nullptr);
-}
-
-/*
-  Keeps the child from inheriting the Handler's client stream, upstream socket,
-  or listener. close_range is one syscall, so it is safe between fork and exec;
-  the rlimit loop is the fallback for a kernel that does not have it.
-*/
-void closeDescriptorsAbove(int lowest) {
-   if (::close_range(static_cast<unsigned int>(lowest), ~0U, 0) == 0) {
-      return;
-   }
-
-   struct rlimit limit{};
-   if (::getrlimit(RLIMIT_NOFILE, &limit) != 0) {
-      return;
-   }
-   for (rlim_t fd = static_cast<rlim_t>(lowest); fd < limit.rlim_cur; ++fd) {
-      ::close(static_cast<int>(fd));
-   }
-}
-
 constexpr std::string_view kWaitDescription =
     "Wait for an application to connect to the listener. Arguments: optional "
     "timeout_ms (1-60000, default the Handler's --timeout-ms). Returns as soon as "
@@ -183,16 +153,6 @@ constexpr std::string_view kHandlerCaptureDescription =
     "tell a fresh frame from a stale one. Example: "
     "{\"region\":{\"x\":0,\"y\":0,\"width\":640,\"height\":360},"
     "\"timeout_ms\":2000}";
-
-std::string endpointText(std::string_view host, std::uint16_t port) {
-   std::string text;
-   if (host.find(':') != std::string_view::npos) {
-      text = "[" + std::string(host) + "]";
-   } else {
-      text = std::string(host);
-   }
-   return text + ":" + std::to_string(port);
-}
 
 nlohmann::json parseDefinition(std::string_view text) {
    return nlohmann::json::parse(text.begin(), text.end());
@@ -296,6 +256,25 @@ std::string captureSummary(const nlohmann::json& arguments,
    return text;
 }
 
+/*
+  Reads the optional timeout_ms of one tool call. Absent means the Handler's
+  budget; present must be an integer in 1..60000. The error names the tool.
+*/
+Result<std::int64_t, ProtocolError> readTimeoutMs(
+    const nlohmann::json& arguments, std::int64_t fallback,
+    std::string_view tool) {
+   if (!arguments.contains("timeout_ms")) {
+      return fallback;
+   }
+   std::int64_t requested = 0;
+   if (!readInteger(arguments, "timeout_ms", requested) || requested < 1 ||
+       requested > kMaxTimeoutMs) {
+      return ProtocolError{std::string(tool) +
+                           " timeout_ms must be in 1..60000"};
+   }
+   return requested;
+}
+
 }  // namespace
 
 Handler::Handler(HandlerOptions options) : options_(std::move(options)) {
@@ -311,11 +290,10 @@ int Handler::run() {
      failure as a value instead, so the default termination is never useful.
    */
    ::signal(SIGPIPE, SIG_IGN);
-   installChildReaping();
 
-   std::string error;
-   if (!loadSources(error)) {
-      std::fprintf(stderr, "sdl3mcp: %s\n", error.c_str());
+   const Result<void, ProtocolError> sources = loadSources();
+   if (!sources) {
+      std::fprintf(stderr, "sdl3mcp: %s\n", sources.error().message.c_str());
       std::fflush(stderr);
       return 2;
    }
@@ -329,13 +307,15 @@ int Handler::run() {
    buildBaseTools();
    rebuildCatalog();
 
-   if (!startClient(error)) {
-      std::fprintf(stderr, "sdl3mcp: %s\n", error.c_str());
+   const Result<void, TransportError> client = startClient();
+   if (!client) {
+      std::fprintf(stderr, "sdl3mcp: %s\n", client.error().message.c_str());
       std::fflush(stderr);
       return 1;
    }
-   if (!startListener(error)) {
-      std::fprintf(stderr, "sdl3mcp: %s\n", error.c_str());
+   const Result<void, TransportError> listener = startListener();
+   if (!listener) {
+      std::fprintf(stderr, "sdl3mcp: %s\n", listener.error().message.c_str());
       std::fflush(stderr);
       shutdown();
       return 1;
@@ -390,10 +370,18 @@ int Handler::run() {
       const auto now = Clock::now();
 
       if ((descriptors[3].revents & POLLIN) != 0) {
+         bool childExited = false;
          signalfd_siginfo info{};
          while (::read(signalFd_, &info, sizeof info) > 0) {
+            if (info.ssi_signo == SIGCHLD) {
+               childExited = true;
+            } else {
+               running_ = false;
+            }
          }
-         running_ = false;
+         if (childExited) {
+            reapChildren();
+         }
       }
 
       if (running_ && (descriptors[1].revents & POLLIN) != 0) {
@@ -454,18 +442,24 @@ int Handler::run() {
    return 0;
 }
 
-bool Handler::loadSources(std::string& error) {
+Result<void, ProtocolError> Handler::loadSources() {
    targets_.clear();
    webApps_.clear();
-   error.clear();
 
-   if (!options_.targetsPaths.empty() &&
-       !loadSpawnTargets(options_.targetsPaths, targets_, error)) {
-      return false;
+   if (!options_.targetsPaths.empty()) {
+      Result<SpawnTargets, ProtocolError> targets =
+          loadSpawnTargets(options_.targetsPaths);
+      if (!targets) {
+         return targets.error();
+      }
+      targets_ = std::move(*targets);
    }
-   if (!options_.webPaths.empty() &&
-       !loadWebApps(options_.webPaths, webApps_, error)) {
-      return false;
+   if (!options_.webPaths.empty()) {
+      Result<WebApps, ProtocolError> apps = loadWebApps(options_.webPaths);
+      if (!apps) {
+         return apps.error();
+      }
+      webApps_ = std::move(*apps);
    }
 
    /*
@@ -475,14 +469,14 @@ bool Handler::loadSources(std::string& error) {
    for (const WebApp& web : webApps_) {
       for (const SpawnTarget& target : targets_) {
          if (target.alias == web.alias) {
-            error = "alias \"" + web.alias + "\" is defined in both \"" +
-                    target.source + "\" and \"" + web.source + "\"";
-            return false;
+            return ProtocolError{"alias \"" + web.alias +
+                                 "\" is defined in both \"" + target.source +
+                                 "\" and \"" + web.source + "\""};
          }
       }
    }
 
-   return true;
+   return {};
 }
 
 int Handler::printDryRun() {
@@ -524,10 +518,16 @@ int Handler::printDryRun() {
           options_.listenPort == 0
               ? std::string("HOST:PORT")
               : endpointText(options_.listenHost, options_.listenPort);
+      /*
+        A dry run binds nothing, so it reserves no port: the plan prints the
+        placeholders a launch would replace with two ephemeral numbers.
+      */
+      web.placeholderPorts = true;
 
-      std::string error;
-      if (!preflightWebLaunch(web, error) || !pickWebPorts(web, error)) {
-         std::fprintf(stderr, "sdl3mcp: --dry-run: %s\n", error.c_str());
+      const Result<void, TransportError> preflight = preflightWebLaunch(web);
+      if (!preflight) {
+         std::fprintf(stderr, "sdl3mcp: --dry-run: %s\n",
+                      preflight.error().message.c_str());
          std::fflush(stderr);
          return 2;
       }
@@ -539,21 +539,22 @@ int Handler::printDryRun() {
       */
       web.profileDir = plannedProfilePath();
 
-      std::vector<std::vector<std::string>> plan;
-      if (!makeWebLaunchPlan(web, plan, error)) {
-         std::fprintf(stderr, "sdl3mcp: --dry-run: %s\n", error.c_str());
+      const Result<std::vector<std::vector<std::string>>, TransportError> plan =
+          makeWebLaunchPlan(web);
+      if (!plan) {
+         std::fprintf(stderr, "sdl3mcp: --dry-run: %s\n",
+                      plan.error().message.c_str());
          std::fflush(stderr);
          return 2;
       }
 
       const std::string bridge =
-          std::string(kWebLoopbackHost) + ":" + std::to_string(web.bridgePort);
-      std::printf("page=http://%s:%u/%s?mcp=%s\n", kWebLoopbackHost,
-                  static_cast<unsigned>(web.pagePort), web.entry.c_str(),
-                  bridge.c_str());
+          std::string(kWebLoopbackHost) + ":BRIDGE_PORT";
+      std::printf("page=http://%s:PAGE_PORT/%s?mcp=%s\n", kWebLoopbackHost,
+                  web.entry.c_str(), bridge.c_str());
       std::printf("bridge=%s\n", bridge.c_str());
       std::printf("profile=%s\n", web.profileDir.c_str());
-      for (const std::vector<std::string>& command : plan) {
+      for (const std::vector<std::string>& command : *plan) {
          std::string line = "command:";
          for (const std::string& argument : command) {
             line += " " + shellQuote(argument);
@@ -718,41 +719,39 @@ void Handler::publishToolsIfChanged(bool notify) {
            .dump());
 }
 
-bool Handler::startClient(std::string& error) {
-   error.clear();
-
+Result<void, TransportError> Handler::startClient() {
    if (options_.relay()) {
       auto socket = std::make_unique<SocketStream>();
       SocketStream* raw = socket.get();
       auto session = std::make_unique<Session>(catalog_, std::move(socket));
 
-      std::string connectError;
-      if (!raw->connect(options_.connectHost, options_.connectPort,
-                        static_cast<std::uint32_t>(options_.timeoutMs),
-                        connectError)) {
-         error = "--connect: " + connectError;
-         return false;
+      const Result<void, TransportError> connected = raw->connect(
+          options_.connectHost, options_.connectPort,
+          static_cast<std::uint32_t>(options_.timeoutMs));
+      if (!connected) {
+         return TransportError{"--connect: " + connected.error().message};
       }
 
       clientSession_ = std::move(session);
       clientFd_ = raw->fd();
-      return true;
+      return {};
    }
 
    auto stdio = std::make_unique<StdioStream>();
    StdioStream* raw = stdio.get();
    auto session = std::make_unique<Session>(catalog_, std::move(stdio));
-   if (!raw->start(error)) {
-      return false;
+   const Result<void, TransportError> started = raw->start();
+   if (!started) {
+      return started.error();
    }
 
    clientSession_ = std::move(session);
    clientFd_ = raw->inputFd();
-   return true;
+   return {};
 }
 
-bool Handler::startListener(std::string& error) {
-   return listener_.listen(options_.listenHost, options_.listenPort, error);
+Result<void, TransportError> Handler::startListener() {
+   return listener_.listen(options_.listenHost, options_.listenPort);
 }
 
 void Handler::startSignalFd() {
@@ -760,6 +759,8 @@ void Handler::startSignalFd() {
    sigemptyset(&mask);
    sigaddset(&mask, SIGINT);
    sigaddset(&mask, SIGTERM);
+   /* SIGCHLD is the reaper's wake-up; a spawned app is still never waited for. */
+   sigaddset(&mask, SIGCHLD);
    if (::sigprocmask(SIG_BLOCK, &mask, nullptr) != 0) {
       signalFd_ = -1;
       return;
@@ -767,16 +768,31 @@ void Handler::startSignalFd() {
    signalFd_ = ::signalfd(-1, &mask, SFD_NONBLOCK | SFD_CLOEXEC);
 }
 
-void Handler::acceptApplication() {
-   std::string error;
-   const int fd = listener_.accept(error);
-   if (fd < 0) {
-      if (!error.empty()) {
-         std::fprintf(stderr, "sdl3mcp: %s\n", error.c_str());
-         std::fflush(stderr);
+void Handler::reapChildren() {
+   for (;;) {
+      int status = 0;
+      const pid_t pid = ::waitpid(-1, &status, WNOHANG);
+      if (pid <= 0) {
+         return;
       }
+      if (webRun_) {
+         webRun_->recordExit(pid, status);
+      }
+   }
+}
+
+void Handler::acceptApplication() {
+   const Result<std::optional<int>, TransportError> accepted =
+       listener_.accept();
+   if (!accepted) {
+      std::fprintf(stderr, "sdl3mcp: %s\n", accepted.error().message.c_str());
+      std::fflush(stderr);
       return;
    }
+   if (!accepted->has_value()) {
+      return;
+   }
+   const int fd = **accepted;
 
    /*
      Exactly one application session. The listener keeps accepting only so a
@@ -788,20 +804,19 @@ void Handler::acceptApplication() {
    }
 
    auto socket = std::make_unique<SocketStream>();
-   std::string adoptError;
-   if (!socket->adopt(fd,
-                      endpointText(options_.listenHost, listener_.boundPort()),
-                      adoptError)) {
-      std::fprintf(stderr, "sdl3mcp: %s\n", adoptError.c_str());
+   const Result<void, TransportError> adopted = socket->adopt(
+       fd, endpointText(options_.listenHost, listener_.boundPort()));
+   if (!adopted) {
+      std::fprintf(stderr, "sdl3mcp: %s\n", adopted.error().message.c_str());
       std::fflush(stderr);
       return;
    }
 
    auto peer = std::make_unique<AppPeer>(
        std::move(socket), *this, static_cast<std::uint32_t>(options_.timeoutMs));
-   std::string startError;
-   if (!peer->start(startError)) {
-      std::fprintf(stderr, "sdl3mcp: %s\n", startError.c_str());
+   const Result<void, TransportError> started = peer->start();
+   if (!started) {
+      std::fprintf(stderr, "sdl3mcp: %s\n", started.error().message.c_str());
       std::fflush(stderr);
       return;
    }
@@ -812,17 +827,13 @@ void Handler::acceptApplication() {
 
 void Handler::handleWaitSession(const ToolOrder& order,
                                 ToolCompletionDelegate& completion) {
-   std::int64_t timeoutMs = options_.timeoutMs;
-   if (order.arguments.contains("timeout_ms")) {
-      std::int64_t requested = 0;
-      if (!readInteger(order.arguments, "timeout_ms", requested) || requested < 1 ||
-          requested > kMaxTimeoutMs) {
-         completion.complete(
-             ToolResult::text("wait_session timeout_ms must be in 1..60000", true));
-         return;
-      }
-      timeoutMs = requested;
+   const Result<std::int64_t, ProtocolError> timeout =
+       readTimeoutMs(order.arguments, options_.timeoutMs, "wait_session");
+   if (!timeout) {
+      completion.complete(ToolResult::text(timeout.error().message, true));
+      return;
    }
+   const std::int64_t timeoutMs = *timeout;
 
    if (appReady_) {
       completion.complete(
@@ -847,17 +858,13 @@ void Handler::handleSpawn(const ToolOrder& order,
       return;
    }
 
-   std::int64_t timeoutMs = options_.timeoutMs;
-   if (order.arguments.contains("timeout_ms")) {
-      std::int64_t requested = 0;
-      if (!readInteger(order.arguments, "timeout_ms", requested) || requested < 1 ||
-          requested > kMaxTimeoutMs) {
-         completion.complete(ToolResult::text(
-             "app_spawn_" + target.alias + " timeout_ms must be in 1..60000", true));
-         return;
-      }
-      timeoutMs = requested;
+   const Result<std::int64_t, ProtocolError> timeout = readTimeoutMs(
+       order.arguments, options_.timeoutMs, "app_spawn_" + target.alias);
+   if (!timeout) {
+      completion.complete(ToolResult::text(timeout.error().message, true));
+      return;
    }
+   const std::int64_t timeoutMs = *timeout;
 
    /*
      The listener is bound before the loop accepts tool calls, so its endpoint is
@@ -866,10 +873,11 @@ void Handler::handleSpawn(const ToolOrder& order,
    const std::string endpoint =
        endpointText(options_.listenHost, listener_.boundPort());
 
-   std::string error;
-   if (!startTarget(target, endpoint, timeoutMs, completion, error)) {
-      completion.complete(
-          ToolResult::text("app_spawn_" + target.alias + ": " + error, true));
+   const Result<void, TransportError> started =
+       startTarget(target, endpoint, timeoutMs, completion);
+   if (!started) {
+      completion.complete(ToolResult::text(
+          "app_spawn_" + target.alias + ": " + started.error().message, true));
    }
 }
 
@@ -883,17 +891,13 @@ void Handler::handleWebSpawn(const ToolOrder& order,
       return;
    }
 
-   std::int64_t timeoutMs = options_.timeoutMs;
-   if (order.arguments.contains("timeout_ms")) {
-      std::int64_t requested = 0;
-      if (!readInteger(order.arguments, "timeout_ms", requested) || requested < 1 ||
-          requested > kMaxTimeoutMs) {
-         completion.complete(ToolResult::text(
-             "app_spawn_" + app.alias + " timeout_ms must be in 1..60000", true));
-         return;
-      }
-      timeoutMs = requested;
+   const Result<std::int64_t, ProtocolError> timeout = readTimeoutMs(
+       order.arguments, options_.timeoutMs, "app_spawn_" + app.alias);
+   if (!timeout) {
+      completion.complete(ToolResult::text(timeout.error().message, true));
+      return;
    }
+   const std::int64_t timeoutMs = *timeout;
 
    /*
      The listener is bound before the loop accepts tool calls, so its endpoint
@@ -904,17 +908,18 @@ void Handler::handleWebSpawn(const ToolOrder& order,
    web.handlerEndpoint =
        endpointText(options_.listenHost, listener_.boundPort());
 
-   std::string error;
-   if (!prepareWebLaunch(web, error)) {
-      completion.complete(
-          ToolResult::text("app_spawn_" + app.alias + ": " + error, true));
+   const Result<void, TransportError> prepared = prepareWebLaunch(web);
+   if (!prepared) {
+      completion.complete(ToolResult::text(
+          "app_spawn_" + app.alias + ": " + prepared.error().message, true));
       return;
    }
 
    auto run = std::make_unique<WebRun>();
-   if (!run->start(std::move(web), error)) {
-      completion.complete(
-          ToolResult::text("app_spawn_" + app.alias + ": " + error, true));
+   const Result<void, TransportError> runStarted = run->start(std::move(web));
+   if (!runStarted) {
+      completion.complete(ToolResult::text(
+          "app_spawn_" + app.alias + ": " + runStarted.error().message, true));
       return;
    }
    webRun_ = std::move(run);
@@ -949,7 +954,7 @@ void Handler::serviceWeb(Clock::time_point now,
 
    /* The browser's pid is only known once the tools accept. */
    if (pendingSpawn_.has_value() &&
-       pendingSpawn_->kind == PendingSpawn::Kind::Web &&
+       pendingSpawn_->isWeb() &&
        pendingSpawn_->pid < 0 && webRun_->browserStarted()) {
       pendingSpawn_->pid = webRun_->browserPid();
    }
@@ -977,7 +982,7 @@ void Handler::finishWebRun(WebStackEvent event) {
    webRun_.reset();
 
    if (pendingSpawn_.has_value() &&
-       pendingSpawn_->kind == PendingSpawn::Kind::Web) {
+       pendingSpawn_->isWeb()) {
       std::string text;
       if (!event.detail.empty()) {
          text = "app_spawn_" + pendingSpawn_->alias + ": " + event.detail;
@@ -986,6 +991,9 @@ void Handler::finishWebRun(WebStackEvent event) {
                 ": the browser exited before the application connected";
          if (browserPid > 0) {
             text += " (browser pid " + std::to_string(browserPid) + ")";
+         }
+         if (event.exitStatus != 0) {
+            text += " with exit status " + std::to_string(event.exitStatus);
          }
       } else {
          text = "app_spawn_" + pendingSpawn_->alias + ": the " +
@@ -997,8 +1005,16 @@ void Handler::finishWebRun(WebStackEvent event) {
    }
 
    if (event.kind == WebStackEvent::Kind::BrowserExited) {
-      std::fprintf(stderr,
-                   "sdl3mcp: web: the browser exited; the web stack was stopped\n");
+      if (event.exitStatus != 0) {
+         std::fprintf(stderr,
+                      "sdl3mcp: web: the browser exited with status %d; the web "
+                      "stack was stopped\n",
+                      event.exitStatus);
+      } else {
+         std::fprintf(stderr,
+                      "sdl3mcp: web: the browser exited; the web stack was "
+                      "stopped\n");
+      }
    } else if (!event.detail.empty()) {
       std::fprintf(stderr, "sdl3mcp: web: %s; the web stack was stopped\n",
                    event.detail.c_str());
@@ -1017,12 +1033,9 @@ void Handler::stopWebRun() {
    webRun_.reset();
 }
 
-bool Handler::startTarget(const SpawnTarget& target, std::string_view endpoint,
-                          std::int64_t timeoutMs,
-                          ToolCompletionDelegate& completion,
-                          std::string& error) {
-   error.clear();
-
+Result<void, TransportError> Handler::startTarget(
+    const SpawnTarget& target, std::string_view endpoint,
+    std::int64_t timeoutMs, ToolCompletionDelegate& completion) {
    std::vector<std::string> command = targetCommand(target, endpoint);
    std::vector<char*> argv;
    argv.reserve(command.size() + 1);
@@ -1033,18 +1046,18 @@ bool Handler::startTarget(const SpawnTarget& target, std::string_view endpoint,
 
    int execPipe[2] = {-1, -1};
    if (::pipe(execPipe) != 0) {
-      error = std::string("cannot create the exec channel: ") + std::strerror(errno);
-      return false;
+      return TransportError{std::string("cannot create the exec channel: ") +
+                            std::strerror(errno)};
    }
    for (const int fd : execPipe) {
       const int flags = ::fcntl(fd, F_GETFD);
       if (flags < 0 || ::fcntl(fd, F_SETFD, flags | FD_CLOEXEC) < 0) {
-         error =
+         const std::string message =
              std::string("cannot make the exec channel close-on-exec: ") +
              std::strerror(errno);
          ::close(execPipe[0]);
          ::close(execPipe[1]);
-         return false;
+         return TransportError{message};
       }
    }
    const int readFlags = ::fcntl(execPipe[0], F_GETFL);
@@ -1056,10 +1069,11 @@ bool Handler::startTarget(const SpawnTarget& target, std::string_view endpoint,
 
    const pid_t pid = ::fork();
    if (pid < 0) {
-      error = std::string("cannot fork the application: ") + std::strerror(errno);
+      const std::string message =
+          std::string("cannot fork the application: ") + std::strerror(errno);
       ::close(execPipe[0]);
       ::close(execPipe[1]);
-      return false;
+      return TransportError{message};
    }
 
    if (pid == 0) {
@@ -1068,7 +1082,7 @@ bool Handler::startTarget(const SpawnTarget& target, std::string_view endpoint,
       sigemptyset(&empty);
       ::sigprocmask(SIG_SETMASK, &empty, nullptr);
 
-      /* SA_NOCLDWAIT is the Handler's policy for its own children, not the app's. */
+      /* The Handler's SIGCHLD handling is its own; the app gets the default. */
       struct sigaction action{};
       action.sa_handler = SIG_DFL;
       sigemptyset(&action.sa_mask);
@@ -1089,7 +1103,7 @@ bool Handler::startTarget(const SpawnTarget& target, std::string_view endpoint,
       /* Keep the exec channel on fd 3; everything else above 2 is not the app's. */
       ::dup2(execPipe[1], 3);
       (void)::fcntl(3, F_SETFD, 0);
-      closeDescriptorsAbove(4);
+      closeDescriptorsFrom(4);
 
       ::execvp(argv[0], argv.data());
 
@@ -1109,7 +1123,7 @@ bool Handler::startTarget(const SpawnTarget& target, std::string_view endpoint,
    pending.deadline = Clock::now() + std::chrono::milliseconds(timeoutMs);
    pending.timeoutMs = timeoutMs;
    pendingSpawn_ = std::move(pending);
-   return true;
+   return {};
 }
 
 /*
@@ -1165,7 +1179,7 @@ void Handler::expireSpawn(Clock::time_point now) {
        "app_spawn_" + pendingSpawn_->alias + " timed out after " +
        std::to_string(pendingSpawn_->timeoutMs) +
        " ms waiting for the application to connect";
-   if (pendingSpawn_->kind == PendingSpawn::Kind::Web) {
+   if (pendingSpawn_->isWeb()) {
       /* A timed-out web spawn stops its stack; the browser is spawn-and-forget. */
       text += "; the web stack was stopped";
       if (pendingSpawn_->pid > 0) {
@@ -1197,7 +1211,7 @@ void Handler::cancelSpawn() {
    if (!pendingSpawn_.has_value()) {
       return;
    }
-   if (pendingSpawn_->kind == PendingSpawn::Kind::Web) {
+   if (pendingSpawn_->isWeb()) {
       stopWebRun();
    }
    if (pendingSpawn_->errorFd >= 0) {
@@ -1221,14 +1235,14 @@ void Handler::handleForward(const ToolOrder& order,
    std::int64_t timeoutMs = options_.timeoutMs;
    nlohmann::json arguments = order.arguments;
    if (arguments.contains("timeout_ms")) {
-      std::int64_t requested = 0;
-      if (!readInteger(arguments, "timeout_ms", requested) || requested < 1 ||
-          requested > kMaxTimeoutMs) {
-         completion.complete(ToolResult::text(
-             order.name + " timeout_ms must be in 1..60000", true));
+      const Result<std::int64_t, ProtocolError> requested =
+          readTimeoutMs(arguments, options_.timeoutMs, order.name);
+      if (!requested) {
+         completion.complete(
+             ToolResult::text(requested.error().message, true));
          return;
       }
-      timeoutMs = requested + kForwardGraceMs;
+      timeoutMs = *requested + kForwardGraceMs;
       arguments.erase("timeout_ms");
    }
 
@@ -1304,12 +1318,11 @@ void Handler::detachApp(std::string reason) {
    if (appPeer_ == nullptr) {
       return;
    }
-   (void)reason;
    std::unique_ptr<AppPeer> peer = std::move(appPeer_);
    appFd_ = -1;
    appReady_ = false;
    /* close() reports onAppDetached once, which fails the remaining forwards. */
-   peer->close();
+   peer->close(std::move(reason));
 }
 
 bool Handler::peerAdvertises(std::string_view name) const {
@@ -1321,11 +1334,9 @@ bool Handler::peerAdvertises(std::string_view name) const {
    return false;
 }
 
-ToolResult Handler::presentFrame(const std::string& name,
-                                 const nlohmann::json& arguments,
+ToolResult Handler::presentFrame(const nlohmann::json& arguments,
                                  const nlohmann::json& header,
                                  std::vector<std::uint8_t> payload) const {
-   (void)name;
    const int width = header.value("width", 0);
    const int height = header.value("height", 0);
 
@@ -1434,11 +1445,11 @@ void Handler::onAppAttached(std::vector<nlohmann::json> tools) {
    completeWaiters("an application session attached");
 
    if (pendingSpawn_.has_value()) {
-      if (pendingSpawn_->kind == PendingSpawn::Kind::Web &&
+      if (pendingSpawn_->isWeb() &&
           pendingSpawn_->pid < 0 && webRun_) {
          pendingSpawn_->pid = webRun_->browserPid();
       }
-      const bool isWeb = pendingSpawn_->kind == PendingSpawn::Kind::Web;
+      const bool isWeb = pendingSpawn_->isWeb();
       completeSpawn("spawned " + pendingSpawn_->alias + " (" +
                         (isWeb ? "browser pid " : "pid ") +
                         std::to_string(pendingSpawn_->pid) + ")",
@@ -1453,12 +1464,11 @@ void Handler::onAppToolsChanged(std::vector<nlohmann::json> tools) {
 }
 
 void Handler::onAppDetached(std::string reason) {
-   (void)reason;
    appReady_ = false;
    peerTools_.clear();
    rebuildCatalog();
    publishToolsIfChanged(false);
-   failPendingForwards("the application closed its connection during ", "");
+   failPendingForwards(reason + " during ", "");
 }
 
 void Handler::onAppContent(std::uint64_t requestId, nlohmann::json result) {
@@ -1467,13 +1477,15 @@ void Handler::onAppContent(std::uint64_t requestId, nlohmann::json result) {
       return;
    }
 
-   ToolResult decoded;
-   std::string error;
-   if (!ToolResult::decode(result, {}, decoded, error)) {
+   Result<ToolResult, ProtocolError> decoded =
+       ToolResult::decode(result, {});
+   if (!decoded) {
       entry->second.completion->complete(ToolResult::text(
-          "the application returned an invalid result: " + error, true));
+          "the application returned an invalid result: " +
+              decoded.error().message,
+          true));
    } else {
-      entry->second.completion->complete(std::move(decoded));
+      entry->second.completion->complete(std::move(*decoded));
    }
    forwards_.erase(entry);
 }
@@ -1486,15 +1498,17 @@ void Handler::onAppFrame(std::uint64_t requestId,
       return;
    }
 
-   ToolResult decoded;
-   std::string error;
-   if (!ToolResult::decode(header, std::move(payload), decoded, error)) {
+   Result<ToolResult, ProtocolError> decoded =
+       ToolResult::decode(header, std::move(payload));
+   if (!decoded) {
       entry->second.completion->complete(ToolResult::text(
-          "the application sent an invalid frame result: " + error, true));
+          "the application sent an invalid frame result: " +
+              decoded.error().message,
+          true));
    } else {
-      entry->second.completion->complete(
-          presentFrame(entry->second.name, entry->second.arguments, decoded.content,
-                       std::move(decoded.payload)));
+      entry->second.completion->complete(presentFrame(
+          entry->second.arguments, decoded->content,
+          std::move(decoded->payload)));
    }
    forwards_.erase(entry);
 }

@@ -26,39 +26,37 @@ std::string actionPrefix(std::size_t index) {
   move or a positioned button that warps sets it and every other action leaves
   it empty.
 */
-bool appendActionEvents(const InputAction& action, BatchContext& context,
-                        std::vector<SDL_Event>& events, std::optional<SDL_FPoint>& warp,
-                        std::string& error) {
+Result<void, ProtocolError> appendActionEvents(
+    const InputAction& action, BatchContext& context,
+    std::vector<SDL_Event>& events, std::optional<SDL_FPoint>& warp) {
    if (const auto* key = std::get_if<KeyInput>(&action)) {
-      return context.keyState.apply(*key, context.timestamp, events, error);
+      return context.keyState.apply(*key, context.timestamp, events);
    }
    if (const auto* text = std::get_if<TextInput>(&action)) {
       return buildTextEvent(*text, context.windowID, context.textInputActive,
-                            context.timestamp, events, error);
+                            context.timestamp, events);
    }
    if (const auto* move = std::get_if<MouseMoveInput>(&action)) {
-      return context.mouseState.apply(*move, context.timestamp, events, warp, error);
+      return context.mouseState.apply(*move, context.timestamp, events, warp);
    }
    if (const auto* button = std::get_if<MouseButtonInput>(&action)) {
-      return context.mouseState.apply(*button, context.timestamp, events, warp, error);
+      return context.mouseState.apply(*button, context.timestamp, events, warp);
    }
    if (const auto* scroll = std::get_if<ScrollInput>(&action)) {
-      return context.mouseState.apply(*scroll, context.timestamp, events, error);
+      return context.mouseState.apply(*scroll, context.timestamp, events);
    }
 
    context.keyState.releaseAllKeys(context.timestamp, events);
    context.mouseState.releaseAllButtons(context.timestamp, events);
-   return true;
+   return {};
 }
 
 }  // namespace
 
-bool buildBatchPlan(const InputBatch& batch, const KeyReplayer& keyReplayer,
-                    const MouseReplayer& mouseReplayer, SDL_WindowID windowID,
-                    bool textInputActive, Uint64 timestamp, AppliedBatchPlan& plan,
-                    std::string& error) {
-   error.clear();
-
+Result<void, ProtocolError> buildBatchPlan(
+    const InputBatch& batch, const KeyReplayer& keyReplayer,
+    const MouseReplayer& mouseReplayer, SDL_WindowID windowID,
+    bool textInputActive, Uint64 timestamp, AppliedBatchPlan& plan) {
    KeyReplayer keyState = keyReplayer;
    MouseReplayer mouseState = mouseReplayer;
    BatchContext context{windowID, textInputActive, timestamp, keyState, mouseState};
@@ -71,9 +69,10 @@ bool buildBatchPlan(const InputBatch& batch, const KeyReplayer& keyReplayer,
    for (std::size_t index = 0; index < batch.actions.size(); ++index) {
       std::vector<SDL_Event> events;
       std::optional<SDL_FPoint> warp;
-      if (!appendActionEvents(batch.actions[index], context, events, warp, error)) {
-         error = actionPrefix(index) + error;
-         return false;
+      const Result<void, ProtocolError> applied =
+          appendActionEvents(batch.actions[index], context, events, warp);
+      if (!applied) {
+         return ProtocolError{actionPrefix(index) + applied.error().message};
       }
       eventsByAction.push_back(std::move(events));
       warpsByAction.push_back(warp);
@@ -83,7 +82,7 @@ bool buildBatchPlan(const InputBatch& batch, const KeyReplayer& keyReplayer,
    plan.warpsByAction = std::move(warpsByAction);
    plan.keyState = keyState;
    plan.mouseState = mouseState;
-   return true;
+   return {};
 }
 
 }  // namespace sdl3mcp

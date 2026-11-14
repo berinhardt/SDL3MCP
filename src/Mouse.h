@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "Input.h"
+#include "Result.h"
 
 namespace sdl3mcp {
 
@@ -49,11 +50,12 @@ class MouseReplayer {
      Appends the motion event for one move. Absolute moves land on the clamped
      target; a warp replayer reports that target in `warp` and leaves the deltas
      at zero, a relative or non-warping move reports the delta from the old
-     cursor. Relative moves treat x/y as dx/dy and never warp. Returns false with
-     one line of text in `error` when no window is bound.
+     cursor. Relative moves treat x/y as dx/dy and never warp. The error says
+     when no window is bound.
    */
-   bool apply(const MouseMoveInput& input, Uint64 timestamp, std::vector<SDL_Event>& events,
-              std::optional<SDL_FPoint>& warp, std::string& error);
+   Result<void, ProtocolError> apply(const MouseMoveInput& input, Uint64 timestamp,
+                                     std::vector<SDL_Event>& events,
+                                     std::optional<SDL_FPoint>& warp);
 
    /*
      Appends the down, up, or down-then-up events for one button action. An
@@ -63,12 +65,13 @@ class MouseReplayer {
      and never warps. A down of a held button and an up of a non-held button are
      refused.
    */
-   bool apply(const MouseButtonInput& input, Uint64 timestamp, std::vector<SDL_Event>& events,
-              std::optional<SDL_FPoint>& warp, std::string& error);
+   Result<void, ProtocolError> apply(const MouseButtonInput& input, Uint64 timestamp,
+                                     std::vector<SDL_Event>& events,
+                                     std::optional<SDL_FPoint>& warp);
 
    /* Appends one wheel event at the current virtual cursor. */
-   bool apply(const ScrollInput& input, Uint64 timestamp, std::vector<SDL_Event>& events,
-              std::string& error);
+   Result<void, ProtocolError> apply(const ScrollInput& input, Uint64 timestamp,
+                                     std::vector<SDL_Event>& events);
 
    /* Releases every held button in reverse press order, ending at none. */
    void releaseAllButtons(Uint64 timestamp, std::vector<SDL_Event>& events);

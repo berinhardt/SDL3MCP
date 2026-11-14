@@ -157,10 +157,11 @@ void Pipeline::applyInput(Request& request, std::uint64_t frame) {
        window_ != nullptr && SDL_TextInputActive(window_);
 
    AppliedBatchPlan plan{keyReplayer_, mouseReplayer_};
-   std::string error;
-   if (!buildBatchPlan(request.batch, keyReplayer_, mouseReplayer_, windowID_,
-                       textInputActive, SDL_GetTicksNS(), plan, error)) {
-      request.error = std::move(error);
+   const Result<void, ProtocolError> applied =
+       buildBatchPlan(request.batch, keyReplayer_, mouseReplayer_, windowID_,
+                      textInputActive, SDL_GetTicksNS(), plan);
+   if (!applied) {
+      request.error = applied.error().message;
       failed_.push_back(std::move(request));
       return;
    }
@@ -205,11 +206,11 @@ void Pipeline::completeWrittenFrame() {
 void Pipeline::completeRequest(Request& request, const Frame& frame) {
    Frame answer = frame;
    if (request.region.has_value()) {
-      std::string error;
-      std::optional<Frame> cropped = cropFrame(frame, *request.region, error);
-      if (!cropped.has_value()) {
-         stats_.lastError = error;
-         request.completion->complete(ToolResult::text(error, true));
+      Result<Frame, ProtocolError> cropped = cropFrame(frame, *request.region);
+      if (!cropped) {
+         stats_.lastError = cropped.error().message;
+         request.completion->complete(
+             ToolResult::text(std::move(cropped.error().message), true));
          return;
       }
       answer = std::move(*cropped);
@@ -244,11 +245,11 @@ void Pipeline::writeFrame(const std::uint8_t* data,
       return;
    }
 
-   const std::optional<std::string> error =
+   const Result<void, ProtocolError> valid =
        validateFrame(data, size, width, height, maxFrameBytes_);
-   if (error.has_value()) {
+   if (!valid) {
       ++stats_.dropped;
-      stats_.lastError = *error;
+      stats_.lastError = valid.error().message;
       return;
    }
 

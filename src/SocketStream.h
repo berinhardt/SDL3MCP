@@ -6,6 +6,7 @@
 #include <string>
 #include <string_view>
 
+#include "Result.h"
 #include "Stream.h"
 
 #ifdef __EMSCRIPTEN__
@@ -51,21 +52,20 @@ class SocketStream : public StreamBase {
      The browser arm creates the WebSocket and registers its callbacks, so a
      success means the dial is under way and onOpen arrives later; a failure the
      browser reports afterwards reaches the handler as onError/onClose. Either
-     way a false return leaves nothing open and `error` names the endpoint plus
-     the resolver, timeout, or connect error.
+     way a failure leaves nothing open and the error names the endpoint plus the
+     resolver, timeout, or connect error.
    */
-   bool connect(std::string_view host,
-                std::uint16_t port,
-                std::uint32_t timeoutMs,
-                std::string& error);
+   Result<void, TransportError> connect(std::string_view host,
+                                        std::uint16_t port,
+                                        std::uint32_t timeoutMs);
 
    /*
      Takes ownership of a socket that is already connected (an accepted
      connection). The fd is made non-blocking and the stream reports onOpen, so
-     the handler must be set before adopt(). On failure the fd is closed and
-     `error` says why.
+     the handler must be set before adopt(). On failure the fd is closed and the
+     error says why.
    */
-   bool adopt(int fd, std::string_view endpoint, std::string& error);
+   Result<void, TransportError> adopt(int fd, std::string_view endpoint);
 
    /* The native descriptor, for a poll loop; -1 when nothing is open. */
    int fd() const noexcept;

@@ -74,30 +74,26 @@ void checkErrorText(const std::string& error,
 std::optional<InputRequest> parseOk(const nlohmann::json& arguments,
                                     const char* file,
                                     int line) {
-   std::string error;
-   std::optional<InputRequest> request =
-       sdl3mcp::parseInputArguments(arguments, error);
-   if (!request.has_value() || !error.empty()) {
+   auto request = sdl3mcp::parseInputArguments(arguments);
+   if (!request) {
       std::fprintf(stderr, "%s:%d: unexpected error \"%s\"\n", file, line,
-                   error.c_str());
+                   request.error().message.c_str());
       std::exit(1);
    }
-   return request;
+   return *request;
 }
 
 void expectError(const nlohmann::json& arguments,
                  std::string_view fragment,
                  const char* file,
                  int line) {
-   std::string error;
-   const std::optional<InputRequest> request =
-       sdl3mcp::parseInputArguments(arguments, error);
-   if (request.has_value()) {
+   const auto request = sdl3mcp::parseInputArguments(arguments);
+   if (request) {
       std::fprintf(stderr, "%s:%d: expected an error matching \"%.*s\"\n", file,
                    line, static_cast<int>(fragment.size()), fragment.data());
       std::exit(1);
    }
-   checkErrorText(error, fragment, file, line);
+   checkErrorText(request.error().message, fragment, file, line);
 }
 
 void expectIndexedError(const nlohmann::json& arguments,
@@ -106,15 +102,15 @@ void expectIndexedError(const nlohmann::json& arguments,
                         const char* file,
                         int line) {
    const std::string prefix = "actions[" + std::to_string(index) + "]: ";
-   std::string error;
-   const std::optional<InputRequest> request =
-       sdl3mcp::parseInputArguments(arguments, error);
-   if (request.has_value() || error.compare(0, prefix.size(), prefix) != 0) {
+   const auto request = sdl3mcp::parseInputArguments(arguments);
+   if (request ||
+       request.error().message.compare(0, prefix.size(), prefix) != 0) {
       std::fprintf(stderr, "%s:%d: expected an error prefixed \"%s\", got \"%s\"\n",
-                   file, line, prefix.c_str(), error.c_str());
+                   file, line, prefix.c_str(),
+                   request.error().message.c_str());
       std::exit(1);
    }
-   checkErrorText(error, fragment, file, line);
+   checkErrorText(request.error().message, fragment, file, line);
 }
 
 #define PARSE_OK(arguments) parseOk((arguments), __FILE__, __LINE__)
@@ -126,30 +122,26 @@ void expectIndexedError(const nlohmann::json& arguments,
 std::optional<CaptureArguments> parseCaptureOk(const nlohmann::json& arguments,
                                                const char* file,
                                                int line) {
-   std::string error;
-   std::optional<CaptureArguments> parsed =
-       sdl3mcp::parseCaptureArguments(arguments, error);
-   if (!parsed.has_value() || !error.empty()) {
+   auto parsed = sdl3mcp::parseCaptureArguments(arguments);
+   if (!parsed) {
       std::fprintf(stderr, "%s:%d: unexpected capture error \"%s\"\n", file, line,
-                   error.c_str());
+                   parsed.error().message.c_str());
       std::exit(1);
    }
-   return parsed;
+   return *parsed;
 }
 
 void expectCaptureError(const nlohmann::json& arguments,
                         std::string_view fragment,
                         const char* file,
                         int line) {
-   std::string error;
-   const std::optional<CaptureArguments> parsed =
-       sdl3mcp::parseCaptureArguments(arguments, error);
-   if (parsed.has_value()) {
+   const auto parsed = sdl3mcp::parseCaptureArguments(arguments);
+   if (parsed) {
       std::fprintf(stderr, "%s:%d: expected a capture error matching \"%.*s\"\n",
                    file, line, static_cast<int>(fragment.size()), fragment.data());
       std::exit(1);
    }
-   checkErrorText(error, fragment, file, line);
+   checkErrorText(parsed.error().message, fragment, file, line);
 }
 
 #define CAPTURE_OK(arguments) parseCaptureOk((arguments), __FILE__, __LINE__)

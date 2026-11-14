@@ -31,6 +31,7 @@
 
 #include "Frame.h"
 #include "Input.h"
+#include "Result.h"
 
 namespace sdl3mcp {
 
@@ -51,7 +52,7 @@ struct InputRequest {
   are reported before anything is queued, with the 0-based action index; key
   names and chords still resolve at apply time. Pure: no SDL call and no KeyMap.
 */
-std::optional<InputRequest> parseInputArguments(const nlohmann::json& arguments,
-                                                std::string& error);
+Result<InputRequest, ProtocolError> parseInputArguments(
+    const nlohmann::json& arguments);
 
 }  // namespace sdl3mcp

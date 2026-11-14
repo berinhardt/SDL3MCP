@@ -12,44 +12,17 @@
 #include <cstring>
 #include <string>
 
+#include "Configuration.h"
+#include "Posix.h"
+
 namespace sdl3mcp {
-namespace {
-
-/* Prints IPv6 literals in brackets so the error text reads as an endpoint. */
-std::string endpointText(std::string_view host, std::uint16_t port) {
-   std::string text;
-   if (host.find(':') != std::string_view::npos) {
-      text = "[" + std::string(host) + "]";
-   } else {
-      text = std::string(host);
-   }
-   text += ":" + std::to_string(port);
-   return text;
-}
-
-bool setNonBlocking(int fd, int& error) {
-   const int flags = ::fcntl(fd, F_GETFL, 0);
-   if (flags < 0) {
-      error = errno;
-      return false;
-   }
-   if (::fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
-      error = errno;
-      return false;
-   }
-   return true;
-}
-
-}  // namespace
 
 Listener::~Listener() {
    close();
 }
 
-bool Listener::listen(std::string_view host,
-                      std::uint16_t port,
-                      std::string& error) {
-   error.clear();
+Result<void, TransportError> Listener::listen(std::string_view host,
+                                              std::uint16_t port) {
    close();
 
    const std::string endpoint = endpointText(host, port);
@@ -65,8 +38,8 @@ bool Listener::listen(std::string_view host,
    const int resolved =
        ::getaddrinfo(hostText.c_str(), service.c_str(), &hints, &addresses);
    if (resolved != 0) {
-      error = "cannot resolve " + endpoint + ": " + ::gai_strerror(resolved);
-      return false;
+      return TransportError{"cannot resolve " + endpoint + ": " +
+                            ::gai_strerror(resolved)};
    }
 
    int lastError = 0;
@@ -113,36 +86,33 @@ bool Listener::listen(std::string_view host,
 
       ::freeaddrinfo(addresses);
       fd_ = fd;
-      return true;
+      return {};
    }
 
    ::freeaddrinfo(addresses);
    if (lastError == 0) {
       lastError = EADDRNOTAVAIL;
    }
-   error = "cannot listen on " + endpoint + ": " + std::strerror(lastError);
-   return false;
+   return TransportError{"cannot listen on " + endpoint + ": " +
+                         std::strerror(lastError)};
 }
 
-int Listener::accept(std::string& error) {
-   error.clear();
+Result<std::optional<int>, TransportError> Listener::accept() {
    if (fd_ < 0) {
-      error = "the listener is not open";
-      return -1;
+      return TransportError{"the listener is not open"};
    }
 
    const int client =
        ::accept4(fd_, nullptr, nullptr, SOCK_NONBLOCK | SOCK_CLOEXEC);
    if (client >= 0) {
-      return client;
+      return std::optional<int>{client};
    }
 
    if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
-      return -1;
+      return std::optional<int>{};
    }
-   error = std::string("cannot accept an application connection: ") +
-           std::strerror(errno);
-   return -1;
+   return TransportError{std::string("cannot accept an application connection: ") +
+                         std::strerror(errno)};
 }
 
 void Listener::close() {

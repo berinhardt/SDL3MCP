@@ -10,6 +10,13 @@
 namespace sdl3mcp {
 
 /*
+  Formats HOST:PORT for a diagnostic, bracketing an IPv6 literal so the text
+  reads as an endpoint. The one spelling every stream, listener, and the Handler
+  use.
+*/
+std::string endpointText(std::string_view host, std::uint16_t port);
+
+/*
   Parses HOST:PORT or [V6]:PORT. `allowZeroPort` exists for the Handler's
   listener, which may bind an ephemeral port; a dial target always needs
   1..65535. A scheme is never part of the grammar: the transport adds it.

@@ -52,6 +52,12 @@ class Stream {
       byteLength bytes; the handler asks for them from onMessage.
    */
    virtual void expectPayload(size_t size) = 0;
+   /*
+      Consumes and drops the next `size` bytes without buffering them. A rejected
+      raw frame still has its payload on the wire, so skipping it keeps the next
+      line a line.
+   */
+   virtual void discardPayload(size_t size) = 0;
    virtual void close() = 0;
    /* Reads and delivers whatever the transport has available; a no-op where
       the platform pushes messages itself. */
@@ -92,8 +98,14 @@ class StreamBase : public Stream {
      line. Called from onMessage when that line announced a raw payload.
    */
    void expectPayload(size_t size) override;
+   /*
+      Consumes `size` bytes and drops them without allocating or calling
+      onPayload. A rejected raw frame still has a payload on the wire; skipping
+      it keeps the stream aligned so the session stays attached.
+   */
+   void discardPayload(size_t size) override;
    bool awaitingPayload() const noexcept {
-      return payloadExpected_ > payload_.size();
+      return payloadExpected_ > payloadReceived_;
    }
 
    bool wantsWrite() const override { return wantsWrite_; }
@@ -108,6 +120,8 @@ class StreamBase : public Stream {
    std::string line_;
    std::vector<uint8_t> payload_;
    size_t payloadExpected_ = 0;
+   size_t payloadReceived_ = 0;
+   bool discardingPayload_ = false;
    bool finished_ = false;
    bool wantsWrite_ = false;
 };

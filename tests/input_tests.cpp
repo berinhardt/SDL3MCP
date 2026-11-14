@@ -53,21 +53,19 @@ void expectKey(const KeyMap &map,
                SDL_Scancode scancode,
                SDL_Keymod modifiers = SDL_KMOD_NONE)
 {
-    std::string error;
-    const std::optional<KeyChord> chord = sdl3mcp::resolveKey(spec, map, error);
-    CHECK(chord.has_value());
-    CHECK(error.empty());
+    const auto chord = sdl3mcp::resolveKey(spec, map);
+    CHECK(chord.hasValue());
     CHECK(chord->scancode == scancode);
     CHECK(chord->modifiers == modifiers);
 }
 
 void expectKeyError(const KeyMap &map, std::string_view spec, std::string_view fragment)
 {
-    std::string error;
-    CHECK(!sdl3mcp::resolveKey(spec, map, error).has_value());
-    CHECK(!error.empty());
-    CHECK(error.find('\n') == std::string::npos);
-    CHECK(error.find(fragment) != std::string::npos);
+    const auto chord = sdl3mcp::resolveKey(spec, map);
+    CHECK(!chord);
+    CHECK(!chord.error().message.empty());
+    CHECK(chord.error().message.find('\n') == std::string::npos);
+    CHECK(chord.error().message.find(fragment) != std::string::npos);
 }
 
 void expectChord(const KeyMap &map,
@@ -76,11 +74,9 @@ void expectChord(const KeyMap &map,
                  SDL_Scancode scancode,
                  SDL_Keymod modifiers = SDL_KMOD_NONE)
 {
-    std::string error;
-    const std::optional<KeyChord> chord =
-        sdl3mcp::resolveKeyChord(spec, explicitModifiers, map, error);
-    CHECK(chord.has_value());
-    CHECK(error.empty());
+    const auto chord =
+        sdl3mcp::resolveKeyChord(spec, explicitModifiers, map);
+    CHECK(chord.hasValue());
     CHECK(chord->scancode == scancode);
     CHECK(chord->modifiers == modifiers);
 }
@@ -90,11 +86,12 @@ void expectChordError(const KeyMap &map,
                       std::span<const Modifier> explicitModifiers,
                       std::string_view fragment)
 {
-    std::string error;
-    CHECK(!sdl3mcp::resolveKeyChord(spec, explicitModifiers, map, error).has_value());
-    CHECK(!error.empty());
-    CHECK(error.find('\n') == std::string::npos);
-    CHECK(error.find(fragment) != std::string::npos);
+    const auto chord =
+        sdl3mcp::resolveKeyChord(spec, explicitModifiers, map);
+    CHECK(!chord);
+    CHECK(!chord.error().message.empty());
+    CHECK(chord.error().message.find('\n') == std::string::npos);
+    CHECK(chord.error().message.find(fragment) != std::string::npos);
 }
 
 TEST_CASE("parse modifier")
@@ -143,10 +140,8 @@ TEST_CASE("resolve key")
 TEST_CASE("resolve key character")
 {
     const KeyMap map;
-    std::string error;
-    const std::optional<KeyChord> bang = sdl3mcp::resolveKey("!", map, error);
-    CHECK(bang.has_value());
-    CHECK(error.empty());
+    const auto bang = sdl3mcp::resolveKey("!", map);
+    CHECK(bang.hasValue());
     CHECK(SDL_GetKeyFromScancode(bang->scancode, bang->modifiers, false) == '!');
 }
 
@@ -207,14 +202,11 @@ TEST_CASE("explicit modifiers")
 TEST_CASE("character chord")
 {
     const KeyMap map;
-    std::string error;
-    const std::optional<KeyChord> single = sdl3mcp::resolveKey("!", map, error);
-    CHECK(single.has_value());
+    const auto single = sdl3mcp::resolveKey("!", map);
+    CHECK(single.hasValue());
 
-    const std::optional<KeyChord> chord =
-        sdl3mcp::resolveKeyChord("ctrl+!", {}, map, error);
-    CHECK(chord.has_value());
-    CHECK(error.empty());
+    const auto chord = sdl3mcp::resolveKeyChord("ctrl+!", {}, map);
+    CHECK(chord.hasValue());
     CHECK(chord->scancode == single->scancode);
     CHECK(chord->modifiers == (single->modifiers | SDL_KMOD_LCTRL));
     CHECK((chord->modifiers & SDL_KMOD_LCTRL) != 0);
@@ -244,9 +236,8 @@ TEST_CASE("only left side bits")
         "ctrl+shift", "ctrl+!",     "keypad plus",  "ctrl+keypad plus",
     };
     for (const std::string_view spec : specs) {
-        std::string error;
-        const std::optional<KeyChord> chord = sdl3mcp::resolveKeyChord(spec, {}, map, error);
-        CHECK(chord.has_value());
+        const auto chord = sdl3mcp::resolveKeyChord(spec, {}, map);
+        CHECK(chord.hasValue());
         CHECK((chord->modifiers & ~kLeftSideMask) == 0);
     }
 }
@@ -278,14 +269,15 @@ TEST_CASE("unsupported modifier if producible")
     const KeyMap map;
     for (std::uint32_t codepoint = 0xA0; codepoint <= 0x2FF; ++codepoint) {
         const std::string character = encodeUtf8(codepoint);
-        std::string error;
-        if (sdl3mcp::resolveKey(character, map, error).has_value()) {
+        const auto chord = sdl3mcp::resolveKey(character, map);
+        if (chord.hasValue()) {
             continue;
         }
-        if (error.find("unsupported modifier") == std::string::npos) {
+        if (chord.error().message.find("unsupported modifier") ==
+            std::string::npos) {
             continue;
         }
-        CHECK(error == "key requires an unsupported modifier");
+        CHECK(chord.error().message == "key requires an unsupported modifier");
         return;
     }
 }
@@ -302,26 +294,25 @@ InputBatch batchWith(const InputAction &action)
 
 void expectValidBatch(const InputBatch &batch)
 {
-    const std::optional<std::string> error = sdl3mcp::validateStructure(batch);
-    CHECK(!error.has_value());
+    CHECK(sdl3mcp::validateStructure(batch).hasValue());
 }
 
 void expectBatchError(const InputBatch &batch, std::string_view fragment)
 {
-    const std::optional<std::string> error = sdl3mcp::validateStructure(batch);
-    CHECK(error.has_value());
-    CHECK(!error->empty());
-    CHECK(error->find('\n') == std::string::npos);
-    CHECK(error->find(fragment) != std::string::npos);
+    const auto error = sdl3mcp::validateStructure(batch);
+    CHECK(!error);
+    CHECK(!error.error().message.empty());
+    CHECK(error.error().message.find('\n') == std::string::npos);
+    CHECK(error.error().message.find(fragment) != std::string::npos);
 }
 
 void expectIndexedError(const InputBatch &batch, std::size_t index, std::string_view fragment)
 {
-    const std::optional<std::string> error = sdl3mcp::validateStructure(batch);
-    CHECK(error.has_value());
+    const auto error = sdl3mcp::validateStructure(batch);
+    CHECK(!error);
     const std::string prefix = "actions[" + std::to_string(index) + "]: ";
-    CHECK(error->rfind(prefix, 0) == 0);
-    CHECK(error->find(fragment) != std::string::npos);
+    CHECK(error.error().message.rfind(prefix, 0) == 0);
+    CHECK(error.error().message.find(fragment) != std::string::npos);
 }
 
 TEST_CASE("valid batch")
@@ -343,7 +334,7 @@ TEST_CASE("action count limits")
     const InputBatch empty;
     expectBatchError(empty, "at least one action");
     /* The batch rules describe the array, so they carry no action index. */
-    CHECK(sdl3mcp::validateStructure(empty)->rfind("actions[", 0) != 0);
+    CHECK(sdl3mcp::validateStructure(empty).error().message.rfind("actions[", 0) != 0);
 
     InputBatch maxBatch;
     maxBatch.actions.assign(sdl3mcp::kMaxActionsPerBatch, InputAction{ReleaseAllInput{}});
@@ -352,7 +343,7 @@ TEST_CASE("action count limits")
 
     maxBatch.actions.push_back(InputAction{ReleaseAllInput{}});
     expectBatchError(maxBatch, "maximum is 256");
-    CHECK(sdl3mcp::validateStructure(maxBatch)->rfind("actions[", 0) != 0);
+    CHECK(sdl3mcp::validateStructure(maxBatch).error().message.rfind("actions[", 0) != 0);
 }
 
 TEST_CASE("key validation")

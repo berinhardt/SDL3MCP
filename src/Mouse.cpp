@@ -33,14 +33,12 @@ MouseReplayer::MouseReplayer(SDL_WindowID windowID, MouseMetrics metrics)
     : windowID_(windowID), metrics_(metrics) {
 }
 
-bool MouseReplayer::apply(const MouseMoveInput& input, Uint64 timestamp,
-                          std::vector<SDL_Event>& events, std::optional<SDL_FPoint>& warp,
-                          std::string& error) {
-   error.clear();
+Result<void, ProtocolError> MouseReplayer::apply(
+    const MouseMoveInput& input, Uint64 timestamp, std::vector<SDL_Event>& events,
+    std::optional<SDL_FPoint>& warp) {
    warp.reset();
    if (windowID_ == 0) {
-      error = kNoWindowError;
-      return false;
+      return ProtocolError{kNoWindowError};
    }
 
    if (input.mode == MouseMoveInput::Mode::Relative) {
@@ -50,23 +48,21 @@ bool MouseReplayer::apply(const MouseMoveInput& input, Uint64 timestamp,
       appendMotion(events, timestamp, targetX, targetY, input.x, input.y);
       cursorX_ = targetX;
       cursorY_ = targetY;
-      return true;
+      return {};
    }
 
    const float targetX = clampX(input.x);
    const float targetY = clampY(input.y);
    moveTo(targetX, targetY, timestamp, events, warp);
-   return true;
+   return {};
 }
 
-bool MouseReplayer::apply(const MouseButtonInput& input, Uint64 timestamp,
-                          std::vector<SDL_Event>& events, std::optional<SDL_FPoint>& warp,
-                          std::string& error) {
-   error.clear();
+Result<void, ProtocolError> MouseReplayer::apply(
+    const MouseButtonInput& input, Uint64 timestamp,
+    std::vector<SDL_Event>& events, std::optional<SDL_FPoint>& warp) {
    warp.reset();
    if (windowID_ == 0) {
-      error = kNoWindowError;
-      return false;
+      return ProtocolError{kNoWindowError};
    }
 
    const bool held = isHeld(input.button);
@@ -74,14 +70,12 @@ bool MouseReplayer::apply(const MouseButtonInput& input, Uint64 timestamp,
       case MouseButtonAction::Down:
       case MouseButtonAction::Click:
          if (held) {
-            error = kButtonHeldError;
-            return false;
+            return ProtocolError{kButtonHeldError};
          }
          break;
       case MouseButtonAction::Up:
          if (!held) {
-            error = kButtonNotHeldError;
-            return false;
+            return ProtocolError{kButtonNotHeldError};
          }
          break;
    }
@@ -104,15 +98,14 @@ bool MouseReplayer::apply(const MouseButtonInput& input, Uint64 timestamp,
          releaseButton(input.button, timestamp, input.clicks, events);
          break;
    }
-   return true;
+   return {};
 }
 
-bool MouseReplayer::apply(const ScrollInput& input, Uint64 timestamp,
-                          std::vector<SDL_Event>& events, std::string& error) {
-   error.clear();
+Result<void, ProtocolError> MouseReplayer::apply(const ScrollInput& input,
+                                                 Uint64 timestamp,
+                                                 std::vector<SDL_Event>& events) {
    if (windowID_ == 0) {
-      error = kNoWindowError;
-      return false;
+      return ProtocolError{kNoWindowError};
    }
 
    SDL_Event event{};
@@ -128,7 +121,7 @@ bool MouseReplayer::apply(const ScrollInput& input, Uint64 timestamp,
    event.wheel.integer_x = 0;
    event.wheel.integer_y = 0;
    events.push_back(event);
-   return true;
+   return {};
 }
 
 void MouseReplayer::releaseAllButtons(Uint64 timestamp, std::vector<SDL_Event>& events) {

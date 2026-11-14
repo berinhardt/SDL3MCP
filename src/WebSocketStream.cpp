@@ -21,6 +21,7 @@
 #include <string_view>
 #include <utility>
 
+#include "Configuration.h"
 #include "SocketStream.h"
 
 namespace sdl3mcp {
@@ -28,18 +29,6 @@ namespace {
 
 constexpr unsigned short kNormalCloseCode = 1000;
 constexpr unsigned short kGoingAwayCloseCode = 1001;
-
-/* Prints IPv6 literals in brackets so the URL reads as an endpoint. */
-std::string endpointText(std::string_view host, std::uint16_t port) {
-   std::string text;
-   if (host.find(':') != std::string_view::npos) {
-      text = "[" + std::string(host) + "]";
-   } else {
-      text = std::string(host);
-   }
-   text += ":" + std::to_string(port);
-   return text;
-}
 
 std::string withResult(std::string_view action, int result) {
    return std::string(action) + " (result " + std::to_string(result) + ")";
@@ -78,20 +67,16 @@ SocketStream::~SocketStream() {
    close();
 }
 
-bool SocketStream::connect(std::string_view host,
-                           std::uint16_t port,
-                           std::uint32_t timeoutMs,
-                           std::string& error) {
-   error.clear();
+Result<void, TransportError> SocketStream::connect(std::string_view host,
+                                                   std::uint16_t port,
+                                                   std::uint32_t timeoutMs) {
    close();
 
    if (host.empty()) {
-      error = "cannot connect to an empty host";
-      return false;
+      return TransportError{"cannot connect to an empty host"};
    }
    if (port == 0) {
-      error = "cannot connect to port 0";
-      return false;
+      return TransportError{"cannot connect to port 0"};
    }
 
    /*
@@ -103,8 +88,7 @@ bool SocketStream::connect(std::string_view host,
    (void)timeoutMs;
 
    if (!emscripten_websocket_is_supported()) {
-      error = "this browser does not support WebSockets";
-      return false;
+      return TransportError{"this browser does not support WebSockets"};
    }
 
    std::string url = "ws://" + endpointText(host, port);
@@ -121,9 +105,8 @@ bool SocketStream::connect(std::string_view host,
 
    const EMSCRIPTEN_WEBSOCKET_T socket = emscripten_websocket_new(&attributes);
    if (socket <= 0) {
-      error = withResult("the WebSocket for '" + url + "' could not be created",
-                         socket);
-      return false;
+      return TransportError{withResult(
+          "the WebSocket for '" + url + "' could not be created", socket)};
    }
 
    native_->socket = socket;
@@ -152,12 +135,12 @@ bool SocketStream::connect(std::string_view host,
    if (registration != EMSCRIPTEN_RESULT_SUCCESS) {
       /* No callback has run yet, so releasing the socket here is safe. */
       close();
-      error = withResult("the WebSocket callbacks could not be registered",
-                         static_cast<int>(registration));
-      return false;
+      return TransportError{withResult(
+          "the WebSocket callbacks could not be registered",
+          static_cast<int>(registration))};
    }
 
-   return true;
+   return {};
 }
 
 bool SocketStream::sendText(std::string_view text) {

@@ -27,15 +27,22 @@ void StreamBase::feed(const uint8_t* data, size_t size) {
    size_t offset = 0;
    while (offset < size) {
       if (awaitingPayload()) {
-         const size_t missing = payloadExpected_ - payload_.size();
+         const size_t missing = payloadExpected_ - payloadReceived_;
          const size_t taken = std::min(missing, size - offset);
-         payload_.insert(payload_.end(), data + offset, data + offset + taken);
+         if (!discardingPayload_) {
+            payload_.insert(payload_.end(), data + offset,
+                            data + offset + taken);
+         }
+         payloadReceived_ += taken;
          offset += taken;
          if (!awaitingPayload()) {
             std::vector<uint8_t> payload = std::move(payload_);
+            const bool discarded = discardingPayload_;
             payload_.clear();
             payloadExpected_ = 0;
-            if (handler_ != nullptr) {
+            payloadReceived_ = 0;
+            discardingPayload_ = false;
+            if (!discarded && handler_ != nullptr) {
                handler_->onPayload(std::move(payload));
             }
             if (finished_) {
@@ -109,6 +116,8 @@ void StreamBase::fail(std::string_view error) {
    line_.clear();
    payload_.clear();
    payloadExpected_ = 0;
+   payloadReceived_ = 0;
+   discardingPayload_ = false;
    if (handler_ != nullptr) {
       handler_->onError(error);
       handler_->onClose();
@@ -120,7 +129,23 @@ void StreamBase::expectPayload(size_t size) {
       return;
    }
    payloadExpected_ = size;
+   payloadReceived_ = 0;
+   discardingPayload_ = false;
    payload_.clear();
+}
+
+void StreamBase::discardPayload(size_t size) {
+   if (finished_) {
+      return;
+   }
+   payloadExpected_ = size;
+   payloadReceived_ = 0;
+   discardingPayload_ = true;
+   payload_.clear();
+   if (size == 0) {
+      payloadExpected_ = 0;
+      discardingPayload_ = false;
+   }
 }
 
 void StreamBase::failLineTooLong() {

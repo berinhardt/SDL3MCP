@@ -85,6 +85,17 @@ int hexDigitValue(char digit) {
 
 }  // namespace
 
+std::string endpointText(std::string_view host, std::uint16_t port) {
+   std::string text;
+   if (host.find(':') != std::string_view::npos) {
+      text = "[" + std::string(host) + "]";
+   } else {
+      text = std::string(host);
+   }
+   text += ":" + std::to_string(port);
+   return text;
+}
+
 bool parseEndpoint(std::string_view value,
                    std::string_view& host,
                    std::uint16_t& port,

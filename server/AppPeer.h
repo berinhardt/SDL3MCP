@@ -24,6 +24,7 @@
 #include <string_view>
 #include <vector>
 
+#include "Result.h"
 #include "Stream.h"
 
 namespace sdl3mcp {
@@ -60,11 +61,11 @@ class AppPeer : public StreamHandler {
    AppPeer& operator=(const AppPeer&) = delete;
 
    /* Sends initialize and arms the handshake deadline. */
-   bool start(std::string& error);
+   Result<void, TransportError> start();
    /* Reads and delivers whatever the application sent. */
    void pump();
    /* Closes the stream and reports the detach once. */
-   void close();
+   void close(std::string reason = "the Handler closed the application session");
 
    bool isReady() const noexcept { return state_ == State::Ready; }
    bool isClosed() const noexcept { return state_ == State::Closed; }
@@ -75,9 +76,9 @@ class AppPeer : public StreamHandler {
    }
 
    std::uint64_t nextCallId() noexcept { return nextId_++; }
-   bool sendCall(std::uint64_t id,
-                 const std::string& name,
-                 const nlohmann::json& arguments);
+   Result<void, TransportError> sendCall(std::uint64_t id,
+                                         const std::string& name,
+                                         const nlohmann::json& arguments);
 
    /* StreamHandler */
    void onOpen() override;
@@ -98,7 +99,7 @@ class AppPeer : public StreamHandler {
    void handleInitializeResponse(const nlohmann::json& message);
    void handleToolsListResponse(const nlohmann::json& message);
    void handleForwardResponse(std::uint64_t id, const nlohmann::json& message);
-   bool write(nlohmann::json message);
+   Result<void, TransportError> write(nlohmann::json message);
    void detach(std::string reason);
 
    std::unique_ptr<Stream> stream_;

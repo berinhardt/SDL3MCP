@@ -102,10 +102,8 @@ TEST_CASE("the browser dial frames lines, payloads and a close") {
    stream.setHandler(&handler);
    handler.stream = &stream;
 
-   std::string error;
-   REQUIRE(stream.connect("127.0.0.1", static_cast<std::uint16_t>(port), 1000,
-                          error));
-   CHECK(error.empty());
+   REQUIRE(stream.connect("127.0.0.1", static_cast<std::uint16_t>(port), 1000)
+               .hasValue());
 
    CHECK(pumpUntil(stream, [&handler] { return handler.opened; }));
    CHECK(handler.errors.empty());
@@ -142,13 +140,14 @@ TEST_CASE("the browser dial frames lines, payloads and a close") {
 
 TEST_CASE("a dial without a host or port fails before it touches the browser") {
    sdl3mcp::SocketStream stream;
-   std::string error;
 
-   CHECK(!stream.connect("", 7777, 1000, error));
-   CHECK(error.find("empty host") != std::string::npos);
+   const auto emptyHost = stream.connect("", 7777, 1000);
+   CHECK(!emptyHost);
+   CHECK(emptyHost.error().message.find("empty host") != std::string::npos);
 
-   CHECK(!stream.connect("127.0.0.1", 0, 1000, error));
-   CHECK(error.find("port 0") != std::string::npos);
+   const auto zeroPort = stream.connect("127.0.0.1", 0, 1000);
+   CHECK(!zeroPort);
+   CHECK(zeroPort.error().message.find("port 0") != std::string::npos);
 
    CHECK(!stream.sendText("unconnected"));
    CHECK(!stream.sendBinary(nullptr, 4));

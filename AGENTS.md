@@ -210,9 +210,11 @@ CamelCase is for C++ files; `examples/minimal/main.c` stays C.
   it. One forward path serves all tools: `content` is relayed verbatim, a raw
   frame is PNG-encoded and answered as text plus one image block.
 - **Spawn-and-forget for applications.** The Handler does not signal, wait for,
-  or reap a spawned application, and does not kill it on exit; each app owns its
-  cleanup. The web stack is the exception: the Handler owns the page server,
-  bridge and browser and stops them, then removes the throwaway profile.
+  or act on a spawned application, and does not kill it on exit; each app owns
+  its cleanup. The poll loop reaps every exited child so none becomes a zombie,
+  but it ignores a spawned app's status. The web stack is the exception: the
+  Handler owns the page server, bridge and browser, stops them, removes the
+  throwaway profile, and reports the browser's non-zero exit status.
 - **A web run is one lifetime.** `--web=PATH` maps aliases to page roots; the
   entry is always `index.html`. The run preflights `python3`, `websocat`, Firefox
   and the root before forking, picks ephemeral ports, seeds and locks a
@@ -224,9 +226,11 @@ CamelCase is for C++ files; `examples/minimal/main.c` stays C.
   a plan print.
 - **What is compiled where.** `src/SocketStream.cpp` and `src/StdioStream.cpp`
   are desktop-only; `src/WebSocketStream.cpp` takes their place on Emscripten.
-  The common object library holds whichever arm the build can compile, and the
-  protocol above it is shared. `src/StdioStream.cpp` is the Handler's
-  client-facing stream; the library never uses it.
+  The common object library holds the dial arm the build can compile and the
+  protocol above it; `src/StdioStream.cpp` is compiled into
+  `sdl3mcp_server_objects`, so the library archive holds no stdio transport.
+  `src/StdioStream.cpp` is the Handler's client-facing stream; the library never
+  uses it.
 - **fd ownership.** `CONNECT` dials one socket and duplicates nothing, so the
   host keeps its own stdin/stdout; `WEBSOCKET` is the browser's `CONNECT` and
   duplicates nothing. The library has no stdio transport and never owns the
@@ -247,8 +251,9 @@ CamelCase is for C++ files; `examples/minimal/main.c` stays C.
   (`sdl3mcp_common_objects`, `sdl3mcp_app_objects`, `sdl3mcp_server_objects`),
   never a second static copy of the sources.
 - **The targets.** `SDL3MCP::SDL3MCP` is the library and the only target the
-  installed package exports; `SDL3MCP::SERVER` is the `sdl3mcp` executable
-  (gated on `SDL3MCP_BUILD_CLI`); `SDL3MCP::COMMON` is the SDL-free core both
+  installed package exports; `SDL3MCP::SERVER` is the `sdl3mcp` executable and
+  is defined exactly when `SDL3MCP_BUILD_CLI=ON` on a desktop configure (there
+  is no Emscripten Handler); `SDL3MCP::COMMON` is the SDL-free core both
   compose. The object libraries stay internal.
 - **Linux only.** The Handler uses POSIX `poll`, `signalfd`, `pidfd`,
   `fork`/`exec` and process groups. A `WIN32` configure stops with a

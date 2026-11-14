@@ -75,11 +75,11 @@ Runtime::Runtime(Configuration configuration)
 
 Runtime::~Runtime() = default;
 
-bool Runtime::start(std::string& error) {
+Result<void, TransportError> Runtime::start() {
    buildCatalog();
 
    if (!configuration_.hasEndpoint()) {
-      return true;
+      return {};
    }
 
    const SDL3MCP_Configuration& configuration = configuration_.value();
@@ -88,13 +88,15 @@ bool Runtime::start(std::string& error) {
 
    /* The session sets the stream's handler, so the dial can report onOpen. */
    auto session = std::make_unique<Session>(catalog_, std::move(stream));
-   if (!socket->connect(configuration.connect_host, configuration.connect_port,
-                        configuration.connect_timeout_ms, error)) {
-      return false;
+   const Result<void, TransportError> dial =
+       socket->connect(configuration.connect_host, configuration.connect_port,
+                       configuration.connect_timeout_ms);
+   if (!dial) {
+      return dial.error();
    }
 
    session_ = std::move(session);
-   return true;
+   return {};
 }
 
 SDL_AppResult Runtime::setWindow(SDL_Window* window) {
@@ -224,11 +226,11 @@ void Runtime::buildCatalog() {
          };
       } else if (definition.name == "sdl_input") {
          tool.invoke = [this](ToolOrder order, ToolCompletionDelegate& completion) {
-            std::string error;
-            std::optional<InputRequest> request =
-                parseInputArguments(order.arguments, error);
-            if (!request.has_value()) {
-               completion.complete(ToolResult::text(std::move(error), true));
+            Result<InputRequest, ProtocolError> request =
+                parseInputArguments(order.arguments);
+            if (!request) {
+               completion.complete(
+                   ToolResult::text(std::move(request.error().message), true));
                return;
             }
             pipeline_.registerInput(std::move(request->batch),
@@ -236,11 +238,11 @@ void Runtime::buildCatalog() {
          };
       } else if (definition.name == "sdl_capture") {
          tool.invoke = [this](ToolOrder order, ToolCompletionDelegate& completion) {
-            std::string error;
-            std::optional<CaptureArguments> arguments =
-                parseCaptureArguments(order.arguments, error);
-            if (!arguments.has_value()) {
-               completion.complete(ToolResult::text(std::move(error), true));
+            Result<CaptureArguments, ProtocolError> arguments =
+                parseCaptureArguments(order.arguments);
+            if (!arguments) {
+               completion.complete(
+                   ToolResult::text(std::move(arguments.error().message), true));
                return;
             }
             if (window_ == nullptr) {

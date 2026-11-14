@@ -28,6 +28,7 @@
 #include "Input.h"
 #include "Mouse.h"
 #include "Replay.h"
+#include "Result.h"
 
 namespace sdl3mcp {
 
@@ -53,12 +54,12 @@ struct AppliedBatchPlan {
 /*
   Builds the plan for `batch` from copies of the two replayers. `windowID` and
   `textInputActive` describe the window the events target; `timestamp` is stamped
-  on every event. Returns false with one line in `error`, prefixed with the
-  0-based action index, and leaves `plan` untouched when any action fails.
+  on every event. On failure the error is one line prefixed with the 0-based
+  action index, and `plan` is untouched when any action fails.
 */
-bool buildBatchPlan(const InputBatch& batch, const KeyReplayer& keyReplayer,
-                    const MouseReplayer& mouseReplayer, SDL_WindowID windowID,
-                    bool textInputActive, Uint64 timestamp, AppliedBatchPlan& plan,
-                    std::string& error);
+Result<void, ProtocolError> buildBatchPlan(
+    const InputBatch& batch, const KeyReplayer& keyReplayer,
+    const MouseReplayer& mouseReplayer, SDL_WindowID windowID,
+    bool textInputActive, Uint64 timestamp, AppliedBatchPlan& plan);
 
 }  // namespace sdl3mcp

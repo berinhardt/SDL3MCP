@@ -24,6 +24,8 @@
 #include <string_view>
 #include <vector>
 
+#include "Result.h"
+
 namespace sdl3mcp {
 
 struct SpawnTarget {
@@ -38,18 +40,14 @@ struct SpawnTarget {
 using SpawnTargets = std::vector<SpawnTarget>;
 
 /*
-  Reads and validates every source in `paths` and accumulates their entries. On
-  failure `targets` is empty and `error` names the offending path plus the
-  offending key or value.
+  Reads and validates every source in `paths` and accumulates their entries. A
+  failure names the offending path plus the offending key or value.
 */
-bool loadSpawnTargets(const std::vector<std::string>& paths,
-                      SpawnTargets& targets,
-                      std::string& error);
+Result<SpawnTargets, ProtocolError> loadSpawnTargets(
+    const std::vector<std::string>& paths);
 
 /* The single-source form, equivalent to passing a one-element vector. */
-bool loadSpawnTargets(const std::string& path,
-                      SpawnTargets& targets,
-                      std::string& error);
+Result<SpawnTargets, ProtocolError> loadSpawnTargets(const std::string& path);
 
 /*
   The argv the Handler execs for one target: the configured entry followed by

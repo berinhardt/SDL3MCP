@@ -44,52 +44,50 @@ bool endsWith(std::string_view text, std::string_view suffix) {
   which file first defined each alias, so a later source that repeats one is an
   error instead of a silent replacement.
 */
-bool appendTargetsFile(const std::string& path,
-                       SpawnTargets& loaded,
-                       std::map<std::string, std::string>& sources,
-                       std::string& error) {
+Result<void, ProtocolError> appendTargetsFile(
+    const std::string& path,
+    SpawnTargets& loaded,
+    std::map<std::string, std::string>& sources) {
    std::ifstream file(path, std::ios::binary);
    if (!file) {
-      error = "cannot open targets file \"" + path + "\": " + std::strerror(errno);
-      return false;
+      return ProtocolError{"cannot open targets file \"" + path +
+                           "\": " + std::strerror(errno)};
    }
 
    const nlohmann::json document = nlohmann::json::parse(file, nullptr, false);
    if (document.is_discarded()) {
-      error = "targets file \"" + path + "\" is not valid JSON";
-      return false;
+      return ProtocolError{"targets file \"" + path +
+                           "\" is not valid JSON"};
    }
    if (!document.is_object()) {
-      error = "targets file \"" + path + "\" must contain a JSON object";
-      return false;
+      return ProtocolError{"targets file \"" + path +
+                           "\" must contain a JSON object"};
    }
    if (document.empty()) {
-      error = "targets file \"" + path + "\" defines no aliases";
-      return false;
+      return ProtocolError{"targets file \"" + path +
+                           "\" defines no aliases"};
    }
 
    for (auto entry = document.begin(); entry != document.end(); ++entry) {
       const std::string alias = entry.key();
       if (isReservedAlias(alias)) {
-         error = "targets entry \"" + alias +
-                 "\" must not use the reserved app_spawn_ prefix";
-         return false;
+         return ProtocolError{"targets entry \"" + alias +
+                              "\" must not use the reserved app_spawn_ prefix"};
       }
       if (!isValidAlias(alias)) {
-         error = "targets alias \"" + alias + "\" must match [a-z0-9_]+";
-         return false;
+         return ProtocolError{"targets alias \"" + alias +
+                              "\" must match [a-z0-9_]+"};
       }
       if (!entry->is_array() || entry->empty()) {
-         error = "targets entry \"" + alias +
-                 "\" must be a non-empty array of strings";
-         return false;
+         return ProtocolError{"targets entry \"" + alias +
+                              "\" must be a non-empty array of strings"};
       }
 
       const auto existing = sources.find(alias);
       if (existing != sources.end()) {
-         error = "targets alias \"" + alias + "\" is defined in both \"" +
-                 existing->second + "\" and \"" + path + "\"";
-         return false;
+         return ProtocolError{"targets alias \"" + alias +
+                              "\" is defined in both \"" + existing->second +
+                              "\" and \"" + path + "\""};
       }
 
       SpawnTarget target;
@@ -97,15 +95,14 @@ bool appendTargetsFile(const std::string& path,
       target.source = path;
       for (const nlohmann::json& value : *entry) {
          if (!value.is_string()) {
-            error = "targets entry \"" + alias +
-                    "\" must be a non-empty array of strings";
-            return false;
+            return ProtocolError{"targets entry \"" + alias +
+                                 "\" must be a non-empty array of strings"};
          }
          std::string argument = value.get<std::string>();
          if (argument.find("--mcp") != std::string::npos) {
-            error = "targets entry \"" + alias + "\" already contains --mcp in \"" +
-                    argument + "\"";
-            return false;
+            return ProtocolError{"targets entry \"" + alias +
+                                 "\" already contains --mcp in \"" +
+                                 argument + "\""};
          }
          target.argv.push_back(std::move(argument));
       }
@@ -114,36 +111,34 @@ bool appendTargetsFile(const std::string& path,
       loaded.push_back(std::move(target));
    }
 
-   return true;
+   return {};
 }
 
 /*
   Resolves one --targets value to the files it contributes: the file itself, or
   every top-level *.json inside a directory, sorted so the result is stable.
 */
-bool collectTargetFiles(const std::string& path,
-                        std::vector<std::string>& files,
-                        std::string& error) {
+Result<void, ProtocolError> collectTargetFiles(
+    const std::string& path, std::vector<std::string>& files) {
    struct stat info{};
    if (::stat(path.c_str(), &info) != 0) {
-      error = "cannot open targets path \"" + path + "\": " + std::strerror(errno);
-      return false;
+      return ProtocolError{"cannot open targets path \"" + path +
+                           "\": " + std::strerror(errno)};
    }
 
    if (S_ISREG(info.st_mode)) {
       files.push_back(path);
-      return true;
+      return {};
    }
    if (!S_ISDIR(info.st_mode)) {
-      error = "targets path \"" + path + "\" is neither a file nor a directory";
-      return false;
+      return ProtocolError{"targets path \"" + path +
+                           "\" is neither a file nor a directory"};
    }
 
    DIR* directory = ::opendir(path.c_str());
    if (directory == nullptr) {
-      error = "cannot open targets directory \"" + path +
-              "\": " + std::strerror(errno);
-      return false;
+      return ProtocolError{"cannot open targets directory \"" + path +
+                           "\": " + std::strerror(errno)};
    }
 
    std::vector<std::string> found;
@@ -169,55 +164,51 @@ bool collectTargetFiles(const std::string& path,
    ::closedir(directory);
 
    if (found.empty()) {
-      error = "targets directory \"" + path + "\" contains no *.json files";
-      return false;
+      return ProtocolError{"targets directory \"" + path +
+                           "\" contains no *.json files"};
    }
 
    std::sort(found.begin(), found.end());
    files.insert(files.end(), found.begin(), found.end());
-   return true;
+   return {};
 }
 
 }  // namespace
 
-bool loadSpawnTargets(const std::vector<std::string>& paths,
-                      SpawnTargets& targets,
-                      std::string& error) {
-   targets.clear();
-   error.clear();
-
+Result<SpawnTargets, ProtocolError> loadSpawnTargets(
+    const std::vector<std::string>& paths) {
    if (paths.empty()) {
-      error = "no targets sources were given";
-      return false;
+      return ProtocolError{"no targets sources were given"};
    }
 
    SpawnTargets loaded;
    std::map<std::string, std::string> sources;
    for (const std::string& path : paths) {
       std::vector<std::string> files;
-      if (!collectTargetFiles(path, files, error)) {
-         return false;
+      const Result<void, ProtocolError> collected =
+          collectTargetFiles(path, files);
+      if (!collected) {
+         return collected.error();
       }
       for (const std::string& file : files) {
-         if (!appendTargetsFile(file, loaded, sources, error)) {
-            return false;
+         const Result<void, ProtocolError> appended =
+             appendTargetsFile(file, loaded, sources);
+         if (!appended) {
+            return appended.error();
          }
       }
    }
 
    if (loaded.empty()) {
-      error = "targets source \"" + paths.front() + "\" defines no aliases";
-      return false;
+      return ProtocolError{"targets source \"" + paths.front() +
+                           "\" defines no aliases"};
    }
 
-   targets = std::move(loaded);
-   return true;
+   return loaded;
 }
 
-bool loadSpawnTargets(const std::string& path,
-                      SpawnTargets& targets,
-                      std::string& error) {
-   return loadSpawnTargets(std::vector<std::string>{path}, targets, error);
+Result<SpawnTargets, ProtocolError> loadSpawnTargets(const std::string& path) {
+   return loadSpawnTargets(std::vector<std::string>{path});
 }
 
 std::vector<std::string> targetCommand(const SpawnTarget& target,

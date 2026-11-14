@@ -189,7 +189,6 @@ set(sdl3mcp_common_sources
     src/JsonRpc.cpp
     src/Session.cpp
     src/Stream.cpp
-    src/Tool.cpp
     src/ToolCatalog.cpp
     src/ToolDefinitions.cpp
     src/ToolResult.cpp
@@ -199,9 +198,7 @@ if(EMSCRIPTEN)
     # replaces the native socket and delivers lines from the page's callbacks.
     list(APPEND sdl3mcp_common_sources src/WebSocketStream.cpp)
 else()
-    # The Handler's client-facing stream is stdio on desktop; the library never
-    # uses it, but the common half carries it for the Handler.
-    list(APPEND sdl3mcp_common_sources src/SocketStream.cpp src/StdioStream.cpp)
+    list(APPEND sdl3mcp_common_sources src/SocketStream.cpp)
 endif()
 add_library(sdl3mcp_common_objects OBJECT ${sdl3mcp_common_sources})
 
@@ -299,11 +296,17 @@ target_include_directories(SDL3MCP_COMMON INTERFACE
 # SDL-free common core and never SDL3::SDL3, so a wire unit that starts calling
 # SDL breaks this link instead of dragging a window into the Handler.
 #
+# SDL3MCP::SERVER is defined exactly when SDL3MCP_BUILD_CLI is ON on a desktop
+# configure: the executable and its object library are the Handler, and there is
+# no Emscripten Handler. The client-facing stdio stream is compiled here, not in
+# the common core, so the library archive holds no stdio transport.
+#
 # Presentation lives here: the library sends raw RGBA and this tree encodes PNG
 # and base64. stb is compiled in one server unit, so the library archive holds
 # no stb symbol.
 if(SDL3MCP_BUILD_CLI AND NOT EMSCRIPTEN)
     add_library(sdl3mcp_server_objects OBJECT
+        src/StdioStream.cpp
         server/AppPeer.cpp
         server/Cli.cpp
         server/Handler.cpp

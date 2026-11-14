@@ -19,6 +19,7 @@
 #include <string>
 #include <string_view>
 
+#include "Result.h"
 #include "Stream.h"
 
 namespace sdl3mcp {
@@ -32,7 +33,7 @@ class StdioStream : public StreamBase {
    StdioStream& operator=(const StdioStream&) = delete;
 
    /* Makes stdout non-blocking and reports onOpen. Idempotent. */
-   bool start(std::string& error);
+   Result<void, TransportError> start();
 
    bool sendText(std::string_view text) override;
    bool sendBinary(const std::uint8_t* data, std::size_t size) override;

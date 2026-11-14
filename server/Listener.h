@@ -9,8 +9,11 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
+
+#include "Result.h"
 
 namespace sdl3mcp {
 
@@ -23,17 +26,17 @@ class Listener {
    Listener& operator=(const Listener&) = delete;
 
    /* Binds and listens; a failure is a startup error naming the endpoint. */
-   bool listen(std::string_view host, std::uint16_t port, std::string& error);
+   Result<void, TransportError> listen(std::string_view host, std::uint16_t port);
 
    int fd() const noexcept { return fd_; }
    std::uint16_t boundPort() const noexcept { return boundPort_; }
 
    /*
-     Accepts one pending connection. Returns the non-blocking fd, or -1 with
-     `error` empty when nothing is pending (EAGAIN), and -1 with `error` set on
-     a real accept failure.
+     Accepts one pending connection. Success with a value is the non-blocking
+     fd; success with no value means nothing is pending (EAGAIN); an error is a
+     real accept failure.
    */
-   int accept(std::string& error);
+   Result<std::optional<int>, TransportError> accept();
 
    void close();
 

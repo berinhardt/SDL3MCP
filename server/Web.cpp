@@ -5,10 +5,10 @@
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <sys/file.h>
-#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -23,9 +23,12 @@
 #include <fstream>
 #include <map>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
+
+#include "Posix.h"
 
 namespace sdl3mcp {
 namespace {
@@ -52,77 +55,69 @@ bool isReservedAlias(const std::string& alias) {
   which file first defined each alias, so a later file that repeats one is an
   error instead of a silent replacement.
 */
-bool appendWebFile(const std::string& path,
-                   WebApps& loaded,
-                   std::map<std::string, std::string>& sources,
-                   std::string& error) {
+Result<void, ProtocolError> appendWebFile(
+    const std::string& path,
+    WebApps& loaded,
+    std::map<std::string, std::string>& sources) {
    std::ifstream file(path, std::ios::binary);
    if (!file) {
-      error = "cannot open web file \"" + path + "\": " + std::strerror(errno);
-      return false;
+      return ProtocolError{"cannot open web file \"" + path +
+                           "\": " + std::strerror(errno)};
    }
 
    const nlohmann::json document = nlohmann::json::parse(file, nullptr, false);
    if (document.is_discarded()) {
-      error = "web file \"" + path + "\" is not valid JSON";
-      return false;
+      return ProtocolError{"web file \"" + path + "\" is not valid JSON"};
    }
    if (!document.is_object()) {
-      error = "web file \"" + path + "\" must contain a JSON object";
-      return false;
+      return ProtocolError{"web file \"" + path +
+                           "\" must contain a JSON object"};
    }
    if (document.empty()) {
-      error = "web file \"" + path + "\" defines no aliases";
-      return false;
+      return ProtocolError{"web file \"" + path + "\" defines no aliases"};
    }
 
    for (auto entry = document.begin(); entry != document.end(); ++entry) {
       const std::string alias = entry.key();
       if (isReservedAlias(alias)) {
-         error = "web entry \"" + alias +
-                 "\" must not use the reserved app_spawn_ prefix";
-         return false;
+         return ProtocolError{"web entry \"" + alias +
+                              "\" must not use the reserved app_spawn_ prefix"};
       }
       if (!isValidAlias(alias)) {
-         error = "web alias \"" + alias + "\" must match [a-z0-9_]+";
-         return false;
+         return ProtocolError{"web alias \"" + alias +
+                              "\" must match [a-z0-9_]+"};
       }
       if (!entry->is_string()) {
-         error = "web entry \"" + alias + "\" must be a non-empty string";
-         return false;
+         return ProtocolError{"web entry \"" + alias +
+                              "\" must be a non-empty string"};
       }
 
       std::string root = entry->get<std::string>();
       if (root.empty()) {
-         error = "web entry \"" + alias + "\" must be a non-empty string";
-         return false;
+         return ProtocolError{"web entry \"" + alias +
+                              "\" must be a non-empty string"};
       }
 
       const auto existing = sources.find(alias);
       if (existing != sources.end()) {
-         error = "web alias \"" + alias + "\" is defined in both \"" +
-                 existing->second + "\" and \"" + path + "\"";
-         return false;
+         return ProtocolError{"web alias \"" + alias +
+                              "\" is defined in both \"" + existing->second +
+                              "\" and \"" + path + "\""};
       }
 
       sources.emplace(alias, path);
       loaded.push_back(WebApp{alias, std::move(root), path});
    }
 
-   return true;
+   return {};
 }
 
 }  // namespace
 
-bool loadWebApps(const std::vector<std::string>& paths,
-                 WebApps& apps,
-                 std::string& error) {
-   apps.clear();
-   error.clear();
-
+Result<WebApps, ProtocolError> loadWebApps(
+    const std::vector<std::string>& paths) {
    if (paths.empty()) {
-      error = "no web sources were given";
-      return false;
+      return ProtocolError{"no web sources were given"};
    }
 
    WebApps loaded;
@@ -130,21 +125,20 @@ bool loadWebApps(const std::vector<std::string>& paths,
    for (const std::string& path : paths) {
       struct stat info{};
       if (::stat(path.c_str(), &info) != 0) {
-         error = "cannot open web file \"" + path + "\": " +
-                 std::strerror(errno);
-         return false;
+         return ProtocolError{"cannot open web file \"" + path +
+                              "\": " + std::strerror(errno)};
       }
       if (!S_ISREG(info.st_mode)) {
-         error = "web path \"" + path + "\" is not a file";
-         return false;
+         return ProtocolError{"web path \"" + path + "\" is not a file"};
       }
-      if (!appendWebFile(path, loaded, sources, error)) {
-         return false;
+      const Result<void, ProtocolError> appended =
+          appendWebFile(path, loaded, sources);
+      if (!appended) {
+         return appended.error();
       }
    }
 
-   apps = std::move(loaded);
-   return true;
+   return loaded;
 }
 
 }  // namespace sdl3mcp
@@ -180,11 +174,6 @@ constexpr const char* kProfilePreferences =
     "user_pref(\"browser.startup.page\", 0);\n"
     "user_pref(\"datareporting.policy.dataSubmissionEnabled\", false);\n"
     "user_pref(\"app.update.auto\", false);\n";
-
-bool fail(std::string message, std::string& error) {
-   error = std::move(message);
-   return false;
-}
 
 std::string baseName(const std::string& path) {
    const std::size_t separator = path.find_last_of('/');
@@ -250,22 +239,22 @@ std::string profileParent() {
    return kFallbackProfileParent;
 }
 
-bool writePreferences(const std::string& directory, std::string& error) {
+Result<void, TransportError> writePreferences(const std::string& directory) {
    const std::string path = directory + "/user.js";
    std::FILE* file = std::fopen(path.c_str(), "w");
    if (file == nullptr) {
       const int openError = errno;
-      return fail("cannot write " + path + ": " + std::strerror(openError),
-                  error);
+      return TransportError{"cannot write " + path + ": " +
+                            std::strerror(openError)};
    }
 
    const std::size_t length = std::strlen(kProfilePreferences);
    const bool written = std::fwrite(kProfilePreferences, 1, length, file) == length;
    const bool closed = std::fclose(file) == 0;
    if (!written || !closed) {
-      return fail("cannot write " + path, error);
+      return TransportError{"cannot write " + path};
    }
-   return true;
+   return {};
 }
 
 /* The mtime test that keeps the sweep off a directory a launcher is creating. */
@@ -277,62 +266,48 @@ bool olderThan(const std::string& path, int seconds) {
    return std::time(nullptr) - status.st_mtime > seconds;
 }
 
-bool setNonBlocking(int fd, int& errorCode) {
-   const int flags = ::fcntl(fd, F_GETFL, 0);
-   if (flags < 0) {
-      errorCode = errno;
-      return false;
-   }
-   if (::fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
-      errorCode = errno;
-      return false;
-   }
-   return true;
-}
-
 }  // namespace
 
-bool preflightWebLaunch(WebLaunchOptions& options, std::string& error) {
+Result<void, TransportError> preflightWebLaunch(WebLaunchOptions& options) {
    std::string websocat;
    if (!findOnPath(kWebSocatExecutable, websocat)) {
-      return fail("websocat not found: install websocat (cargo install websocat)",
-                  error);
+      return TransportError{
+          "websocat not found: install websocat (cargo install websocat)"};
    }
 
    std::string python;
    if (!findOnPath(kPythonExecutable, python)) {
-      return fail("python3 not found: install python3", error);
+      return TransportError{"python3 not found: install python3"};
    }
 
    struct stat status{};
    if (::stat(options.pageRoot.c_str(), &status) != 0 ||
        !S_ISDIR(status.st_mode)) {
-      return fail("page root " + options.pageRoot + " is not a directory", error);
+      return TransportError{"page root " + options.pageRoot +
+                            " is not a directory"};
    }
    const std::string entryPath = options.pageRoot + "/" + options.entry;
    if (::stat(entryPath.c_str(), &status) != 0) {
-      return fail("page root " + options.pageRoot + " does not contain " +
-                      options.entry,
-                  error);
+      return TransportError{"page root " + options.pageRoot +
+                            " does not contain " + options.entry};
    }
 
-   std::string browser;
-   if (!resolveBrowser(browser, error)) {
-      return false;
+   const Result<std::string, TransportError> browser = resolveBrowser();
+   if (!browser) {
+      return browser.error();
    }
 
    options.websocat = std::move(websocat);
    options.python = std::move(python);
-   options.browser = std::move(browser);
-   return true;
+   options.browser = *browser;
+   return {};
 }
 
-bool pickLoopbackPort(std::uint16_t& port, std::string& error) {
+Result<std::uint16_t, TransportError> pickLoopbackPort() {
    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
    if (fd < 0) {
-      return fail(std::string("cannot open a loopback socket: ") +
-                      std::strerror(errno),
-                  error);
+      return TransportError{std::string("cannot open a loopback socket: ") +
+                            std::strerror(errno)};
    }
 
    int reuse = 1;
@@ -346,29 +321,28 @@ bool pickLoopbackPort(std::uint16_t& port, std::string& error) {
        0) {
       const int bindError = errno;
       ::close(fd);
-      return fail(std::string("cannot reserve a loopback port: ") +
-                      std::strerror(bindError),
-                  error);
+      return TransportError{std::string("cannot reserve a loopback port: ") +
+                            std::strerror(bindError)};
    }
 
    socklen_t length = sizeof address;
    if (::getsockname(fd, reinterpret_cast<sockaddr*>(&address), &length) != 0) {
       const int nameError = errno;
       ::close(fd);
-      return fail(std::string("cannot read the reserved loopback port: ") +
-                      std::strerror(nameError),
-                  error);
+      return TransportError{
+          std::string("cannot read the reserved loopback port: ") +
+          std::strerror(nameError)};
    }
 
-   port = ntohs(address.sin_port);
+   const std::uint16_t port = ntohs(address.sin_port);
    ::close(fd);
-   return true;
+   return port;
 }
 
-bool pickWebPorts(WebLaunchOptions& options, std::string& error) {
-   std::uint16_t pagePort = 0;
-   if (!pickLoopbackPort(pagePort, error)) {
-      return false;
+Result<void, TransportError> pickWebPorts(WebLaunchOptions& options) {
+   const Result<std::uint16_t, TransportError> page = pickLoopbackPort();
+   if (!page) {
+      return page.error();
    }
 
    /*
@@ -376,91 +350,97 @@ bool pickWebPorts(WebLaunchOptions& options, std::string& error) {
      differs; the page server binds first, which makes a collision a real
      startup failure rather than a plan-time guess.
    */
-   std::uint16_t bridgePort = 0;
    for (int attempt = 0; attempt < 16; ++attempt) {
-      if (!pickLoopbackPort(bridgePort, error)) {
-         return false;
+      const Result<std::uint16_t, TransportError> bridge = pickLoopbackPort();
+      if (!bridge) {
+         return bridge.error();
       }
-      if (bridgePort != pagePort) {
-         options.pagePort = pagePort;
-         options.bridgePort = bridgePort;
-         return true;
+      if (*bridge != *page) {
+         options.pagePort = *page;
+         options.bridgePort = *bridge;
+         return {};
       }
    }
 
-   return fail("cannot reserve two distinct loopback ports", error);
+   return TransportError{"cannot reserve two distinct loopback ports"};
 }
 
-bool prepareWebLaunch(WebLaunchOptions& options, std::string& error) {
-   if (!preflightWebLaunch(options, error)) {
-      return false;
+Result<void, TransportError> prepareWebLaunch(WebLaunchOptions& options) {
+   const Result<void, TransportError> preflight = preflightWebLaunch(options);
+   if (!preflight) {
+      return preflight.error();
    }
 
-   std::string sweepError;
-   const int swept = sweepAbandonedProfiles(sweepError);
-   if (swept < 0) {
-      return fail(sweepError, error);
+   const Result<int, TransportError> swept = sweepAbandonedProfiles();
+   if (!swept) {
+      return swept.error();
    }
-   if (swept > 0) {
+   if (*swept > 0) {
       std::fprintf(stderr, "sdl3mcp: web: reclaimed %d abandoned profile(s)\n",
-                   swept);
+                   *swept);
    }
 
    std::string directory;
    int lockFd = -1;
-   if (!seedProfile(directory, lockFd, error)) {
-      return false;
+   const Result<void, TransportError> seeded = seedProfile(directory, lockFd);
+   if (!seeded) {
+      return seeded.error();
    }
    options.profileDir = std::move(directory);
    options.profileLockFd = lockFd;
 
-   if (!pickWebPorts(options, error)) {
-      std::string ignored;
-      (void)removeProfileTree(options.profileDir, ignored);
+   const Result<void, TransportError> ports = pickWebPorts(options);
+   if (!ports) {
+      (void)removeProfileTree(options.profileDir);
       ::close(options.profileLockFd);
       options.profileDir.clear();
       options.profileLockFd = -1;
-      return false;
+      return ports.error();
    }
 
-   return true;
+   return {};
 }
 
-bool makeWebLaunchPlan(const WebLaunchOptions& options,
-                       std::vector<std::vector<std::string>>& plan,
-                       std::string& error) {
-   plan.clear();
+Result<std::vector<std::vector<std::string>>, TransportError>
+makeWebLaunchPlan(const WebLaunchOptions& options) {
+   std::vector<std::vector<std::string>> plan;
 
    if (options.pageRoot.empty()) {
-      return fail("pageRoot must not be empty", error);
+      return TransportError{"pageRoot must not be empty"};
    }
    if (options.entry.empty()) {
-      return fail("entry must not be empty", error);
+      return TransportError{"entry must not be empty"};
    }
    if (!isExecutable(options.python)) {
-      return fail("python must name an executable", error);
+      return TransportError{"python must name an executable"};
    }
    if (!isExecutable(options.websocat)) {
-      return fail("websocat must name an executable", error);
+      return TransportError{"websocat must name an executable"};
    }
    if (options.browser.empty()) {
-      return fail("browser must not be empty", error);
+      return TransportError{"browser must not be empty"};
    }
    if (options.handlerEndpoint.empty()) {
-      return fail("handlerEndpoint must not be empty", error);
+      return TransportError{"handlerEndpoint must not be empty"};
    }
-   if (options.pagePort == 0) {
-      return fail("pagePort must not be zero", error);
-   }
-   if (options.bridgePort == 0) {
-      return fail("bridgePort must not be zero", error);
-   }
-   if (options.pagePort == options.bridgePort) {
-      return fail("pagePort and bridgePort must differ", error);
+   if (!options.placeholderPorts) {
+      if (options.pagePort == 0) {
+         return TransportError{"pagePort must not be zero"};
+      }
+      if (options.bridgePort == 0) {
+         return TransportError{"bridgePort must not be zero"};
+      }
+      if (options.pagePort == options.bridgePort) {
+         return TransportError{"pagePort and bridgePort must differ"};
+      }
    }
 
-   const std::string pagePort = std::to_string(options.pagePort);
-   const std::string bridgePort = std::to_string(options.bridgePort);
+   const std::string pagePort = options.placeholderPorts
+                                    ? "PAGE_PORT"
+                                    : std::to_string(options.pagePort);
+   const std::string bridgePort = options.placeholderPorts
+                                      ? "BRIDGE_PORT"
+                                      : std::to_string(options.bridgePort);
    const std::string bridgeEndpoint =
        std::string(kWebLoopbackHost) + ":" + bridgePort;
 
@@ -499,10 +479,10 @@ bool makeWebLaunchPlan(const WebLaunchOptions& options,
    plan.push_back(std::move(pageServer));
    plan.push_back(std::move(bridge));
    plan.push_back(std::move(browser));
-   return true;
+   return plan;
 }
 
-bool resolveBrowser(std::string& path, std::string& error) {
+Result<std::string, TransportError> resolveBrowser() {
    const char* configured = std::getenv("BROWSER");
    if (configured != nullptr) {
       const std::string candidate(configured);
@@ -510,33 +490,29 @@ bool resolveBrowser(std::string& path, std::string& error) {
       std::string absolute;
       if ((name == "firefox" || name == "firefox-esr") &&
           isExecutable(candidate) && absolutePath(candidate, absolute)) {
-         path = std::move(absolute);
-         return true;
+         return absolute;
       }
    }
 
    for (const char* name : {"firefox", "firefox-esr"}) {
       std::string found;
       if (findOnPath(name, found)) {
-         path = std::move(found);
-         return true;
+         return found;
       }
    }
 
-   return fail(
+   return TransportError{
        "no isolated browser available: install firefox; "
-       "no other browser is supported",
-       error);
+       "no other browser is supported"};
 }
 
-bool seedProfile(std::string& directory, int& lockFd, std::string& error) {
+Result<void, TransportError> seedProfile(std::string& directory, int& lockFd) {
    const std::string parent = profileParent();
    std::string candidate = parent + "/" + kProfileTemplate;
    if (::mkdtemp(candidate.data()) == nullptr) {
       const int createError = errno;
-      return fail("cannot create a profile directory under " + parent + ": " +
-                      std::strerror(createError),
-                  error);
+      return TransportError{"cannot create a profile directory under " + parent +
+                            ": " + std::strerror(createError)};
    }
 
    /*
@@ -550,88 +526,83 @@ bool seedProfile(std::string& directory, int& lockFd, std::string& error) {
    if (fd < 0) {
       const int openError = errno;
       ::rmdir(candidate.c_str());
-      return fail("cannot create the profile lock: " +
-                      std::string(std::strerror(openError)),
-                  error);
+      return TransportError{"cannot create the profile lock: " +
+                            std::string(std::strerror(openError))};
    }
    if (::flock(fd, LOCK_EX | LOCK_NB) != 0) {
       const int lockError = errno;
       ::close(fd);
       ::rmdir(candidate.c_str());
-      return fail("cannot lock the profile directory: " +
-                      std::string(std::strerror(lockError)),
-                  error);
+      return TransportError{"cannot lock the profile directory: " +
+                            std::string(std::strerror(lockError))};
    }
-   if (!writePreferences(candidate, error)) {
+   const Result<void, TransportError> preferences = writePreferences(candidate);
+   if (!preferences) {
       ::close(fd);
-      std::string ignored;
-      (void)removeProfileTree(candidate, ignored);
-      return false;
+      (void)removeProfileTree(candidate);
+      return preferences.error();
    }
 
    directory = std::move(candidate);
    lockFd = fd;
-   return true;
+   return {};
 }
 
 /* A browser leaves thousands of files, so the profile needs a whole tree gone. */
-bool removeProfileTree(const std::string& path, std::string& error) {
+Result<void, TransportError> removeProfileTree(const std::string& path) {
    struct stat status{};
    if (::lstat(path.c_str(), &status) != 0) {
       const int lookupError = errno;
       if (lookupError == ENOENT) {
-         return true;
+         return {};
       }
-      error = "cannot remove " + path + ": " + std::strerror(lookupError);
-      return false;
+      return TransportError{"cannot remove " + path + ": " +
+                            std::strerror(lookupError)};
    }
    if (!S_ISDIR(status.st_mode)) {
       if (::unlink(path.c_str()) == 0) {
-         return true;
+         return {};
       }
-      error = "cannot remove " + path + ": " + std::strerror(errno);
-      return false;
+      return TransportError{"cannot remove " + path + ": " +
+                            std::strerror(errno)};
    }
 
    DIR* directory = ::opendir(path.c_str());
    if (directory == nullptr) {
-      error = "cannot remove " + path + ": " + std::strerror(errno);
-      return false;
+      return TransportError{"cannot remove " + path + ": " +
+                            std::strerror(errno)};
    }
 
-   bool removed = true;
-   std::string firstFailure;
+   std::optional<TransportError> firstFailure;
    while (const dirent* entry = ::readdir(directory)) {
       const std::string name(entry->d_name);
       if (name == "." || name == "..") {
          continue;
       }
-      std::string entryFailure;
-      if (!removeProfileTree(path + "/" + name, entryFailure) && removed) {
-         removed = false;
-         firstFailure = std::move(entryFailure);
+      const Result<void, TransportError> removed =
+          removeProfileTree(path + "/" + name);
+      if (!removed && !firstFailure.has_value()) {
+         firstFailure = removed.error();
       }
    }
    ::closedir(directory);
 
-   if (!removed) {
-      error = std::move(firstFailure);
-      return false;
+   if (firstFailure.has_value()) {
+      return *firstFailure;
    }
    if (::rmdir(path.c_str()) != 0) {
-      error = "cannot remove " + path + ": " + std::strerror(errno);
-      return false;
+      return TransportError{"cannot remove " + path + ": " +
+                            std::strerror(errno)};
    }
-   return true;
+   return {};
 }
 
-int sweepAbandonedProfiles(std::string& error) {
-   error.clear();
+Result<int, TransportError> sweepAbandonedProfiles() {
    const std::string parent = profileParent();
    DIR* directory = ::opendir(parent.c_str());
    if (directory == nullptr) {
-      error = "cannot scan " + parent + ": " + std::strerror(errno);
-      return -1;
+      return TransportError{"cannot scan " + parent + ": " +
+                            std::strerror(errno)};
    }
 
    int removed = 0;
@@ -641,11 +612,10 @@ int sweepAbandonedProfiles(std::string& error) {
          continue;
       }
       const std::string path = parent + "/" + name;
-      std::string ignored;
       const int fd = ::open((path + "/" + kLockFile).c_str(), O_RDWR | O_CLOEXEC);
       if (fd < 0) {
          if (errno == ENOENT && olderThan(path, kUnlockedGraceSeconds)) {
-            if (removeProfileTree(path, ignored)) {
+            if (removeProfileTree(path)) {
                ++removed;
             }
          }
@@ -656,7 +626,7 @@ int sweepAbandonedProfiles(std::string& error) {
       if (owned) {
          continue;
       }
-      if (removeProfileTree(path, ignored)) {
+      if (removeProfileTree(path)) {
          ++removed;
       }
    }
@@ -685,16 +655,25 @@ int openPidFd(pid_t pid) {
 #endif
 }
 
+/* The shell-style code a wait status means: exit status, or 128 + signal. */
+int exitCode(int status) {
+   if (WIFEXITED(status)) {
+      return WEXITSTATUS(status);
+   }
+   if (WIFSIGNALED(status)) {
+      return 128 + WTERMSIG(status);
+   }
+   return status;
+}
+
 /* One non-blocking connect: true only when the loopback port accepts now. */
 bool loopbackPortAccepts(std::uint16_t port) {
    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
    if (fd < 0) {
       return false;
    }
-   const int flags = ::fcntl(fd, F_GETFL, 0);
-   if (flags >= 0) {
-      (void)::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-   }
+   int ignored = 0;
+   (void)setNonBlocking(fd, ignored);
 
    sockaddr_in address{};
    address.sin_family = AF_INET;
@@ -721,48 +700,41 @@ bool loopbackPortAccepts(std::uint16_t port) {
    return accepts;
 }
 
-/* A web child inherits no descriptor of the Handler's, not even a pidfd. */
-void closeDescriptorsFrom(int lowest) {
-   if (::close_range(static_cast<unsigned int>(lowest), ~0U, 0) == 0) {
-      return;
-   }
-   struct rlimit limit{};
-   if (::getrlimit(RLIMIT_NOFILE, &limit) != 0) {
-      return;
-   }
-   for (rlim_t fd = static_cast<rlim_t>(lowest); fd < limit.rlim_cur; ++fd) {
-      ::close(static_cast<int>(fd));
-   }
-}
-
 }  // namespace
 
-WebRun::~WebRun() { stop(); }
+WebRun::~WebRun() {
+   stop();
+}
 
-bool WebRun::start(WebLaunchOptions options, std::string& error) {
+Result<void, TransportError> WebRun::start(WebLaunchOptions options) {
    options_ = std::move(options);
    stopped_ = false;
 
-   std::vector<std::vector<std::string>> plan;
-   if (!makeWebLaunchPlan(options_, plan, error)) {
+   const Result<std::vector<std::vector<std::string>>, TransportError> plan =
+       makeWebLaunchPlan(options_);
+   if (!plan) {
       stop();
-      return false;
+      return plan.error();
    }
-   if (!startChild(pageServer_, plan[0], error) ||
-       !startChild(bridge_, plan[1], error)) {
+   const Result<void, TransportError> page = startChild(pageServer_, (*plan)[0]);
+   if (!page) {
       stop();
-      return false;
+      return page.error();
+   }
+   const Result<void, TransportError> bridge = startChild(bridge_, (*plan)[1]);
+   if (!bridge) {
+      stop();
+      return bridge.error();
    }
 
    readyDeadline_ = Clock::now() + std::chrono::milliseconds(kWebReadyWindowMs);
-   return true;
+   return {};
 }
 
-bool WebRun::startChild(Child& child,
-                        const std::vector<std::string>& command,
-                        std::string& error) {
+Result<void, TransportError> WebRun::startChild(
+    Child& child, const std::vector<std::string>& command) {
    if (command.empty()) {
-      return fail("the web command is empty", error);
+      return TransportError{"the web command is empty"};
    }
 
    std::vector<char*> argv;
@@ -774,9 +746,8 @@ bool WebRun::startChild(Child& child,
 
    const pid_t pid = ::fork();
    if (pid < 0) {
-      return fail(std::string("cannot fork the web child: ") +
-                      std::strerror(errno),
-                  error);
+      return TransportError{std::string("cannot fork the web child: ") +
+                            std::strerror(errno)};
    }
 
    if (pid == 0) {
@@ -786,7 +757,7 @@ bool WebRun::startChild(Child& child,
       ::sigprocmask(SIG_SETMASK, &empty, nullptr);
       (void)::setpgid(0, 0);
 
-      /* The Handler's SIGCHLD policy and ignored SIGPIPE are its own. */
+      /* The Handler's SIGCHLD handling and ignored SIGPIPE are its own. */
       struct sigaction action{};
       action.sa_handler = SIG_DFL;
       sigemptyset(&action.sa_mask);
@@ -806,28 +777,31 @@ bool WebRun::startChild(Child& child,
       const int watchError = errno;
       (void)::kill(-pid, SIGKILL);
       (void)::kill(pid, SIGKILL);
-      return fail(std::string("cannot watch the web child: ") +
-                      std::strerror(watchError),
-                  error);
+      return TransportError{std::string("cannot watch the web child: ") +
+                            std::strerror(watchError)};
    }
 
    child.pid = pid;
    child.pidfd = pidfd;
    child.started = true;
    child.exited = false;
-   return true;
+   child.exitStatus = 0;
+   return {};
 }
 
-bool WebRun::startBrowser(std::string& error) {
-   std::vector<std::vector<std::string>> plan;
-   if (!makeWebLaunchPlan(options_, plan, error)) {
-      return false;
+Result<void, TransportError> WebRun::startBrowser() {
+   const Result<std::vector<std::vector<std::string>>, TransportError> plan =
+       makeWebLaunchPlan(options_);
+   if (!plan) {
+      return plan.error();
    }
-   if (!startChild(browser_, plan[2], error)) {
-      return false;
+   const Result<void, TransportError> started =
+       startChild(browser_, (*plan)[2]);
+   if (!started) {
+      return started.error();
    }
    browserPid_ = browser_.pid;
-   return true;
+   return {};
 }
 
 bool WebRun::bothPortsAccept() const {
@@ -835,11 +809,21 @@ bool WebRun::bothPortsAccept() const {
           loopbackPortAccepts(options_.bridgePort);
 }
 
-void WebRun::markExited(Child& child) {
+void WebRun::markExited(Child& child, int status) {
    child.exited = true;
+   child.exitStatus = exitCode(status);
    if (child.pidfd >= 0) {
       ::close(child.pidfd);
       child.pidfd = -1;
+   }
+}
+
+void WebRun::recordExit(pid_t pid, int status) {
+   for (Child* child : {&pageServer_, &bridge_, &browser_}) {
+      if (child->started && !child->exited && child->pid == pid) {
+         markExited(*child, status);
+         return;
+      }
    }
 }
 
@@ -866,7 +850,18 @@ WebStackEvent WebRun::service(Clock::time_point now,
       for (std::size_t index = 0; index < webFdCount; ++index) {
          if (webFds[index].fd == child->pidfd &&
              webFds[index].revents != 0) {
-            markExited(*child);
+            /*
+               The Handler's SIGCHLD reaper may have collected the status
+               already; when it has not, waitpid() here takes it. Either way the
+               pidfd is closed and the child is marked exited once.
+            */
+            int status = 0;
+            const pid_t reaped = ::waitpid(child->pid, &status, WNOHANG);
+            if (reaped == child->pid) {
+               markExited(*child, status);
+            } else if (reaped < 0 && errno == ECHILD) {
+               markExited(*child, 0);
+            }
             break;
          }
       }
@@ -890,6 +885,7 @@ WebStackEvent WebRun::service(Clock::time_point now,
    if (browser_.exited) {
       event.kind = WebStackEvent::Kind::BrowserExited;
       event.child = WebChild::Browser;
+      event.exitStatus = browser_.exitStatus;
       return event;
    }
 
@@ -904,11 +900,12 @@ WebStackEvent WebRun::service(Clock::time_point now,
                       "connections yet; starting the browser anyway\n");
       }
 
-      std::string error;
-      if (!startBrowser(error)) {
+      const Result<void, TransportError> started = startBrowser();
+      if (!started) {
          event.kind = WebStackEvent::Kind::ToolExited;
          event.child = WebChild::Browser;
-         event.detail = "the browser could not be started: " + error;
+         event.detail = "the browser could not be started: " +
+                        started.error().message;
       }
    }
 
@@ -1001,7 +998,9 @@ void WebRun::stop(WebStopMode mode) {
             }
             for (const pollfd& descriptor : descriptors) {
                if (descriptor.fd == child->pidfd && descriptor.revents != 0) {
-                  markExited(*child);
+                  int status = 0;
+                  const pid_t reaped = ::waitpid(child->pid, &status, WNOHANG);
+                  markExited(*child, reaped == child->pid ? status : 0);
                   break;
                }
             }
@@ -1022,9 +1021,11 @@ void WebRun::stop(WebStopMode mode) {
    closeChildFds();
 
    if (!options_.profileDir.empty()) {
-      std::string error;
-      if (!removeProfileTree(options_.profileDir, error)) {
-         std::fprintf(stderr, "sdl3mcp: web: %s\n", error.c_str());
+      const Result<void, TransportError> removed =
+          removeProfileTree(options_.profileDir);
+      if (!removed) {
+         std::fprintf(stderr, "sdl3mcp: web: %s\n",
+                      removed.error().message.c_str());
       }
       options_.profileDir.clear();
    }

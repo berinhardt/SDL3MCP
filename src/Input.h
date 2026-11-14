@@ -29,6 +29,7 @@
 #include <vector>
 
 #include "KeyMap.h"
+#include "Result.h"
 
 namespace sdl3mcp {
 
@@ -124,11 +125,11 @@ constexpr int kMaxClicks = 3;
   coordinates, and the clicks range. Key names and chord syntax are deliberately
   left to resolveKey/resolveKeyChord.
 
-  Returns nullopt when the batch is valid, otherwise one line naming the 0-based
-  action index, for example "actions[3]: clicks must be between 1 and 3". The
-  count rules have no index because they describe the batch itself.
+  Success when the batch is valid, otherwise one line naming the 0-based action
+  index, for example "actions[3]: clicks must be between 1 and 3". The count
+  rules have no index because they describe the batch itself.
 */
-std::optional<std::string> validateStructure(const InputBatch& batch);
+Result<void, ProtocolError> validateStructure(const InputBatch& batch);
 
 /*
   Exact "ctrl", "shift", "alt" or "gui", matched case-insensitively. Surrounding
@@ -149,23 +150,22 @@ struct KeyChord {
 /*
   Resolves the key operand of a down/up action: exactly one key, never a chord.
   Names may contain '+', so "keypad +" still resolves, but "ctrl+s" is an error
-  because a chord only makes sense for press. On failure returns nullopt and
-  writes one line of text to `error`. App thread only.
+  because a chord only makes sense for press. On failure the error is one line.
+  App thread only.
 */
-std::optional<KeyChord> resolveKey(std::string_view spec,
-                                   const KeyMap& keymap,
-                                   std::string& error);
+Result<KeyChord, ProtocolError> resolveKey(std::string_view spec,
+                                           const KeyMap& keymap);
 
 /*
   Resolves the key operand of a press action: a single key or a
   "modifier+modifier+key" chord, merged with the action's explicit `modifiers`.
   The whole spec is tried as a key name first, so "keypad +" is a single key
-  rather than a malformed chord. On failure returns nullopt and writes one line
-  of text to `error`. App thread only.
+  rather than a malformed chord. On failure the error is one line. App thread
+  only.
 */
-std::optional<KeyChord> resolveKeyChord(std::string_view spec,
-                                        std::span<const Modifier> explicitModifiers,
-                                        const KeyMap& keymap,
-                                        std::string& error);
+Result<KeyChord, ProtocolError> resolveKeyChord(
+    std::string_view spec,
+    std::span<const Modifier> explicitModifiers,
+    const KeyMap& keymap);
 
 }  // namespace sdl3mcp

@@ -64,10 +64,8 @@ struct Harness
     AppliedBatchPlan apply(const InputBatch &batch, bool textInputActive = true)
     {
         AppliedBatchPlan plan{keys, mouse};
-        std::string error;
-        CHECK(buildBatchPlan(batch, keys, mouse, kWindowID, textInputActive, kTimestamp, plan,
-                             error));
-        CHECK(error.empty());
+        CHECK(buildBatchPlan(batch, keys, mouse, kWindowID, textInputActive, kTimestamp, plan)
+                  .hasValue());
         keys = plan.keyState;
         mouse = plan.mouseState;
         return plan;
@@ -77,14 +75,14 @@ struct Harness
     std::string reject(const InputBatch &batch, bool textInputActive = true)
     {
         AppliedBatchPlan plan{keys, mouse};
-        std::string error;
-        CHECK(!buildBatchPlan(batch, keys, mouse, kWindowID, textInputActive, kTimestamp, plan,
-                              error));
-        CHECK(!error.empty());
-        CHECK(error.find('\n') == std::string::npos);
+        const auto applied = buildBatchPlan(batch, keys, mouse, kWindowID,
+                                            textInputActive, kTimestamp, plan);
+        CHECK(!applied);
+        CHECK(!applied.error().message.empty());
+        CHECK(applied.error().message.find('\n') == std::string::npos);
         CHECK(plan.eventsByAction.empty());
         CHECK(plan.warpsByAction.empty());
-        return error;
+        return applied.error().message;
     }
 };
 
@@ -428,10 +426,10 @@ TEST_CASE("failure leaves everything untouched")
 
     /* The plan starts from the live state and must still hold exactly that. */
     AppliedBatchPlan plan{harness.keys, harness.mouse};
-    std::string error;
-    CHECK(!buildBatchPlan(batch, harness.keys, harness.mouse, kWindowID, true, kTimestamp, plan,
-                          error));
-    CHECK(error == "actions[2]: key is not held");
+    const auto applied = buildBatchPlan(batch, harness.keys, harness.mouse,
+                                        kWindowID, true, kTimestamp, plan);
+    CHECK(!applied);
+    CHECK(applied.error().message == "actions[2]: key is not held");
 
     CHECK(plan.eventsByAction.empty());
     CHECK(plan.warpsByAction.empty());

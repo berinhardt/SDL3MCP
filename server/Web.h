@@ -25,7 +25,9 @@
   page server and bridge, waits for both loopback ports to accept before the
   browser, and reports a child's exit through its pidfd. The page server and the
   bridge are Handler-owned infrastructure and are stopped together with the
-  profile; the browser is the spawned application and is spawn-and-forget.
+  profile; the browser is the spawned application and is spawn-and-forget. The
+  browser's exit status is read with waitpid() when the pidfd fires, so a
+  non-zero exit can be reported.
 */
 
 #pragma once
@@ -40,6 +42,8 @@
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include "Result.h"
 
 namespace sdl3mcp {
 
@@ -65,12 +69,9 @@ using WebApps = std::vector<WebApp>;
 
 /*
   Reads and validates every --web file in `paths` and accumulates its entries.
-  On failure `apps` is empty and `error` names the offending path plus the
-  offending key or value.
+  A failure names the offending path plus the offending key or value.
 */
-bool loadWebApps(const std::vector<std::string>& paths,
-                 WebApps& apps,
-                 std::string& error);
+Result<WebApps, ProtocolError> loadWebApps(const std::vector<std::string>& paths);
 
 /* One web launch: the resolved tools, the endpoints, and the owned profile. */
 struct WebLaunchOptions {
@@ -88,6 +89,11 @@ struct WebLaunchOptions {
    /* 0 until the launcher picks an ephemeral port. */
    std::uint16_t pagePort = 0;
    std::uint16_t bridgePort = 0;
+   /*
+      A dry run binds no port, so the plan prints PAGE_PORT and BRIDGE_PORT
+      placeholders instead of reserving numbers it would have to release.
+   */
+   bool placeholderPorts = false;
 };
 
 /*
@@ -95,17 +101,17 @@ struct WebLaunchOptions {
   the page root is a directory holding `entry`. Nothing is created; a failure
   leaves the filesystem and the previously resolved fields alone.
 */
-bool preflightWebLaunch(WebLaunchOptions& options, std::string& error);
+Result<void, TransportError> preflightWebLaunch(WebLaunchOptions& options);
 
 /*
   Picks two distinct ephemeral loopback ports for the page server and the
   bridge. A port is bound and released immediately; the child binds it for
   real, so the number is a reservation only in the instant it is chosen.
 */
-bool pickWebPorts(WebLaunchOptions& options, std::string& error);
+Result<void, TransportError> pickWebPorts(WebLaunchOptions& options);
 
 /* Picks one ephemeral loopback port, or fails with the reason. */
-bool pickLoopbackPort(std::uint16_t& port, std::string& error);
+Result<std::uint16_t, TransportError> pickLoopbackPort();
 
 /*
   The whole launch preparation: preflight, sweep abandoned profiles, seed and
@@ -113,24 +119,23 @@ bool pickLoopbackPort(std::uint16_t& port, std::string& error);
   profile and the lock descriptor and must stop the run (or remove the profile)
   on every later failure.
 */
-bool prepareWebLaunch(WebLaunchOptions& options, std::string& error);
+Result<void, TransportError> prepareWebLaunch(WebLaunchOptions& options);
 
 /*
-  Fills `plan` with exactly three argv vectors in launch order: the page server,
-  the WebSocket bridge, then the browser. On failure `plan` is empty and `error`
+  Builds exactly three argv vectors in launch order: the page server, the
+  WebSocket bridge, then the browser. On failure the plan is empty and the error
   names the field that rejected the options.
 */
-bool makeWebLaunchPlan(const WebLaunchOptions& options,
-                       std::vector<std::vector<std::string>>& plan,
-                       std::string& error);
+Result<std::vector<std::vector<std::string>>, TransportError> makeWebLaunchPlan(
+    const WebLaunchOptions& options);
 
 /*
-  Fills `path` with the absolute Firefox executable to run. `$BROWSER` wins when
-  it names firefox or firefox-esr and that path is executable; otherwise PATH is
-  searched for firefox, then firefox-esr. There is no fallback: any other browser
-  would open the page in the user's own session instead of an isolated one.
+  Resolves the absolute Firefox executable to run. `$BROWSER` wins when it names
+  firefox or firefox-esr and that path is executable; otherwise PATH is searched
+  for firefox, then firefox-esr. There is no fallback: any other browser would
+  open the page in the user's own session instead of an isolated one.
 */
-bool resolveBrowser(std::string& path, std::string& error);
+Result<std::string, TransportError> resolveBrowser();
 
 /*
   Creates a unique directory from sdl3mcp-web-XXXXXX under $XDG_RUNTIME_DIR when
@@ -140,18 +145,18 @@ bool resolveBrowser(std::string& path, std::string& error);
   profile as owned by a live run. A failure leaves `directory` and `lockFd`
   untouched and names what could not be created.
 */
-bool seedProfile(std::string& directory, int& lockFd, std::string& error);
+Result<void, TransportError> seedProfile(std::string& directory, int& lockFd);
 
 /* Removes a profile tree. Shared by the run's cleanup and the startup sweep. */
-bool removeProfileTree(const std::string& path, std::string& error);
+Result<void, TransportError> removeProfileTree(const std::string& path);
 
 /*
   Reclaims profile directories whose owner is gone: a directory whose .lock can
   be taken has no live launcher, and one with no .lock at all is swept only once
-  it is older than a minute. Returns the number removed, or -1 with `error` set
-  when the parent cannot be scanned.
+  it is older than a minute. Returns the number removed, or an error when the
+  parent cannot be scanned.
 */
-int sweepAbandonedProfiles(std::string& error);
+Result<int, TransportError> sweepAbandonedProfiles();
 
 /*
   Names the directory a launch would seed, without creating it: the mkdtemp()
@@ -178,6 +183,8 @@ struct WebStackEvent {
    WebChild child = WebChild::PageServer;
    /* Why the stack ended when the cause was not a child's own exit. */
    std::string detail;
+   /* The browser's wait status, when it was the child that exited. */
+   int exitStatus = 0;
 };
 
 /* Which processes a stop takes down. */
@@ -212,14 +219,20 @@ class WebRun {
    WebRun(const WebRun&) = delete;
    WebRun& operator=(const WebRun&) = delete;
 
-   bool start(WebLaunchOptions options, std::string& error);
+   Result<void, TransportError> start(WebLaunchOptions options);
 
    /* Appends one pollfd per live child, in page/bridge/browser order. */
    void appendPollFds(std::vector<pollfd>& descriptors) const;
 
    /*
-     Starts the browser when the tools are ready, then reads the pidfd revents
-     in `webFds` and reports the first exit. `now` bounds the ready window.
+      Records an exit the Handler's SIGCHLD reaper already collected, so service()
+      can report the status even though waitpid() is gone.
+   */
+   void recordExit(pid_t pid, int status);
+
+   /*
+      Starts the browser when the tools are ready, then reads the pidfd revents
+      in `webFds` and reports the first exit. `now` bounds the ready window.
    */
    WebStackEvent service(std::chrono::steady_clock::time_point now,
                          const pollfd* webFds,
@@ -240,14 +253,14 @@ class WebRun {
       int pidfd = -1;
       bool started = false;
       bool exited = false;
+      int exitStatus = 0;
    };
 
-   bool startChild(Child& child,
-                   const std::vector<std::string>& command,
-                   std::string& error);
-   bool startBrowser(std::string& error);
+   Result<void, TransportError> startChild(
+       Child& child, const std::vector<std::string>& command);
+   Result<void, TransportError> startBrowser();
    bool bothPortsAccept() const;
-   void markExited(Child& child);
+   void markExited(Child& child, int status);
    void closeChildFds();
 
    WebLaunchOptions options_;

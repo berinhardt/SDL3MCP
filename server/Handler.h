@@ -36,6 +36,7 @@
 #include "AppPeer.h"
 #include "Cli.h"
 #include "Listener.h"
+#include "Result.h"
 #include "Session.h"
 #include "Targets.h"
 #include "Tool.h"
@@ -92,6 +93,7 @@ class Handler : public AppPeerHandler {
                         Web };
 
       Kind kind = Kind::Target;
+      bool isWeb() const noexcept { return kind == Kind::Web; }
       std::string alias;
       pid_t pid = -1;
       int errorFd = -1;
@@ -107,16 +109,18 @@ class Handler : public AppPeerHandler {
    void publishToolsIfChanged(bool notify);
 
    /* Loads --targets and --web sources; a failure is fatal before anything is created. */
-   bool loadSources(std::string& error);
+   Result<void, ProtocolError> loadSources();
    /* Prints the argv app_spawn_<alias> would run and starts nothing. */
    int printDryRun();
    /* Prints the catalog tools/list would advertise and starts nothing. */
    int printToolCatalog();
 
-   bool startClient(std::string& error);
-   bool startListener(std::string& error);
+   Result<void, TransportError> startClient();
+   Result<void, TransportError> startListener();
    void startSignalFd();
    void acceptApplication();
+   /* Reaps every exited child; a web child's status goes to its run. */
+   void reapChildren();
 
    void handleWaitSession(const ToolOrder& order,
                           ToolCompletionDelegate& completion);
@@ -128,11 +132,10 @@ class Handler : public AppPeerHandler {
                        const WebApp& app);
    void handleForward(const ToolOrder& order, ToolCompletionDelegate& completion);
 
-   bool startTarget(const SpawnTarget& target,
-                    std::string_view endpoint,
-                    std::int64_t timeoutMs,
-                    ToolCompletionDelegate& completion,
-                    std::string& error);
+   Result<void, TransportError> startTarget(const SpawnTarget& target,
+                                            std::string_view endpoint,
+                                            std::int64_t timeoutMs,
+                                            ToolCompletionDelegate& completion);
    void serviceSpawnExec();
    void expireSpawn(std::chrono::steady_clock::time_point now);
    void completeSpawn(std::string text, bool isError);
@@ -153,8 +156,7 @@ class Handler : public AppPeerHandler {
    void detachApp(std::string reason);
 
    bool peerAdvertises(std::string_view name) const;
-   ToolResult presentFrame(const std::string& name,
-                           const nlohmann::json& arguments,
+   ToolResult presentFrame(const nlohmann::json& arguments,
                            const nlohmann::json& header,
                            std::vector<std::uint8_t> payload) const;
 

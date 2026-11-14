@@ -31,27 +31,24 @@ StdioStream::~StdioStream() {
    }
 }
 
-bool StdioStream::start(std::string& error) {
-   error.clear();
+Result<void, TransportError> StdioStream::start() {
    if (started_) {
-      return true;
+      return {};
    }
 
    const int flags = ::fcntl(outputFd_, F_GETFL, 0);
    if (flags < 0) {
-      error = describe("cannot read stdout flags", errno);
-      return false;
+      return TransportError{describe("cannot read stdout flags", errno)};
    }
    savedOutputFlags_ = flags;
    if (::fcntl(outputFd_, F_SETFL, flags | O_NONBLOCK) < 0) {
-      error = describe("cannot make stdout non-blocking", errno);
       savedOutputFlags_ = -1;
-      return false;
+      return TransportError{describe("cannot make stdout non-blocking", errno)};
    }
 
    started_ = true;
    open();
-   return true;
+   return {};
 }
 
 bool StdioStream::sendText(std::string_view text) {

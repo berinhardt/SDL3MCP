@@ -878,6 +878,17 @@ struct FakeApp {
       CHECK(channel.writeAll(pixels.data(), pixels.size()));
    }
 
+   /* Writes `count` zero bytes in bounded chunks, for a rejected payload. */
+   void writeZeros(std::uint64_t count) {
+      std::vector<std::uint8_t> chunk(64 * 1024, 0);
+      while (count > 0) {
+         const std::size_t size = static_cast<std::size_t>(
+             std::min<std::uint64_t>(count, chunk.size()));
+         CHECK(channel.writeAll(chunk.data(), size));
+         count -= size;
+      }
+   }
+
    void announceTools(const nlohmann::json& tools) {
       write(nlohmann::json{{"jsonrpc", "2.0"},
                            {"method", "notifications/tools/list_changed"}});
@@ -1068,6 +1079,8 @@ struct FakeWebStack {
       Slow,
       /* Stays alive after the Handler closes its socket (spawn-and-forget). */
       StayAfterClose,
+      /* Exits with status 3 after sdl_terminate, so the Handler must report it. */
+      ExitNonZero,
    };
 
    TempDir bin;
@@ -1110,6 +1123,9 @@ struct FakeWebStack {
              browserPid();
          if (browser == Browser::StayAfterClose) {
             browserScript += " --stay-after-close";
+         }
+         if (browser == Browser::ExitNonZero) {
+            browserScript += " --exit-code 3";
          }
          browserScript += "\n";
       }
@@ -1158,21 +1174,19 @@ WebStackLine readWebStackLine(TestProcess& process, int timeoutMs = kLineTimeout
 
 TEST_CASE("targets files validate and accumulate") {
    using sdl3mcp::loadSpawnTargets;
-   using sdl3mcp::SpawnTargets;
 
    const auto failsWith = [](const std::string& contents,
                              const std::string& needle) {
       TempPath file;
       writeFile(file.path, contents);
-      SpawnTargets targets;
-      std::string error;
-      CHECK(!loadSpawnTargets(file.path, targets, error));
-      if (error.find(needle) == std::string::npos) {
+      const auto targets = loadSpawnTargets(file.path);
+      CHECK(!targets);
+      if (targets.error().message.find(needle) == std::string::npos) {
          std::fprintf(stderr, "error for %s did not name %s: %s\n",
-                      contents.c_str(), needle.c_str(), error.c_str());
+                      contents.c_str(), needle.c_str(),
+                      targets.error().message.c_str());
       }
-      CHECK(error.find(needle) != std::string::npos);
-      CHECK(targets.empty());
+      CHECK(targets.error().message.find(needle) != std::string::npos);
    };
 
    failsWith("{", "not valid JSON");
@@ -1186,21 +1200,20 @@ TEST_CASE("targets files validate and accumulate") {
    failsWith(R"({"x":["app",5]})", "x");
    failsWith(R"({"x":["app","--mcp=stdio"]})", "x");
 
-   SpawnTargets targets;
-   std::string error;
-   CHECK(!loadSpawnTargets("/nonexistent/sdl3mcp-targets.json", targets,
-                           error));
-   CHECK(error.find("cannot open") != std::string::npos);
+   const auto missing = loadSpawnTargets("/nonexistent/sdl3mcp-targets.json");
+   CHECK(!missing);
+   CHECK(missing.error().message.find("cannot open") != std::string::npos);
 
    TempPath valid;
    writeFile(valid.path,
              R"({"alpha":["./alpha","--flag"],"beta":["/bin/beta"]})");
-   CHECK(loadSpawnTargets(valid.path, targets, error));
-   CHECK(targets.size() == 2);
-   CHECK(targets[0].alias == "alpha");
-   CHECK((targets[0].argv == std::vector<std::string>{"./alpha", "--flag"}));
-   CHECK(targets[1].alias == "beta");
-   CHECK((targets[1].argv == std::vector<std::string>{"/bin/beta"}));
+   const auto targets = loadSpawnTargets(valid.path);
+   REQUIRE(targets.hasValue());
+   CHECK(targets->size() == 2);
+   CHECK((*targets)[0].alias == "alpha");
+   CHECK(((*targets)[0].argv == std::vector<std::string>{"./alpha", "--flag"}));
+   CHECK((*targets)[1].alias == "beta");
+   CHECK(((*targets)[1].argv == std::vector<std::string>{"/bin/beta"}));
 
    /* A directory contributes every top-level *.json in sorted order. */
    TempDir directory;
@@ -1208,40 +1221,47 @@ TEST_CASE("targets files validate and accumulate") {
    writeFile(directory.file("20-beta.json"), R"({"beta":["/bin/beta"]})");
    writeFile(directory.file("notes.txt"), "ignored");
 
-   CHECK(loadSpawnTargets(directory.path, targets, error));
-   CHECK(targets.size() == 2);
-   CHECK(targets[0].alias == "alpha");
-   CHECK(targets[1].alias == "beta");
+   const auto fromDirectory = loadSpawnTargets(directory.path);
+   REQUIRE(fromDirectory.hasValue());
+   CHECK(fromDirectory->size() == 2);
+   CHECK((*fromDirectory)[0].alias == "alpha");
+   CHECK((*fromDirectory)[1].alias == "beta");
 
    /* Repeating --targets unions a directory and a hand-written file. */
    TempDir extra;
    writeFile(extra.file("extra.json"), R"({"gamma":["./gamma"]})");
-   CHECK(loadSpawnTargets({directory.path, extra.file("extra.json")}, targets,
-                          error));
-   CHECK(targets.size() == 3);
-   CHECK(targets[2].alias == "gamma");
+   const auto united =
+       loadSpawnTargets({directory.path, extra.file("extra.json")});
+   REQUIRE(united.hasValue());
+   CHECK(united->size() == 3);
+   CHECK((*united)[2].alias == "gamma");
 
    /* A duplicate alias across two files names both and replaces neither. */
    TempDir duplicates;
    writeFile(duplicates.file("a.json"), R"({"alpha":["/a"]})");
    writeFile(duplicates.file("b.json"), R"({"alpha":["/b"]})");
-   CHECK(!loadSpawnTargets(duplicates.path, targets, error));
-   CHECK(targets.empty());
-   CHECK(error.find(duplicates.file("a.json")) != std::string::npos);
-   CHECK(error.find(duplicates.file("b.json")) != std::string::npos);
+   const auto duplicate = loadSpawnTargets(duplicates.path);
+   CHECK(!duplicate);
+   CHECK(duplicate.error().message.find(duplicates.file("a.json")) !=
+         std::string::npos);
+   CHECK(duplicate.error().message.find(duplicates.file("b.json")) !=
+         std::string::npos);
 
    /* A malformed file inside a directory names that file. */
    TempDir broken;
    writeFile(broken.file("good.json"), R"({"good":["/good"]})");
    writeFile(broken.file("zz-broken.json"), "{");
-   CHECK(!loadSpawnTargets(broken.path, targets, error));
-   CHECK(error.find(broken.file("zz-broken.json")) != std::string::npos);
+   const auto malformed = loadSpawnTargets(broken.path);
+   CHECK(!malformed);
+   CHECK(malformed.error().message.find(broken.file("zz-broken.json")) !=
+         std::string::npos);
 
    /* A directory with no *.json files names the directory. */
    TempDir empty;
-   CHECK(!loadSpawnTargets(empty.path, targets, error));
-   CHECK(error.find(empty.path) != std::string::npos);
-   CHECK(error.find("*.json") != std::string::npos);
+   const auto emptyDirectory = loadSpawnTargets(empty.path);
+   CHECK(!emptyDirectory);
+   CHECK(emptyDirectory.error().message.find(empty.path) != std::string::npos);
+   CHECK(emptyDirectory.error().message.find("*.json") != std::string::npos);
 }
 
 TEST_CASE("a target dry run prints the argv and starts nothing") {
@@ -1314,24 +1334,11 @@ TEST_CASE("a web dry run prints the plan and starts nothing") {
    CHECK(process.waitForExit(kLineTimeoutMs));
    CHECK(process.exitCode == 0);
 
-   /* The page URL and the bridge endpoint name the same ephemeral bridge. */
-   const std::size_t pagePrefix = out.find("page=http://127.0.0.1:");
-   REQUIRE(pagePrefix != std::string::npos);
-   const std::size_t pagePortStart =
-       pagePrefix + std::strlen("page=http://127.0.0.1:");
-   const std::size_t pagePortEnd = out.find('/', pagePortStart);
-   REQUIRE(pagePortEnd != std::string::npos);
-   const std::string pagePort =
-       out.substr(pagePortStart, pagePortEnd - pagePortStart);
-   CHECK(out.find("/index.html?mcp=127.0.0.1:") != std::string::npos);
-
-   const std::size_t bridgeLine = out.find("bridge=127.0.0.1:");
-   REQUIRE(bridgeLine != std::string::npos);
-   const std::string bridgePort = out.substr(bridgeLine + std::strlen("bridge=127.0.0.1:"),
-                                             out.find('\n', bridgeLine) -
-                                                 (bridgeLine + std::strlen("bridge=127.0.0.1:")));
-   CHECK(!bridgePort.empty());
-   CHECK(pagePort != bridgePort);
+   /* A dry run reserves no port: the plan prints the placeholders a launch
+      would replace with two ephemeral numbers. */
+   CHECK(out.find("page=http://127.0.0.1:PAGE_PORT/index.html?mcp="
+                  "127.0.0.1:BRIDGE_PORT") != std::string::npos);
+   CHECK(out.find("bridge=127.0.0.1:BRIDGE_PORT") != std::string::npos);
 
    /* The profile is the template a launch would fill, not a created directory. */
    const std::size_t profileLine = out.find("profile=");
@@ -1344,16 +1351,17 @@ TEST_CASE("a web dry run prints the plan and starts nothing") {
 
    /* Exactly the three documented commands, each on its own line. */
    const std::string pythonLine = "command: " + bin.file("python3") +
-                                  " -m http.server " + pagePort +
+                                  " -m http.server PAGE_PORT" +
                                   " --bind 127.0.0.1 --directory " + root.path;
    CHECK(out.find(pythonLine) != std::string::npos);
-   CHECK(out.find("command: " + bin.file("websocat") + " --binary ws-l:127.0.0.1:" +
-                  bridgePort + " tcp:HOST:PORT") != std::string::npos);
+   CHECK(out.find("command: " + bin.file("websocat") +
+                  " --binary ws-l:127.0.0.1:BRIDGE_PORT tcp:HOST:PORT") !=
+         std::string::npos);
    CHECK(out.find("command: " + bin.file("firefox") +
                   " --no-remote --new-instance --profile " + profile +
                   " --width 1280 --height 800 ") != std::string::npos);
-   CHECK(out.find("http://127.0.0.1:" + pagePort + "/index.html?mcp=127.0.0.1:" +
-                  bridgePort) != std::string::npos);
+   CHECK(out.find("http://127.0.0.1:PAGE_PORT/index.html?mcp=127.0.0.1:"
+                  "BRIDGE_PORT") != std::string::npos);
 
    /* A dry run binds and starts nothing. */
    CHECK(readAllFd(process.stderrChild, 100).find("listening on") ==
@@ -2101,10 +2109,27 @@ TEST_CASE("an oversized frame is refused before it is read") {
    CHECK(answer["result"]["isError"] == true);
    CHECK(resultText(answer).find("Handler cap") != std::string::npos);
 
-   const nlohmann::json after = client.callTool("sdl_info");
-   CHECK(after["result"]["isError"] == true);
-   CHECK(resultText(after).find("no application session is attached") !=
-         std::string::npos);
+   /*
+      The payload is still on the wire. The Handler skips it without allocating
+      it, so the application stays attached and the next call is answered.
+   */
+   app.writeZeros(100000000);
+
+   const int infoId = client.send("tools/call", nlohmann::json{
+                                                    {"name", "sdl_info"},
+                                                    {"arguments", nlohmann::json::object()},
+                                                });
+   const nlohmann::json infoCall = app.readCall();
+   app.writeResponse(infoCall["id"], nlohmann::json{
+                                        {"content", nlohmann::json::array({
+                                                        nlohmann::json{{"type", "text"},
+                                                                       {"text", "still attached"}},
+                                                    })},
+                                        {"isError", false},
+                                    });
+   const nlohmann::json after = client.readResponse(infoId, 3000);
+   CHECK(after["result"]["isError"] == false);
+   CHECK(resultText(after) == "still attached");
 
    app.close();
    process.closeStdin();
@@ -2135,15 +2160,28 @@ TEST_CASE("a malformed frame header is a tool error") {
                                      {"byteLength", 4},
                                      {"frame", 1},
                                  });
+   /* The header announces four bytes; the mismatch is in width*height*4. */
+   app.writeZeros(4);
 
    const nlohmann::json answer = client.readResponse(callId, 3000);
    CHECK(answer["result"]["isError"] == true);
    CHECK(resultText(answer).find("invalid frame result") != std::string::npos);
 
-   const nlohmann::json after = client.callTool("sdl_info");
-   CHECK(after["result"]["isError"] == true);
-   CHECK(resultText(after).find("no application session is attached") !=
-         std::string::npos);
+   const int infoId = client.send("tools/call", nlohmann::json{
+                                                    {"name", "sdl_info"},
+                                                    {"arguments", nlohmann::json::object()},
+                                                });
+   const nlohmann::json infoCall = app.readCall();
+   app.writeResponse(infoCall["id"], nlohmann::json{
+                                        {"content", nlohmann::json::array({
+                                                        nlohmann::json{{"type", "text"},
+                                                                       {"text", "still attached"}},
+                                                    })},
+                                        {"isError", false},
+                                    });
+   const nlohmann::json after = client.readResponse(infoId, 3000);
+   CHECK(after["result"]["isError"] == false);
+   CHECK(resultText(after) == "still attached");
 
    app.close();
    process.closeStdin();
@@ -2365,6 +2403,41 @@ TEST_CASE("a web spawn starts the stack, reports the browser pid, and cleans up"
    CHECK(!loopbackPortAccepts(line.pagePort));
    CHECK(!loopbackPortAccepts(line.bridgePort));
    CHECK(client.toolsList()["result"].dump() == idle["result"].dump());
+
+   process.closeStdin();
+   CHECK(process.waitForExit(kLineTimeoutMs));
+}
+
+TEST_CASE("a browser that exits non-zero is reported on stderr") {
+   FakeWebStack stack(FakeWebStack::Browser::ExitNonZero);
+   TestProcess process;
+   std::uint16_t port = 0;
+   McpClient client;
+   startServerWith(process, port, client, {"--web=" + stack.webPath}, 5000);
+   CHECK(!client.initialize().contains("error"));
+
+   CHECK(client.callTool("app_spawn_demo", nlohmann::json::object(), 10000)
+             ["result"]["isError"] == false);
+   const WebStackLine line = readWebStackLine(process);
+   const pid_t browser = waitForPidFile(stack.browserPid());
+   CHECK(browser > 0);
+
+   /* sdl_terminate makes the fake browser exit with status 3. */
+   CHECK(client.callTool("sdl_terminate")["result"]["isError"] == false);
+   CHECK(awaitNoApp(client));
+
+   std::string report;
+   for (;;) {
+      REQUIRE(process.readStderrLine(report, kLineTimeoutMs));
+      if (report.find("status 3") != std::string::npos) {
+         break;
+      }
+   }
+   CHECK(report.find("browser") != std::string::npos);
+   CHECK(processIsGone(browser, 5000));
+   CHECK(pathGone(line.profile));
+   CHECK(!loopbackPortAccepts(line.pagePort));
+   CHECK(!loopbackPortAccepts(line.bridgePort));
 
    process.closeStdin();
    CHECK(process.waitForExit(kLineTimeoutMs));

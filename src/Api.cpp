@@ -90,9 +90,10 @@ SDL3MCP_AppInit(SDL3MCP_Configuration* config, int argc, char** argv) {
       }
 
       auto runtime = std::make_unique<sdl3mcp::Runtime>(std::move(configuration));
-      std::string error;
-      if (!runtime->start(error)) {
-         SDL_SetError("%s", error.c_str());
+      const sdl3mcp::Result<void, sdl3mcp::TransportError> started =
+          runtime->start();
+      if (!started) {
+         SDL_SetError("%s", started.error().message.c_str());
          return SDL_APP_FAILURE;
       }
 

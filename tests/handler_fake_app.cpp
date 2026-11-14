@@ -440,7 +440,7 @@ int serve(int fd, const Options& options) {
                           5);
       } else if (name == "sdl_terminate") {
          writeTextResult(message["id"], "termination requested");
-         return 0;
+         return options.exitCode;
       } else {
          writeMessage(nlohmann::json{
              {"jsonrpc", "2.0"},

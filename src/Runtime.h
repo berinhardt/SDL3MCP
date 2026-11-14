@@ -11,6 +11,7 @@
 #include "Info.h"
 #include "KeyMap.h"
 #include "Pipeline.h"
+#include "Result.h"
 #include "Session.h"
 #include "ToolCatalog.h"
 
@@ -38,7 +39,7 @@ class Runtime {
    Runtime& operator=(const Runtime&) = delete;
 
    /* Builds the catalog and dials when an endpoint is configured. */
-   bool start(std::string& error);
+   Result<void, TransportError> start();
 
    SDL_AppResult setWindow(SDL_Window* window);
    SDL_AppResult iterate();

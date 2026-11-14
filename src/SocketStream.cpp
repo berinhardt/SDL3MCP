@@ -14,6 +14,9 @@
 #include <cstring>
 #include <string>
 
+#include "Configuration.h"
+#include "Posix.h"
+
 namespace sdl3mcp {
 namespace {
 
@@ -23,31 +26,6 @@ namespace {
   stream fails and the session closes.
 */
 constexpr std::size_t kMaxOutboundBytes = 128u * 1024u * 1024u;
-
-/* Prints IPv6 literals in brackets so the error text reads as an endpoint. */
-std::string endpointText(std::string_view host, std::uint16_t port) {
-   std::string text;
-   if (host.find(':') != std::string_view::npos) {
-      text = "[" + std::string(host) + "]";
-   } else {
-      text = std::string(host);
-   }
-   text += ":" + std::to_string(port);
-   return text;
-}
-
-bool setNonBlocking(int fd, int& error) {
-   const int flags = ::fcntl(fd, F_GETFL, 0);
-   if (flags < 0) {
-      error = errno;
-      return false;
-   }
-   if (::fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
-      error = errno;
-      return false;
-   }
-   return true;
-}
 
 /* Waits for a non-blocking connect to settle, bounded by the dial timeout. */
 bool waitForConnect(int fd, std::uint32_t timeoutMs, int& error) {
@@ -125,9 +103,9 @@ bool SocketStream::Native::flush(SocketStream& stream) {
 }
 
 void SocketStream::Native::reportWriteFailure(SocketStream& stream, int error) {
-   const std::string endpointText = endpoint;
+   const std::string endpointName = endpoint;
    outbound.clear();
-   stream.fail("cannot write to " + endpointText + ": " + std::strerror(error));
+   stream.fail("cannot write to " + endpointName + ": " + std::strerror(error));
 }
 
 SocketStream::SocketStream() : native_(std::make_unique<Native>()) {
@@ -137,20 +115,16 @@ SocketStream::~SocketStream() {
    close();
 }
 
-bool SocketStream::connect(std::string_view host,
-                           std::uint16_t port,
-                           std::uint32_t timeoutMs,
-                           std::string& error) {
-   error.clear();
+Result<void, TransportError> SocketStream::connect(std::string_view host,
+                                                   std::uint16_t port,
+                                                   std::uint32_t timeoutMs) {
    close();
 
    if (host.empty()) {
-      error = "cannot connect to an empty host";
-      return false;
+      return TransportError{"cannot connect to an empty host"};
    }
    if (port == 0) {
-      error = "cannot connect to port 0";
-      return false;
+      return TransportError{"cannot connect to port 0"};
    }
 
    const std::string endpoint = endpointText(host, port);
@@ -165,8 +139,8 @@ bool SocketStream::connect(std::string_view host,
    const int resolved =
        ::getaddrinfo(hostText.c_str(), service.c_str(), &hints, &addresses);
    if (resolved != 0) {
-      error = "cannot resolve " + endpoint + ": " + ::gai_strerror(resolved);
-      return false;
+      return TransportError{"cannot resolve " + endpoint + ": " +
+                            ::gai_strerror(resolved)};
    }
 
    int lastError = 0;
@@ -203,7 +177,7 @@ bool SocketStream::connect(std::string_view host,
       native_->endpoint = endpoint;
       native_->outbound.clear();
       open();
-      return true;
+      return {};
    }
 
    ::freeaddrinfo(addresses);
@@ -211,30 +185,29 @@ bool SocketStream::connect(std::string_view host,
       /* A non-null address list with no usable entry: report a generic refusal. */
       lastError = ECONNREFUSED;
    }
-   error = "cannot connect to " + endpoint + ": " + std::strerror(lastError);
-   return false;
+   return TransportError{"cannot connect to " + endpoint + ": " +
+                         std::strerror(lastError)};
 }
 
-bool SocketStream::adopt(int fd, std::string_view endpoint, std::string& error) {
-   error.clear();
+Result<void, TransportError> SocketStream::adopt(int fd,
+                                                 std::string_view endpoint) {
    close();
    if (fd < 0) {
-      error = "cannot adopt an invalid socket";
-      return false;
+      return TransportError{"cannot adopt an invalid socket"};
    }
 
    int lastError = 0;
    if (!setNonBlocking(fd, lastError)) {
       ::close(fd);
-      error = "cannot adopt the connection: " + std::string(std::strerror(lastError));
-      return false;
+      return TransportError{"cannot adopt the connection: " +
+                            std::string(std::strerror(lastError))};
    }
 
    native_->fd = fd;
    native_->endpoint = std::string(endpoint);
    native_->outbound.clear();
    open();
-   return true;
+   return {};
 }
 
 int SocketStream::fd() const noexcept {

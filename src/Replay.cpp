@@ -58,20 +58,19 @@ SDL_Keymod modifierBitForScancode(SDL_Scancode scancode) noexcept {
 
 }  // namespace
 
-bool buildTextEvent(const TextInput& input, SDL_WindowID windowID, bool textInputActive,
-                    Uint64 timestamp, std::vector<SDL_Event>& events, std::string& error) {
-   error.clear();
+Result<void, ProtocolError> buildTextEvent(const TextInput& input,
+                                           SDL_WindowID windowID,
+                                           bool textInputActive,
+                                           Uint64 timestamp,
+                                           std::vector<SDL_Event>& events) {
    if (windowID == 0) {
-      error = kNoWindowError;
-      return false;
+      return ProtocolError{kNoWindowError};
    }
    if (!textInputActive) {
-      error = kTextInputInactiveError;
-      return false;
+      return ProtocolError{kTextInputInactiveError};
    }
    if (input.text.empty()) {
-      error = kEmptyTextError;
-      return false;
+      return ProtocolError{kEmptyTextError};
    }
 
    SDL_Event event{};
@@ -81,77 +80,74 @@ bool buildTextEvent(const TextInput& input, SDL_WindowID windowID, bool textInpu
    /* Borrowed, not copied: the batch must outlive the app's consumption. */
    event.text.text = input.text.c_str();
    events.push_back(event);
-   return true;
+   return {};
 }
 
 KeyReplayer::KeyReplayer(const KeyMap& keymap, SDL_WindowID windowID)
     : keymap_(&keymap), windowID_(windowID) {
 }
 
-bool KeyReplayer::apply(const KeyInput& input, Uint64 timestamp, std::vector<SDL_Event>& events,
-                        std::string& error) {
-   error.clear();
+Result<void, ProtocolError> KeyReplayer::apply(const KeyInput& input,
+                                               Uint64 timestamp,
+                                               std::vector<SDL_Event>& events) {
    switch (input.action) {
       case KeyAction::Down:
-         return applyDown(input, timestamp, events, error);
+         return applyDown(input, timestamp, events);
       case KeyAction::Up:
-         return applyUp(input, timestamp, events, error);
+         return applyUp(input, timestamp, events);
       case KeyAction::Press:
-         return applyPress(input, timestamp, events, error);
+         return applyPress(input, timestamp, events);
    }
-   error = "unknown key action";
-   return false;
+   return ProtocolError{"unknown key action"};
 }
 
-bool KeyReplayer::applyDown(const KeyInput& input, Uint64 timestamp,
-                            std::vector<SDL_Event>& events, std::string& error) {
-   const std::optional<KeyChord> chord = resolveKey(input.key, *keymap_, error);
-   if (!chord.has_value()) {
-      return false;
+Result<void, ProtocolError> KeyReplayer::applyDown(
+    const KeyInput& input, Uint64 timestamp, std::vector<SDL_Event>& events) {
+   const Result<KeyChord, ProtocolError> chord =
+       resolveKey(input.key, *keymap_);
+   if (!chord) {
+      return chord.error();
    }
    /* A key that only exists with Shift, such as '!', has to be pressed as a chord. */
    if (chord->modifiers != SDL_KMOD_NONE) {
-      error = kModifierKeyError;
-      return false;
+      return ProtocolError{kModifierKeyError};
    }
 
    pressKey(chord->scancode, timestamp, isHeld(chord->scancode), events);
-   return true;
+   return {};
 }
 
-bool KeyReplayer::applyUp(const KeyInput& input, Uint64 timestamp, std::vector<SDL_Event>& events,
-                          std::string& error) {
-   const std::optional<KeyChord> chord = resolveKey(input.key, *keymap_, error);
-   if (!chord.has_value()) {
-      return false;
+Result<void, ProtocolError> KeyReplayer::applyUp(
+    const KeyInput& input, Uint64 timestamp, std::vector<SDL_Event>& events) {
+   const Result<KeyChord, ProtocolError> chord =
+       resolveKey(input.key, *keymap_);
+   if (!chord) {
+      return chord.error();
    }
    if (chord->modifiers != SDL_KMOD_NONE) {
-      error = kModifierKeyError;
-      return false;
+      return ProtocolError{kModifierKeyError};
    }
    if (!isHeld(chord->scancode)) {
-      error = kNotHeldError;
-      return false;
+      return ProtocolError{kNotHeldError};
    }
 
    releaseKey(chord->scancode, timestamp, events);
-   return true;
+   return {};
 }
 
-bool KeyReplayer::applyPress(const KeyInput& input, Uint64 timestamp,
-                             std::vector<SDL_Event>& events, std::string& error) {
-   const std::optional<KeyChord> chord =
-       resolveKeyChord(input.key, input.modifiers, *keymap_, error);
-   if (!chord.has_value()) {
-      return false;
+Result<void, ProtocolError> KeyReplayer::applyPress(
+    const KeyInput& input, Uint64 timestamp, std::vector<SDL_Event>& events) {
+   const Result<KeyChord, ProtocolError> chord =
+       resolveKeyChord(input.key, input.modifiers, *keymap_);
+   if (!chord) {
+      return chord.error();
    }
    /*
      "ctrl+shift" resolves to a Shift key with a Ctrl mask; that is an ambiguous
      request, so it is refused rather than turned into an accidental chord.
    */
    if (chord->modifiers != SDL_KMOD_NONE && modifierBitForScancode(chord->scancode) != SDL_KMOD_NONE) {
-      error = kChordModifierKeyError;
-      return false;
+      return ProtocolError{kChordModifierKeyError};
    }
 
    /* Only what the chord adds is pressed and later released; held keys stay untouched. */
@@ -171,7 +167,7 @@ bool KeyReplayer::applyPress(const KeyInput& input, Uint64 timestamp,
    for (auto it = pressedModifiers.rbegin(); it != pressedModifiers.rend(); ++it) {
       releaseKey(*it, timestamp, events);
    }
-   return true;
+   return {};
 }
 
 void KeyReplayer::releaseAllKeys(Uint64 timestamp, std::vector<SDL_Event>& events) {

@@ -4,7 +4,7 @@
   construct that slips into the header fails here instead of at a consumer.
 */
 
-#include <SDL3MCP/SDL3MCP1.h>
+#include <SDL3MCP/SDL3MCP.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>

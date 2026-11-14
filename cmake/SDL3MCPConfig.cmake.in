@@ -2,10 +2,11 @@
 
 include(CMakeFindDependencyMacro)
 
-# The exported interface names exactly these two targets. nlohmann/json and stb
-# are private to the library build, so a consumer needs neither of them.
+# The exported interface names one target, SDL3MCP::SDL3MCP. The Handler
+# executable and the COMMON composition target are build-tree artifacts, and
+# nlohmann/json and stb are private to the library build, so a consumer needs
+# neither of them.
 find_dependency(SDL3 CONFIG)
-find_dependency(Threads)
 
 include("${CMAKE_CURRENT_LIST_DIR}/SDL3MCPTargets.cmake")
 

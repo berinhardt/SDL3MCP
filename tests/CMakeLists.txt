@@ -130,7 +130,7 @@ if(TARGET sdl3mcp)
     target_compile_features(sdl3mcp_test_handler PRIVATE cxx_std_20)
     target_include_directories(sdl3mcp_test_handler PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/../src"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../server"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../src/handler"
     )
     target_link_libraries(sdl3mcp_test_handler PRIVATE
         sdl3mcp_server_objects
@@ -170,7 +170,7 @@ if(TARGET sdl3mcp)
     sdl3mcp_add_test(web_tests web_tests.cpp
         LIBRARY sdl3mcp_server_objects
         LIBS sdl3mcp_common_objects nlohmann_json::nlohmann_json Threads::Threads
-        INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/../server")
+        INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/../src/handler")
 endif()
 
 # The pure value halves: key names, input planning, the replay state, mouse

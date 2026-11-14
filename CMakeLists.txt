@@ -307,19 +307,19 @@ target_include_directories(SDL3MCP_COMMON INTERFACE
 if(SDL3MCP_BUILD_CLI AND NOT EMSCRIPTEN)
     add_library(sdl3mcp_server_objects OBJECT
         src/StdioStream.cpp
-        server/AppPeer.cpp
-        server/Cli.cpp
-        server/Handler.cpp
-        server/Listener.cpp
-        server/Png.cpp
-        server/StbImageWrite.cpp
-        server/Targets.cpp
-        server/Web.cpp
+        src/handler/AppPeer.cpp
+        src/handler/Handler.cpp
+        src/handler/HandlerCli.cpp
+        src/handler/Listener.cpp
+        src/handler/Png.cpp
+        src/handler/StbImageWrite.cpp
+        src/handler/Targets.cpp
+        src/handler/Web.cpp
     )
     target_compile_features(sdl3mcp_server_objects PRIVATE cxx_std_20)
     target_include_directories(sdl3mcp_server_objects
         PUBLIC
-            "${CMAKE_CURRENT_SOURCE_DIR}/server"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/handler"
         PRIVATE
             "${CMAKE_CURRENT_SOURCE_DIR}/src"
             "${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb"
@@ -340,11 +340,11 @@ if(SDL3MCP_BUILD_CLI AND NOT EMSCRIPTEN)
 
     # Main.cpp stays out of the object library: the test suites link the server
     # objects and must not pick up a second main.
-    add_executable(sdl3mcp server/Main.cpp $<TARGET_OBJECTS:sdl3mcp_server_objects>)
+    add_executable(sdl3mcp src/handler/Main.cpp $<TARGET_OBJECTS:sdl3mcp_server_objects>)
     add_executable(SDL3MCP::SERVER ALIAS sdl3mcp)
     target_compile_features(sdl3mcp PRIVATE cxx_std_20)
     target_include_directories(sdl3mcp PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/server"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/handler"
         "${CMAKE_CURRENT_SOURCE_DIR}/src"
     )
     target_link_libraries(sdl3mcp PRIVATE

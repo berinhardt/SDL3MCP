@@ -34,7 +34,7 @@
 #include <vector>
 
 #include "AppPeer.h"
-#include "Cli.h"
+#include "HandlerCli.h"
 #include "Listener.h"
 #include "Result.h"
 #include "Session.h"

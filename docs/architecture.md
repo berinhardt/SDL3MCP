@@ -34,15 +34,15 @@ src/AppInput.h/.cpp              batch -> events
 src/Frame.h/.cpp                 validate, crop, frame order
 src/Capture.h/.cpp               capture statistics and regions
 src/Info.h/.cpp                  sdl_info value and serializer
-server/Main.cpp                  the Handler entry point
-server/Cli.h/.cpp                Handler command line and usage
-server/Handler.h/.cpp            the poll loop, catalog, forwards, spawn, web
-server/AppPeer.h/.cpp            application handshake and forwarding
-server/Listener.h/.cpp           the application listener
-server/Targets.h/.cpp            --targets sources
-server/Web.h/.cpp                --web sources, web plan and run
-server/Png.h/.cpp                PNG + base64 presentation
-server/StbImageWrite.cpp         the one stb implementation unit
+src/handler/Main.cpp             the Handler entry point
+src/handler/HandlerCli.h/.cpp    Handler command line and usage
+src/handler/Handler.h/.cpp       the poll loop, catalog, forwards, spawn, web
+src/handler/AppPeer.h/.cpp       application handshake and forwarding
+src/handler/Listener.h/.cpp      the application listener
+src/handler/Targets.h/.cpp       --targets sources
+src/handler/Web.h/.cpp           --web sources, web plan and run
+src/handler/Png.h/.cpp           PNG + base64 presentation
+src/handler/StbImageWrite.cpp    the one stb implementation unit
 tests/                           doctest suites, check_readme.py, consumers
 examples/minimal/main.c          a complete host
 ```

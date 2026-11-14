@@ -11,7 +11,7 @@
   cropFrame() trusts it and only guards its own arguments.
 
   Presentation (PNG and base64) is the Handler's policy and lives in
-  server/Png.cpp, so the library never references stb.
+  src/handler/Png.cpp, so the library never references stb.
 
   The region schema in the tool catalog names (x, y, width, height), so
   cropFrame() rejects anything that would read outside the frame instead of

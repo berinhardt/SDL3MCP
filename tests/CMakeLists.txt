@@ -7,47 +7,72 @@
 # exercised too. A suite that links an object library names SDL itself, because
 # the library publishes no SDL.
 #
-# A browser configure has no POSIX test suite. Its one suite is the WebSocket
-# arm, run under Node against a local server, and it is registered only when the
-# option asked for it and Node is on PATH.
+# A browser configure has no POSIX test suite. Its suites are the WebSocket
+# transport arm and the whole app path, both run under Node against a local
+# server. They are registered whenever tests are on: an Emscripten configure has
+# no other suite, so there is no separate option to remember.
 if(EMSCRIPTEN)
-    if(SDL3MCP_BUILD_NODE_TESTS)
-        find_program(NODE_EXECUTABLE node)
-        if(NODE_EXECUTABLE)
-            add_executable(sdl3mcp_test_websocket_node
-                websocket_stream_node_tests.cpp)
-            target_compile_features(sdl3mcp_test_websocket_node PRIVATE
-                cxx_std_20)
-            target_include_directories(sdl3mcp_test_websocket_node PRIVATE
-                "${CMAKE_CURRENT_SOURCE_DIR}/../src"
-            )
-            # The suite links the real archive, so the WebSocket arm is pulled
-            # from the same object the application links. The library publishes
-            # no SDL, so the suite adds SDL and the JS library itself, exactly
-            # like a consumer's Emscripten link line.
-            target_link_libraries(sdl3mcp_test_websocket_node PRIVATE
-                SDL3MCP::SDL3MCP
-                SDL3::SDL3
-                "-lwebsocket.js"
-                doctest::doctest
-            )
-            # ASYNCIFY is what lets the browser event loop run between pumps,
-            # and EXIT_RUNTIME is what makes main's verdict end the Node process.
-            target_link_options(sdl3mcp_test_websocket_node PRIVATE
-                "-sASYNCIFY"
-                "-sEXIT_RUNTIME=1"
-                "-sENVIRONMENT=node"
-            )
-            add_test(NAME node_websocket_tests
-                     COMMAND "${NODE_EXECUTABLE}"
-                             "${CMAKE_CURRENT_SOURCE_DIR}/run_node_websocket_test.js"
-                             "$<TARGET_FILE:sdl3mcp_test_websocket_node>")
-        else()
-            message(WARNING
-                "SDL3MCP_BUILD_NODE_TESTS is ON but node was not found; "
-                "the WebSocket suite is not registered")
-        endif()
+    find_program(NODE_EXECUTABLE node)
+    if(NOT NODE_EXECUTABLE)
+        message(WARNING
+            "node was not found; the Emscripten suites run under Node and are "
+            "not registered")
+        return()
     endif()
+
+    # Both suites link the real archive, so the WebSocket arm is pulled from the
+    # object the application links. The library publishes no SDL, so each suite
+    # adds SDL and -lwebsocket.js itself, exactly like a consumer's Emscripten
+    # link line.
+    add_executable(sdl3mcp_test_websocket_node
+        websocket_stream_node_tests.cpp)
+    target_compile_features(sdl3mcp_test_websocket_node PRIVATE
+        cxx_std_20)
+    target_include_directories(sdl3mcp_test_websocket_node PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+    )
+    target_link_libraries(sdl3mcp_test_websocket_node PRIVATE
+        SDL3MCP::SDL3MCP
+        SDL3::SDL3
+        "-lwebsocket.js"
+        doctest::doctest
+    )
+    # ASYNCIFY is what lets the browser event loop run between pumps, and
+    # EXIT_RUNTIME is what makes main's verdict end the Node process.
+    target_link_options(sdl3mcp_test_websocket_node PRIVATE
+        "-sASYNCIFY"
+        "-sEXIT_RUNTIME=1"
+        "-sENVIRONMENT=node"
+    )
+    add_test(NAME node_websocket_tests
+             COMMAND "${NODE_EXECUTABLE}"
+                     "${CMAKE_CURRENT_SOURCE_DIR}/run_node_websocket_test.js"
+                     "$<TARGET_FILE:sdl3mcp_test_websocket_node>")
+
+    # The app half of the browser path: the dummy video driver supplies a real
+    # window, the archive supplies the protocol, and a test-only post-js file
+    # supplies the two page globals.
+    add_executable(sdl3mcp_test_web_app_node web_app_node_tests.cpp)
+    target_compile_features(sdl3mcp_test_web_app_node PRIVATE
+        cxx_std_20)
+    target_link_libraries(sdl3mcp_test_web_app_node PRIVATE
+        SDL3MCP::SDL3MCP
+        SDL3::SDL3
+        "-lwebsocket.js"
+        doctest::doctest
+    )
+    target_link_options(sdl3mcp_test_web_app_node PRIVATE
+        "-sASYNCIFY"
+        "-sEXIT_RUNTIME=1"
+        "-sENVIRONMENT=node"
+        # Post-js, never pre-js: a window that exists at module load flips
+        # ENVIRONMENT_IS_WEB and trips the -sENVIRONMENT=node assert.
+        "--post-js=${CMAKE_CURRENT_SOURCE_DIR}/node_page_globals.js"
+    )
+    add_test(NAME node_web_app_tests
+             COMMAND "${NODE_EXECUTABLE}"
+                     "${CMAKE_CURRENT_SOURCE_DIR}/run_node_web_app_test.js"
+                     "$<TARGET_FILE:sdl3mcp_test_web_app_node>")
     return()
 endif()
 

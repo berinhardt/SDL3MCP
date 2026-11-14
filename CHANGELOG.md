@@ -37,6 +37,10 @@ linkage, SDL ownership and the nlohmann/json resolution all change.
   download. It stays private and header-only.
 - **`SDL3MCP::COMMON` is a real static library** built from exactly the objects
   the library and the Handler both compile, and no file in it includes SDL.
+- **The Node suite needs no flag.** `SDL3MCP_BUILD_NODE_TESTS` is gone: an
+  Emscripten configure with `SDL3MCP_BUILD_TESTS` on registers both suites — the
+  transport arm and the whole app path — and skips them with a warning when Node
+  is absent.
 
 ### Removed
 

@@ -203,7 +203,9 @@ CamelCase is for C++ files; `examples/minimal/main.c` stays C.
 - **The Handler is single-threaded.** One `poll` loop over the client stream,
   the application stream, the listener, the signalfd and the web stack's pidfds.
   Writes are bounded and never block. There is no acceptor, monitor or sigwait
-  thread.
+  thread. A pending write is polled through `Stream::writeFd()`, which is the
+  socket for a socket and stdout for `StdioStream`; polling the read descriptor
+  for `POLLOUT` stalls every response larger than the pipe buffer.
 - **Forward deadlines follow the call.** A call carrying `timeout_ms` gets that
   budget plus a 500 ms grace; without one, every forwarded call gets the
   Handler's `--timeout-ms` budget, and `wait_session`/`app_spawn_*` default to
@@ -223,7 +225,10 @@ CamelCase is for C++ files; `examples/minimal/main.c` stays C.
   stops the rest with SIGTERM, one grace period and SIGKILL, removes the profile,
   and reports the child. The profile lock is what lets a later launch tell a live
   profile from an abandoned one; the sweep runs only in the launch path, never in
-  a plan print.
+  a plan print. The three children get `/dev/null` on stdin and their stdout on
+  the Handler's stderr, because the Handler's own stdin/stdout is the client's
+  MCP channel in server mode: a child that read stdin would eat requests and one
+  that wrote stdout would corrupt the answers.
 - **What is compiled where.** `src/SocketStream.cpp` and `src/StdioStream.cpp`
   are desktop-only; `src/WebSocketStream.cpp` takes their place on Emscripten.
   The common object library holds the dial arm the build can compile and the

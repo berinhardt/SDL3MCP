@@ -3,6 +3,33 @@
 All notable changes to SDL3MCP. The format follows Keep a Changelog; versions are
 `MAJOR.MINOR.PATCH`.
 
+## Unreleased
+
+The standards alignment is user-visible breaking: the include spelling, the
+linkage, SDL ownership and the nlohmann/json resolution all change.
+
+### Changed
+
+- **The public header is `<SDL3MCP.h>`.** It sits at the include root beside the
+  SDL-free `<SDL3MCP_types.h>`, so a consumer includes it flat instead of
+  `#include <SDL3MCP/SDL3MCP.h>`.
+- **The library is static only.** `SDL3MCP_BUILD_SHARED`, the shared branch, the
+  `shared` presets and the `DLL_EXPORT`/`SDL_STATIC_LIB` linkage macros are
+  gone; the header's linkage paragraph now says only that public symbols carry
+  `SDL_DECLSPEC` and `SDLCALL`.
+- **The app links SDL, not the library.** `SDL3MCP::SDL3MCP` publishes no SDL
+  target, include path or linkage macro, and the package no longer calls
+  `find_dependency(SDL3)`. A consumer links `SDL3MCP::SDL3MCP` plus an SDL
+  target it picks, documented as `SDL3::SDL3-static` because plain `SDL3::SDL3`
+  can resolve to the shared target and conflict with a static app. On
+  Emscripten the consumer also adds `-lwebsocket.js`.
+- **nlohmann/json follows the dependency policy.** `SDL3MCP_USE_SYSTEM_JSON` and
+  the vendored `third_party/nlohmann/json.hpp` are gone; resolution is an
+  existing target, then `find_package(nlohmann_json)`, then a pinned `v3.12.0`
+  download. It stays private and header-only.
+- **`SDL3MCP::COMMON` is a real static library** built from exactly the objects
+  the library and the Handler both compile, and no file in it includes SDL.
+
 ## 1.0.0
 
 The rewrite. The library is now single-threaded and dial-only, and the Handler

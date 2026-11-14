@@ -36,8 +36,7 @@ check_format() {
    git rev-parse --git-dir >/dev/null 2>&1 ||
       fail "$root is not a git checkout; the format gate needs its file list"
    printf 'check: clang-format over the tracked C and C++ sources\n' >&2
-   # third_party/ holds tracked upstream headers. They are not ours to reformat,
-   # and the vendored nlohmann/json.hpp alone takes minutes to format.
+   # third_party/ holds a tracked upstream header. It is not ours to reformat.
    git ls-files -- '*.c' '*.h' '*.cpp' '*.hpp' |
       while IFS= read -r file; do
          case $file in

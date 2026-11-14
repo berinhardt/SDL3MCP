@@ -161,12 +161,14 @@ caller's convenience; it is not a collaborator and does not get a class.
 
 ### CMake
 
-- The public targets are `SDL3MCP::SDL3MCP` (the library), `SDL3MCP::SERVER` (the
-  Handler), and `SDL3MCP::COMMON` (the core both compile; `docs/architecture.md`
-  §Layering owns what belongs in it). The object libraries
-  `sdl3mcp_common_objects`, `sdl3mcp_app_objects`, and
-  `sdl3mcp_server_objects` stay internal.
-- The shared build exports only the C surface; tests link the object libraries
-  rather than the shared object.
+- The public targets are `SDL3MCP::SDL3MCP` (the static library),
+  `SDL3MCP::SERVER` (the Handler), and `SDL3MCP::COMMON` (the SDL-free core
+  both compile, as a real static library; `docs/architecture.md` §Layering owns
+  what belongs in it). The object libraries `sdl3mcp_common_objects`,
+  `sdl3mcp_app_objects`, and `sdl3mcp_server_objects` stay internal.
+- The library is static only and publishes no SDL: no SDL target, include path,
+  linkage macro or Emscripten flag travels with it, so the app names SDL itself.
+  Tests link the common archive and the app object library for private symbols,
+  and the public target for the C surface.
 - No new third-party dependency without a named blocker. Runtime dependencies
   stay SDL3-only.

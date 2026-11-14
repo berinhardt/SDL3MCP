@@ -25,8 +25,7 @@ together, and `docs/architecture.md` owns it.
   without failing. 150 is the target, not the ceiling: a unit that goes past 150
   is due a split on its next change, and one at 300 is not reviewable.
 - **Scope: the product sources.** `include/`, `src/`, and the Handler's tree
-  (`src/handler/`, or `server/` until the move). `tests/` and `third_party/` are
-  not in scope.
+  (`src/handler/`). `tests/` and `third_party/` are not in scope.
 - **Tests are exempt on purpose.** A suite's length comes from the scenarios it
   covers, not from a responsibility its author chose. Cutting a test file to fit
   the rule would cut coverage, so no test file is split for size.

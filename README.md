@@ -1264,6 +1264,10 @@ browser arm (`src/WebSocketStream.cpp`) replaces the native socket:
 - A WebSocket close or error sets the quit flag; the next `SDL3MCP_AppIterate`
   pushes one `SDL_EVENT_QUIT`; the app's own quit handling runs, and
   `SDL3MCP_AppShutdown` closes the stream and calls `window.close()`.
+- A `--web` run seeds the throwaway Firefox profile with
+  `devtools.console.stdout.content`, so the page's `console.log`/`console.error`
+  — including a wasm abort — arrives on the Handler's stderr instead of being
+  visible only in a browser window nobody is watching.
 
 ## Platforms and limits
 

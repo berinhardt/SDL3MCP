@@ -228,7 +228,9 @@ CamelCase is for C++ files; `examples/minimal/main.c` stays C.
   a plan print. The three children get `/dev/null` on stdin and their stdout on
   the Handler's stderr, because the Handler's own stdin/stdout is the client's
   MCP channel in server mode: a child that read stdin would eat requests and one
-  that wrote stdout would corrupt the answers.
+  that wrote stdout would corrupt the answers. The seeded profile sets
+  `devtools.console.stdout.content`, so the page's console output — and a wasm
+  abort — reaches that same stderr.
 - **What is compiled where.** `src/SocketStream.cpp` and `src/StdioStream.cpp`
   are desktop-only; `src/WebSocketStream.cpp` takes their place on Emscripten.
   The common object library holds the dial arm the build can compile and the

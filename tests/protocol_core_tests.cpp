@@ -6,7 +6,7 @@
 */
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
-#include <SDL3MCP/SDL3MCP_version.h>
+#include <SDL3MCP_version.h>
 #include <doctest/doctest.h>
 
 #include <cstdint>

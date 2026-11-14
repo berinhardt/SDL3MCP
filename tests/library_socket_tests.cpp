@@ -14,7 +14,7 @@
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <SDL3/SDL.h>
-#include <SDL3MCP/SDL3MCP.h>
+#include <SDL3MCP.h>
 #include <arpa/inet.h>
 #include <doctest/doctest.h>
 #include <netinet/in.h>

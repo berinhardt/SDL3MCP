@@ -168,10 +168,10 @@ else()
 endif()
 
 set(SDL3MCP_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
-file(MAKE_DIRECTORY "${SDL3MCP_GENERATED_DIR}/SDL3MCP")
+file(MAKE_DIRECTORY "${SDL3MCP_GENERATED_DIR}")
 configure_file(
-    "${CMAKE_CURRENT_SOURCE_DIR}/include/SDL3MCP/SDL3MCP_version.h.in"
-    "${SDL3MCP_GENERATED_DIR}/SDL3MCP/SDL3MCP_version.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/SDL3MCP_version.h.in"
+    "${SDL3MCP_GENERATED_DIR}/SDL3MCP_version.h"
     @ONLY
 )
 
@@ -242,9 +242,9 @@ foreach(sdl3mcp_object_target IN LISTS SDL3MCP_OBJECT_TARGETS)
     endif()
 endforeach()
 
-# The common half takes SDL's include path but not its link line: the
-# configuration header needs the types and no symbol. Keeping SDL off this line
-# is what makes the Handler build without it.
+# The common half takes SDL's include path but not its link line: it includes no
+# SDL header today, because the configuration types are SDL-free. Keeping SDL
+# off its link line is what makes the Handler build without it.
 target_include_directories(sdl3mcp_common_objects PRIVATE
     $<TARGET_PROPERTY:SDL3::SDL3,INTERFACE_INCLUDE_DIRECTORIES>
 )
@@ -286,8 +286,8 @@ target_include_directories(SDL3MCP_COMMON INTERFACE
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
     "$<BUILD_INTERFACE:${SDL3MCP_GENERATED_DIR}>"
     "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
-    # The configuration header names SDL types but no SDL symbol, so the include
-    # path travels with COMMON while SDL stays off its link line.
+    # The include path travels with COMMON while SDL stays off its link line;
+    # the configuration types are SDL-free, so no member includes SDL.
     $<TARGET_PROPERTY:SDL3::SDL3,INTERFACE_INCLUDE_DIRECTORIES>
 )
 
@@ -323,8 +323,8 @@ if(SDL3MCP_BUILD_CLI AND NOT EMSCRIPTEN)
         PRIVATE
             "${CMAKE_CURRENT_SOURCE_DIR}/src"
             "${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb"
-            # Configuration.h names SDL types but no SDL symbol; the include
-            # path travels with the common core, never the link line.
+            # The common core carries SDL's include path; the Handler itself
+            # includes no SDL header and links no SDL symbol.
             $<TARGET_PROPERTY:SDL3::SDL3,INTERFACE_INCLUDE_DIRECTORIES>
     )
     target_link_libraries(sdl3mcp_server_objects
@@ -378,9 +378,10 @@ if(PROJECT_IS_TOP_LEVEL)
     )
 
     install(FILES
-        "${CMAKE_CURRENT_SOURCE_DIR}/include/SDL3MCP/SDL3MCP.h"
-        "${SDL3MCP_GENERATED_DIR}/SDL3MCP/SDL3MCP_version.h"
-        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/SDL3MCP"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/SDL3MCP.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/SDL3MCP_types.h"
+        "${SDL3MCP_GENERATED_DIR}/SDL3MCP_version.h"
+        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
     )
 
     install(FILES

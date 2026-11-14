@@ -46,8 +46,8 @@ reviewer make it. Cite the rule in review instead of arguing from taste.
 ### Files
 
 - CamelCase names with `.h` and `.cpp` extensions: `SocketStream.h`,
-  `SocketStream.cpp`. The public header keeps its name,
-  `include/SDL3MCP/SDL3MCP.h`.
+  `SocketStream.cpp`. The public headers keep their names, `include/SDL3MCP.h`
+  (the entry points) and `include/SDL3MCP_types.h` (the SDL-free types).
 - **Compound names use a hyphen between the words**: `Handler-Loop.cpp`,
   `Web-Plan.cpp`, `Handler-Loop.h`. clang-format treats the file whose name
   matches the unit's basename as that unit's main header and keeps it first in
@@ -69,8 +69,9 @@ reviewer make it. Cite the rule in review instead of arguing from taste.
 - Platform arms of one type share a header and take the platform suffix:
   `SocketStream.cpp` is the native implementation and `WebSocketStream.cpp` is
   the Emscripten one.
-- `include/SDL3MCP/` is the public surface and exposes the C API only; it never
-  includes a private `src/` header.
+- `include/` is the flat public surface and exposes the C API only; it never
+  includes a private `src/` header. `SDL3MCP_types.h` includes neither SDL nor
+  the entry points, so a unit can take the types without an SDL include path.
 
 ### C++ names
 

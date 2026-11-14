@@ -9,8 +9,9 @@ a fact is contract, this doc names the README section instead of restating it.
 ## File layout
 
 ```text
-include/SDL3MCP/SDL3MCP.h        the complete public C surface
-include/SDL3MCP/SDL3MCP_version.h.in
+include/SDL3MCP.h                the complete public C surface: SDL, the types
+include/SDL3MCP_types.h          the SDL-free configuration and release macros
+include/SDL3MCP_version.h.in     the generated release macros' template
 src/Api.cpp                      the C ABI over Runtime
 src/Runtime.h/.cpp               process-wide state; start/iterate/shutdown
 src/Configuration.h/.cpp         --mcp grammar, page query, endpoint parsing

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <SDL3MCP/SDL3MCP.h>
+#include <SDL3MCP_types.h>
 
 #include <cstdint>
 #include <optional>

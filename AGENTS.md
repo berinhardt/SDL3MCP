@@ -204,11 +204,11 @@ CamelCase is for C++ files; `examples/minimal/main.c` stays C.
   the application stream, the listener, the signalfd and the web stack's pidfds.
   Writes are bounded and never block. There is no acceptor, monitor or sigwait
   thread.
-- **Forward deadlines follow the tool.** A call carrying `timeout_ms` gets that
-  budget plus a 500 ms grace; without one, `sdl_input`/`sdl_capture` get twice the
-  Handler budget and every other call gets one. One forward path serves all
-  tools: `content` is relayed verbatim, a raw frame is PNG-encoded and answered
-  as text plus one image block.
+- **Forward deadlines follow the call.** A call carrying `timeout_ms` gets that
+  budget plus a 500 ms grace; without one, every forwarded call gets the
+  Handler's `--timeout-ms` budget, and `wait_session`/`app_spawn_*` default to
+  it. One forward path serves all tools: `content` is relayed verbatim, a raw
+  frame is PNG-encoded and answered as text plus one image block.
 - **Spawn-and-forget for applications.** The Handler does not signal, wait for,
   or reap a spawned application, and does not kill it on exit; each app owns its
   cleanup. The web stack is the exception: the Handler owns the page server,

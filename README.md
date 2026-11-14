@@ -594,8 +594,9 @@ The result is one JSON object:
 `window` is `null` before `SDL3MCP_SetWindow`; `videoDriver` is `null` when SDL
 reports none; `capture.lastError` is `null` when the last frame was accepted.
 `limits` carries only `maxFrameBytes`: there is no library frame timeout to
-report. `capture.lastWidth` and `capture.lastHeight` are the dimensions of the
-frame the app actually wrote, which is what a `region` is measured against.
+report. `capture.lastWidth` and `capture.lastHeight` describe the frame the
+library last returned, after any crop, which is what a `region` is measured
+against.
 
 ### `sdl_input`
 
@@ -735,8 +736,10 @@ there. Because the capture is requested only after that F+1 completion, the
 attached frame is always rendered after the actions were delivered: an unchanged
 frame means the actions had no effect, not that the observation is stale.
 
-At most one batch is in flight. An unknown key or chord is reported at F+1 with
-its action index; a structural error fails before anything is queued.
+Every batch the pump finds applies in order at F and shares the frame at F+1.
+An unknown key or chord is reported at F+1 with its action index; a structural
+error fails before anything is queued, and one failed batch does not disturb the
+other requests sharing the frame.
 
 ### `sdl_capture`
 
@@ -1155,10 +1158,9 @@ it to connect and complete the handshake.
 
 One forward path serves every tool:
 
-- A call carrying `timeout_ms` gets that budget plus a 500 ms grace. Without one,
-  `sdl_input` and `sdl_capture` get twice the Handler budget (the apply and then
-  the frame), and every other call gets one budget. `wait_session` and
-  `app_spawn_*` default to `--timeout-ms`.
+- A call carrying `timeout_ms` gets that budget plus a 500 ms grace. Without
+  one, every forwarded call gets the Handler's `--timeout-ms` budget.
+  `wait_session` and `app_spawn_*` default to the same budget.
 - A result with `content` is relayed verbatim.
 - A result with `byteLength` is read, PNG-encoded, and answered as text plus one
   image block. The frame's own `text` is used when it has one; otherwise the

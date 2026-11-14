@@ -856,10 +856,17 @@ presents it:
 MCP session on its client-facing face and one application session at a time.
 
 - **`Server`** — the client face is stdio. `--listen=HOST:PORT` names the
-  application listener; with an app source it defaults to `127.0.0.1:0`, and the
-  bound endpoint is printed on stderr as `sdl3mcp: listening on HOST:PORT`.
+  application listener; it is optional, and with an app source it defaults to
+  `127.0.0.1:0`, an ephemeral loopback port. The bound endpoint is printed on
+  stderr as `sdl3mcp: listening on HOST:PORT`, so the port the kernel assigned is
+  the one reported, never the requested zero.
 - **`Relay`** — `--connect=HOST:PORT` makes the client face a dialed upstream
   socket instead of stdio. `--listen` still names the application listener.
+
+A run needs something to serve: an app source (`--targets` or `--web`) or an
+explicit `--listen`. With neither it exits 2 before binding anything, naming
+both app-source flags. `--dump-tools` is the exception: it prints and exits with
+no listener and no app source.
 
 ```
 usage: sdl3mcp [--listen=HOST:PORT] [--connect=HOST:PORT]
@@ -869,13 +876,13 @@ usage: sdl3mcp [--listen=HOST:PORT] [--connect=HOST:PORT]
 
 | Option | Meaning |
 | --- | --- |
-| `--listen=HOST:PORT` | Accept one application connection at HOST:PORT. Port `0` asks the kernel for an ephemeral port. Defaults to `127.0.0.1:0` when an app source is given; required otherwise. |
+| `--listen=HOST:PORT` | Accept one application connection at HOST:PORT. Port `0` asks the kernel for an ephemeral port. Optional: with an app source it defaults to `127.0.0.1:0`; an explicit value wins. |
 | `--connect=HOST:PORT` | Dial an upstream MCP client (Relay mode). |
 | `--targets=PATH` | An alias-to-argv app source: a JSON file or a directory of `*.json` files. Repeatable. |
 | `--web=PATH` | An alias-to-web-root app source: a JSON file mapping each alias to the page root it serves. Repeatable. |
 | `--timeout-ms=N` | The forward, attach and spawn budget in milliseconds, 1..60000, default 10000. A tool's `timeout_ms` overrides it per call. |
 | `--dry-run=ALIAS` | Print what `app_spawn_<alias>` would run and start nothing. |
-| `--dump-tools` | Print the catalog `tools/list` advertises as JSON and exit. Needs no listener; it is the documentation check's view of the real list. |
+| `--dump-tools` | Print the catalog `tools/list` advertises as JSON and exit. Needs no listener and no app source; it is the documentation check's view of the real list. |
 | `--help` | Print the usage block and exit 0. |
 | `--version` | Print `SDL3MCP 1.0.0` and exit 0. |
 

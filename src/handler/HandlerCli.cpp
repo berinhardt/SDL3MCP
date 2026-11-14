@@ -27,6 +27,9 @@ constexpr std::string_view kDumpToolsOption = "--dump-tools";
 constexpr std::string_view kHelpOption = "--help";
 constexpr std::string_view kVersionOption = "--version";
 
+/* The listener an app source falls back to: loopback, kernel-chosen port. */
+constexpr std::string_view kDefaultListenHost = "127.0.0.1";
+
 bool parsePositiveInteger(std::string_view text, int& value) {
    if (text.empty()) {
       return false;
@@ -85,7 +88,7 @@ HandlerCliResult parseHandlerCommandLine(
          return result;
       }
       if (argument.rfind(kListenPrefix, 0) == 0) {
-         if (result.options.hasListen) {
+         if (!result.options.listenHost.empty()) {
             result.error = "--listen may be given only once";
             return result;
          }
@@ -102,7 +105,6 @@ HandlerCliResult parseHandlerCommandLine(
          }
          result.options.listenHost.assign(host.data(), host.size());
          result.options.listenPort = port;
-         result.options.hasListen = true;
          index += 1;
          continue;
       }
@@ -113,7 +115,7 @@ HandlerCliResult parseHandlerCommandLine(
          return result;
       }
       if (argument.rfind(kConnectPrefix, 0) == 0) {
-         if (result.options.hasConnect) {
+         if (!result.options.connectHost.empty()) {
             result.error = "--connect may be given only once";
             return result;
          }
@@ -129,7 +131,6 @@ HandlerCliResult parseHandlerCommandLine(
          }
          result.options.connectHost.assign(host.data(), host.size());
          result.options.connectPort = port;
-         result.options.hasConnect = true;
          index += 1;
          continue;
       }
@@ -172,7 +173,7 @@ HandlerCliResult parseHandlerCommandLine(
          return result;
       }
       if (argument.rfind(kDryRunPrefix, 0) == 0) {
-         if (result.options.hasDryRun) {
+         if (result.options.dryRun()) {
             result.error = "--dry-run may be given only once";
             return result;
          }
@@ -183,7 +184,6 @@ HandlerCliResult parseHandlerCommandLine(
             return result;
          }
          result.options.dryRunAlias.assign(value.data(), value.size());
-         result.options.hasDryRun = true;
          index += 1;
          continue;
       }
@@ -238,22 +238,21 @@ HandlerCliResult parseHandlerCommandLine(
       return result;
    }
 
-   if (result.options.hasDryRun && !result.options.hasAppSource()) {
+   if (result.options.dryRun() && !result.options.hasAppSource()) {
       result.error = "--dry-run requires an app source (--targets=PATH or --web=PATH)";
       return result;
    }
 
-   if (!result.options.hasListen) {
+   if (result.options.listenHost.empty()) {
       if (!result.options.hasAppSource()) {
          result.error =
-             "missing --listen=HOST:PORT (or an app source: --targets=PATH or "
-             "--web=PATH)";
+             "nothing to serve: give an app source (--targets=PATH or --web=PATH) "
+             "or an explicit --listen=HOST:PORT";
          return result;
       }
       /* An app source needs somewhere for the spawned app to dial back. */
-      result.options.listenHost = "127.0.0.1";
+      result.options.listenHost = kDefaultListenHost;
       result.options.listenPort = 0;
-      result.options.hasListen = true;
    }
 
    result.ok = true;
@@ -263,9 +262,10 @@ HandlerCliResult parseHandlerCommandLine(
 std::string handlerUsageText() {
    return "usage: sdl3mcp [--listen=HOST:PORT] [--connect=HOST:PORT] "
           "[--targets=PATH ...] [--web=PATH ...] [--timeout-ms=N] "
-          "[--dry-run=ALIAS]\n"
-          "  --listen=HOST:PORT   accept one application connection at HOST:PORT\n"
-          "                       (default 127.0.0.1:0 when an app source is given)\n"
+          "[--dry-run=ALIAS] [--dump-tools]\n"
+          "  --listen=HOST:PORT   accept one application connection at HOST:PORT;\n"
+          "                       optional, and with an app source it defaults to\n"
+          "                       127.0.0.1:0, an ephemeral loopback port\n"
           "  --connect=HOST:PORT  dial an upstream MCP client (a Relay)\n"
           "  --targets=PATH       an alias-to-argv app source; a JSON file or a\n"
           "                       directory of *.json files (repeatable)\n"
@@ -279,7 +279,9 @@ std::string handlerUsageText() {
           "                       nothing\n"
           "  --dump-tools         print the tools/list catalog as JSON and exit\n"
           "  --help               print this help and exit\n"
-          "  --version            print the Handler version and exit";
+          "  --version            print the Handler version and exit\n"
+          "An app source or an explicit --listen is required; --dump-tools needs "
+          "neither.";
 }
 
 }  // namespace sdl3mcp

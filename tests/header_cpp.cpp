@@ -5,9 +5,8 @@
 */
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
-#include <doctest/doctest.h>
-
 #include <SDL3MCP/SDL3MCP.h>
+#include <doctest/doctest.h>
 
 #include <cstring>
 

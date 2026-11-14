@@ -186,6 +186,9 @@ configure_file(
 # A shared build hides every C++ symbol; only the C API carries SDL_DECLSPEC.
 set(sdl3mcp_common_sources
     src/Configuration.cpp
+    src/Configuration-Arguments.cpp
+    src/Configuration-Endpoint.cpp
+    src/Configuration-Usage.cpp
     src/JsonRpc.cpp
     src/Session.cpp
     src/Stream.cpp
@@ -209,6 +212,13 @@ add_library(sdl3mcp_app_objects OBJECT
     src/Frame.cpp
     src/Info.cpp
     src/Input.cpp
+    src/Input-Actions.cpp
+    src/Input-Arguments.cpp
+    src/Input-Chord.cpp
+    src/Input-Keyboard.cpp
+    src/Input-Modifiers.cpp
+    src/Input-Pointer.cpp
+    src/Input-Properties.cpp
     src/KeyMap.cpp
     src/Mouse.cpp
     src/Pipeline.cpp

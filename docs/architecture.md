@@ -13,7 +13,12 @@ include/SDL3MCP/SDL3MCP.h        the complete public C surface
 include/SDL3MCP/SDL3MCP_version.h.in
 src/Api.cpp                      the C ABI over Runtime
 src/Runtime.h/.cpp               process-wide state; start/iterate/shutdown
-src/Configuration.h/.cpp         --mcp grammar, page query, endpoint parsing
+src/Configuration.h              --mcp grammar and configuration interface
+src/Configuration.cpp            configuration value and validation
+src/Configuration-Endpoint.cpp   endpoint and page-query grammar
+src/Configuration-Arguments.cpp  --mcp argument application
+src/Configuration-Usage.cpp      usage and version text
+src/Configuration-Limits.h       shared decimal parser and field bounds
 src/JsonRpc.h/.cpp               one parsed request/answer
 src/Session.h/.cpp               one peer: initialize, ping, tools/list, calls
 src/Tool.h/.cpp                  name, description, schema, invoke
@@ -25,8 +30,15 @@ src/SocketStream.h/.cpp          native dial
 src/WebSocketStream.cpp          Emscripten dial (same header)
 src/StdioStream.h/.cpp           Handler's client-facing stream
 src/Pipeline.h/.cpp              the app-thread input/capture pipeline
-src/Input.h/.cpp                 action model and parsing
-src/InputJson.h                  JSON -> actions
+src/Input.h                      action model, validation and chord interface
+src/Input.cpp                    model validation
+src/Input-Modifiers.cpp          modifier names and bits
+src/Input-Chord.cpp              key and chord resolution
+src/Input-Arguments.h/.cpp       JSON -> actions, the entry point
+src/Input-Properties.h/.cpp      closed-schema property readers
+src/Input-Actions.h/.cpp         action dispatch and text/release parsers
+src/Input-Keyboard.h/.cpp       key action parser
+src/Input-Pointer.h/.cpp        mouse and scroll action parsers
 src/KeyMap.h/.cpp                key names and chords
 src/Replay.h/.cpp                held state and event replay
 src/Mouse.h/.cpp                 pointer normalization

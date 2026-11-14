@@ -47,7 +47,8 @@ tests/                           doctest suites, check_readme.py, consumers
 examples/minimal/main.c          a complete host
 ```
 
-CamelCase is for C++ files; `examples/minimal/main.c` stays C.
+C++ file names are CamelCase with a hyphen between compound words (`STYLE.md`
+§Files states the rule and its reason); `examples/minimal/main.c` stays C.
 
 ## The wire protocol
 
@@ -120,6 +121,27 @@ The internals behind them:
   host's descriptors. The Handler's `StdioStream` owns the client-facing
   stdin/stdout for its own process. stderr stays separate and is where
   diagnostics go.
+
+## Layering
+
+Layering is a design constraint, not a style rule: `STYLE.md` says what code
+looks like, and this section says which objects may be compiled together.
+
+- **`SDL3MCP::COMMON` is the intersection of the objects the library and the
+  Handler both compile.** Those objects are `Configuration`, `JsonRpc`,
+  `Session`, `Stream`, `ToolCatalog`, `ToolDefinitions`, `ToolResult`, and the
+  transport arm the build can compile — `SocketStream` natively,
+  `WebSocketStream` on Emscripten. `StdioStream` is Handler-only, because the
+  library never writes to stdio. A unit that both consumers compile belongs to
+  `COMMON`; a unit that only one compiles does not.
+- **`COMMON` compiles no SDL.** No file compiled into `COMMON` includes SDL,
+  directly or through a header of its own. The configuration type is what makes
+  the Handler side workable: it names no SDL type, so a unit that only builds
+  configuration needs no SDL header, and the Handler's build can go without
+  SDL's include path entirely.
+- **The constraint enforces itself.** With no SDL include path on the Handler, a
+  stray SDL include in a common file fails the Handler build rather than passing
+  review and failing later, so no check script has to restate the rule.
 
 ## Build composition
 

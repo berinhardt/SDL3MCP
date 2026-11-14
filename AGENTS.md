@@ -22,8 +22,10 @@ the v0 tree was deleted in the rewrite and survives in `v0.1.0` and history.
   order, public targets, browser arm and limits; §Build has configure, build
   and `ctest`, the presets (`debug`, `shared`, `asan`), the Emscripten
   configure, and §Tests lists the suites.
-- **`STYLE.md`** fixes naming, formatting, headers, errors, tests and CMake; its
-  §Tests carries the payload-floor and drained-child-output rules.
+- **`STYLE.md`** is the single standards document: naming, formatting, headers,
+  errors, tests and CMake, split into mechanical rules a check enforces and
+  judgement rules a reviewer owns; its §Tests carries the payload-floor and
+  drained-child-output rules.
   **`CONTRACT.md`** is the frozen v0 archive, not the current contract.
 
 ## Architecture
@@ -42,7 +44,8 @@ section the branch names, not the whole file:
 ## Working on the spec
 
 - Wire names are snake_case (`max_frame_bytes`); C++ names are camelCase; types
-  are PascalCase; files are CamelCase. `STYLE.md` is the authority.
+  are PascalCase; file names are CamelCase with a hyphen between compound words
+  (`Handler-Loop.cpp`). `STYLE.md` is the authority.
 - Change the implementation and the matching README section together, including
   the tool JSON schemas when a parameter changes.
 - `tests/check_readme.py` enforces the two complete examples, the JSON blocks,

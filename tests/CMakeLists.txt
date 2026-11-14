@@ -146,6 +146,23 @@ foreach(scenario none help version error uninitialized stdio_pipes)
              COMMAND sdl3mcp_test_lifecycle ${scenario})
 endforeach()
 
+# The public CMake surface: a parent project must see the three public target
+# names. The consumer embeds SDL3MCP as a subdirectory and asserts them, so the
+# check fails if a name disappears or is renamed. It configures a tree of its
+# own, so it only runs when SDL3 came from find_package and a standalone
+# configure can find it again; a parent that vendors SDL through
+# add_subdirectory leaves SDL3_DIR unset and skips the check rather than
+# failing it for an environment it does not control.
+if(SDL3_DIR)
+    get_filename_component(sdl3mcp_source_dir "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
+    add_test(NAME targets_check
+             COMMAND "${CMAKE_COMMAND}"
+                     -S "${CMAKE_CURRENT_SOURCE_DIR}/targets_consumer"
+                     -B "${CMAKE_CURRENT_BINARY_DIR}/targets_consumer"
+                     "-DSDL3MCP_SOURCE_DIR=${sdl3mcp_source_dir}"
+                     "-DSDL3_DIR=${SDL3_DIR}")
+endif()
+
 # The README is the contract, so its code, schemas, and run command are checked.
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)

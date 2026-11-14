@@ -272,6 +272,26 @@ target_include_directories(SDL3MCP PRIVATE
     ${SDL3MCP_JSON_INCLUDE_DIRS}
 )
 
+# The 1.0 public target names, added beside the v0 build while the rewrite fills
+# them in: COMMON is the SDL-free core, SERVER is the Handler built on it, and
+# SDL3MCP::SDL3MCP (above) is the library. They carry usage requirements only
+# until later changes attach sources, so nothing links them yet and the v0
+# targets are unchanged. EXPORT_NAME fixes the installed names ahead of the
+# packaging change that adds them to the export set.
+add_library(SDL3MCP_COMMON INTERFACE)
+add_library(SDL3MCP::COMMON ALIAS SDL3MCP_COMMON)
+set_target_properties(SDL3MCP_COMMON PROPERTIES EXPORT_NAME COMMON)
+target_include_directories(SDL3MCP_COMMON INTERFACE
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+    "$<BUILD_INTERFACE:${SDL3MCP_GENERATED_DIR}>"
+    "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
+)
+
+add_library(SDL3MCP_SERVER INTERFACE)
+add_library(SDL3MCP::SERVER ALIAS SDL3MCP_SERVER)
+set_target_properties(SDL3MCP_SERVER PROPERTIES EXPORT_NAME SERVER)
+target_link_libraries(SDL3MCP_SERVER INTERFACE SDL3MCP_COMMON)
+
 if(SDL3MCP_BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()

@@ -1,0 +1,81 @@
+# SDL3MCP Style Guide
+
+The rules the 1.0 tree follows. `CONTRACT.md` fixes behavior; this file fixes how
+the code is written. Where they disagree about behavior, `CONTRACT.md` wins;
+where this file has no rule, match the surrounding code.
+
+## Files
+
+- CamelCase names with `.h` and `.cpp` extensions: `SocketStream.h`,
+  `SocketStream.cpp`. The public header keeps its name,
+  `include/SDL3MCP/SDL3MCP.h`.
+- One primary type per file where practical: a header declares the type its
+  matching `.cpp` defines, and the two share a basename.
+- Platform arms of one type share a header and take the platform suffix:
+  `SocketStream.cpp` is the native implementation and `WebSocketStream.cpp` is
+  the Emscripten one.
+- `include/SDL3MCP/` is the public surface and exposes the C API only; it never
+  includes a private `src/` header.
+
+## C++ names
+
+- Types and classes: PascalCase (`ToolCatalog`, `ToolResult`).
+- Functions, methods, and fields: camelCase (`writeFrame`, `frameCounter`).
+- Private data members: trailing underscore (`frameCounter_`).
+- Namespaces: `sdl3mcp`.
+- Helpers no other translation unit needs: anonymous namespace in the `.cpp`,
+  never a declaration in a header.
+- Wire names (JSON fields, CLI flags) are snake_case (`max_frame_bytes`); C++
+  names never are.
+
+## Formatting
+
+- `.clang-format` is the authority: Google base, 3-space indent, no column limit,
+  left-aligned pointers and references.
+- Run it on the files a change touches; do not reformat untouched code in the
+  same change.
+- Keep include groups meaningful rather than hand-sorting them; the formatter
+  orders them within a group.
+
+## Headers
+
+- Every header is self-contained: it compiles alone and includes what it uses.
+- A `.cpp` includes its own header first, before any other include.
+- No `using namespace` in a header; qualify names or alias inside the `.cpp`.
+- Include the minimum: forward-declare in a header when a definition is not
+  needed, and include the definition in the `.cpp`.
+
+## Errors
+
+- Errors are values, not exceptions. Internal code returns a typed
+  `Result<T, E>` (`ProtocolError`, `TransportError`); no exception crosses the C
+  ABI, and the C entry points report failure through `SDL_APP_FAILURE` and
+  `SDL_GetError`.
+- Never swallow an error: propagate it, or report it with the reason.
+- Do not validate caller input with `assert`; return the error instead.
+
+## Comments
+
+- Comments explain why, not what. Delete a comment that restates the code.
+- No dead code and no commented-out code; version control remembers.
+- A public declaration documents its contract (ownership, lifetime, threading),
+  not its implementation.
+
+## Tests
+
+- doctest, one executable per family, behavior-first: assert through the public
+  seam the change names, not private helpers.
+- Deterministic: no network, no wall-clock dependence, and no sleep used as
+  synchronization.
+- A bug fix carries the regression test that would have caught it.
+
+## CMake
+
+- The public targets are `SDL3MCP::SDL3MCP` (the library), `SDL3MCP::SERVER` (the
+  Handler), and `SDL3MCP::COMMON` (the SDL-free core both use). The object
+  libraries `sdl3mcp_common_objects`, `sdl3mcp_app_objects`, and
+  `sdl3mcp_server_objects` stay internal.
+- The shared build exports only the C surface; tests link the object libraries
+  rather than the shared object.
+- No new third-party dependency without a named blocker. Runtime dependencies
+  stay SDL3-only.

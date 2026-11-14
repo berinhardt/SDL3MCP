@@ -54,6 +54,8 @@ find.
 - **doctest** is required for the test suite; a missing doctest is a configure
   error, never a silent zero-test run. A parent that vendors doctest through
   `add_subdirectory` already defines `doctest::doctest` and needs no package.
+- **Transport tests and spawn harnesses** follow the payload-floor and
+  drained-child-output rules in `STYLE.md`; a reviewer can cite them there.
 - **Python 3** is required for `readme_check`, which CTest registers when it is
   found. The check compiles the README's two complete C examples, parses every
   JSON block, compares the documented schemas with the Handler's `--dump-tools`

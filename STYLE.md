@@ -72,6 +72,19 @@ is not a current source of truth.
 - Deterministic: no network, no wall-clock dependence, and no sleep used as
   synchronization.
 - A bug fix carries the regression test that would have caught it.
+- **Payload floor.** A transport test carries at least one payload larger than
+  the OS buffer it travels through (64 KiB on Linux pipes), so the answer has to
+  be written in parts and read back whole; a suite whose largest message fits in
+  one write has not exercised the transport. The exemplar is `tests/handler_tests.cpp`,
+  `a response larger than the pipe buffer reaches the client`: its `noise = true`
+  parameter on `serveRawFrame` produces incompressible pixels, so the PNG stays
+  above the buffer instead of compressing under it.
+- **Drained child output.** A harness that spawns a process gives the child a
+  file or a draining thread for its stderr, so the child can always finish a
+  write; a captured pipe left undrained while the harness blocks on stdout is a
+  deadlock, not a failure report. The worked example is the 1.0 acceptance
+  driver, `.scratch/agent-environment/acceptance.py` in the Catalyst checkout: it
+  opens a per-Handler `.err` file and passes it as `stderr=`.
 
 ## CMake
 

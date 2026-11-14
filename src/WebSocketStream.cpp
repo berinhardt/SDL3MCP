@@ -1,14 +1,15 @@
 /*
   The browser arm of SocketStream: the same class and the same StreamBase, with
-  the dial done by a WebSocket.
+  the dial done by a WebSocket. This unit is the loop's side of it — the dial,
+  the writes, close and pump.
 
   A page has no fd and nothing to block on. `emscripten_websocket_new` starts the
   connection and the open, message, close and error events arrive later as
-  callbacks on the page's own thread. The callbacks never answer anything
-  themselves: they copy the bytes into a queue and record the close or error,
-  and pump() feeds the queue through StreamBase exactly as the native arm feeds
-  what recv() returned. That keeps the protocol layer on one path and makes an
-  event that arrives between two frames harmless.
+  callbacks on the page's own thread (WebSocketStream-Events.cpp). The callbacks
+  never answer anything themselves: they copy the bytes into a queue and record
+  the close or error, and pump() feeds the queue through StreamBase exactly as
+  the native arm feeds what recv() returned. That keeps the protocol layer on one
+  path and makes an event that arrives between two frames harmless.
 
   `ws://` is added here, never by configuration: connect_host is always
   HOST:PORT, on both platforms.
@@ -23,6 +24,7 @@
 
 #include "Configuration.h"
 #include "SocketStream.h"
+#include "WebSocketStream-Native.h"
 
 namespace sdl3mcp {
 namespace {
@@ -35,30 +37,6 @@ std::string withResult(std::string_view action, int result) {
 }
 
 }  // namespace
-
-struct SocketStream::Native {
-   EMSCRIPTEN_WEBSOCKET_T socket = 0;
-   std::string endpoint;
-
-   /*
-     Bytes received but not yet handed to StreamBase. One WebSocket message may
-     hold a whole line, a fragment of one, or the raw payload that follows a
-     line, so the queue is a byte stream, not a message queue.
-   */
-   std::string inbound;
-
-   /*
-     The connection ended between two pumps. The close is delivered after the
-     bytes queued before it, so the last requests a client sent are answered
-     before the session retires.
-   */
-   bool closePending = false;
-   unsigned short closeCode = 0;
-   std::string closeReason;
-   bool errorPending = false;
-   /* The specific reason a queued error reports; empty means the generic one. */
-   std::string errorMessage;
-};
 
 SocketStream::SocketStream() : native_(std::make_unique<Native>()) {
 }
@@ -231,95 +209,6 @@ void SocketStream::pump() {
          message += ": " + native_->closeReason;
       }
       fail(message);
-   }
-}
-
-bool SocketStream::onOpen(int,
-                          const EmscriptenWebSocketOpenEvent*,
-                          void* userData) {
-   auto* stream = static_cast<SocketStream*>(userData);
-   if (stream != nullptr) {
-      stream->open();
-   }
-   /* The browser ignores the return value; the stream's state carries the verdict. */
-   return true;
-}
-
-bool SocketStream::onMessage(int,
-                             const EmscriptenWebSocketMessageEvent* event,
-                             void* userData) {
-   auto* stream = static_cast<SocketStream*>(userData);
-   if (stream != nullptr && event != nullptr) {
-      stream->appendBytes(event->data, event->numBytes, event->isText != 0);
-   }
-   return true;
-}
-
-bool SocketStream::onClose(int,
-                           const EmscriptenWebSocketCloseEvent* event,
-                           void* userData) {
-   auto* stream = static_cast<SocketStream*>(userData);
-   if (stream == nullptr || stream->finished()) {
-      return true;
-   }
-
-   stream->native_->closePending = true;
-   if (event != nullptr) {
-      stream->native_->closeCode = event->code;
-      /*
-        Emscripten truncates the reason into a fixed char[512] without promising
-        a terminator, so the read is bounded by the field, not by a search.
-      */
-      std::size_t reasonLength = 0;
-      while (reasonLength < sizeof event->reason &&
-             event->reason[reasonLength] != '\0') {
-         ++reasonLength;
-      }
-      stream->native_->closeReason.assign(event->reason, reasonLength);
-   }
-   return true;
-}
-
-bool SocketStream::onError(int,
-                           const EmscriptenWebSocketErrorEvent*,
-                           void* userData) {
-   auto* stream = static_cast<SocketStream*>(userData);
-   if (stream != nullptr && !stream->finished()) {
-      stream->native_->errorPending = true;
-   }
-   return true;
-}
-
-void SocketStream::appendBytes(const std::uint8_t* data,
-                               std::size_t size,
-                               bool isText) {
-   if (native_ == nullptr || finished() || size == 0 || data == nullptr) {
-      return;
-   }
-   /*
-     Emscripten's text path counts the terminating NUL in numBytes, and a text
-     frame still carries the same UTF-8 line stream: drop the NUL, not the data.
-   */
-   if (isText && data[size - 1] == '\0') {
-      --size;
-   }
-   native_->inbound.append(reinterpret_cast<const char*>(data), size);
-
-   /*
-     pump() runs once per frame, so a peer that never sends a newline could pile
-     frames up between two calls: fail as soon as the pending fragment is over
-     the cap instead of buffering without a bound.
-   */
-   const std::size_t lastNewline = native_->inbound.rfind('\n');
-   const std::size_t pending = lastNewline == std::string::npos
-                                   ? native_->inbound.size()
-                                   : native_->inbound.size() - lastNewline - 1;
-   if (pending > StreamBase::kMaxLineBytes) {
-      native_->inbound.clear();
-      native_->errorMessage = "input line exceeds the " +
-                              std::to_string(StreamBase::kMaxLineBytes) +
-                              " byte limit";
-      native_->errorPending = true;
    }
 }
 

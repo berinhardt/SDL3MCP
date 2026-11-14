@@ -29,6 +29,8 @@ src/ToolResult.h/.cpp            content or raw payload, self-encoded
 src/Stream.h/.cpp                Stream + StreamBase (line/payload buffer)
 src/SocketStream.h/.cpp          native dial
 src/WebSocketStream.cpp          Emscripten dial (same header)
+src/WebSocketStream-Events.cpp   browser callbacks and byte queue
+src/WebSocketStream-Native.h     the browser arm's PIMPL state
 src/StdioStream.h/.cpp           Handler's client-facing stream
 src/Pipeline.h/.cpp              the app-thread input/capture pipeline
 src/Input.h                      action model, validation and chord interface
@@ -58,7 +60,9 @@ src/handler/Handler-Web.cpp      web spawn orchestration and --dry-run
 src/handler/Handler-Catalog.h    the Handler's tool text
 src/handler/Handler-Forward.h    the forwarding unit's own declarations
 src/handler/ToolArguments.h      the shared timeout_ms helpers
-src/handler/AppPeer.h/.cpp       application handshake and forwarding
+src/handler/AppPeer.h/.cpp       the application session and its lifecycle
+src/handler/AppPeer-Protocol.cpp the handshake, tool list and event dispatch
+src/handler/AppPeer-Protocol.h   the protocol constants both units share
 src/handler/Listener.h/.cpp      the application listener
 src/handler/Targets.h/.cpp       --targets sources
 src/handler/Web-Apps.h/.cpp      --web sources and the alias dictionary
@@ -105,9 +109,11 @@ notches*. The internals behind them:
 
 README §The browser owns the contract: the `?mcp=HOST:PORT` page query and its
 percent-decoding, the one configuration parser, the `ws://` scheme the peer
-adds, and the WebSocket lifecycle. The arm itself is `src/WebSocketStream.cpp`,
-the same `Stream` seam as the desktop `SocketStream` (see *Build composition*),
-so no code above the stream names a file descriptor.
+adds, and the WebSocket lifecycle. The arm is `src/WebSocketStream.cpp` (the
+dial, the writes and pump) with `src/WebSocketStream-Events.cpp` (the callbacks
+and the byte queue they fill), the same `Stream` seam as the desktop
+`SocketStream` (see *Build composition*), so no code above the stream names a
+file descriptor.
 
 ## The Handler
 
@@ -179,9 +185,10 @@ for the runtime dependencies and *Linux only*, §The Emscripten build for the
 WebSocket suite. The internals:
 
 - **What is compiled where.** `src/SocketStream.cpp` and `src/StdioStream.cpp`
-  are desktop-only; `src/WebSocketStream.cpp` takes their place on Emscripten.
-  The common object library holds the dial arm the build can compile and the
-  protocol above it; `src/StdioStream.cpp` is compiled into
+  are desktop-only; `src/WebSocketStream.cpp` and
+  `src/WebSocketStream-Events.cpp` take their place on Emscripten. The common
+  object library holds the dial arm the build can compile and the protocol above
+  it; `src/StdioStream.cpp` is compiled into
   `sdl3mcp_server_objects`, so the library archive holds no stdio transport.
   `src/StdioStream.cpp` is the Handler's client-facing stream; the library never
   uses it.

@@ -121,7 +121,12 @@ set(sdl3mcp_common_sources
 if(EMSCRIPTEN)
     # A browser has no descriptor and no second thread: the WebSocket arm
     # replaces the native socket and delivers lines from the page's callbacks.
-    list(APPEND sdl3mcp_common_sources src/WebSocketStream.cpp)
+    # The arm is two units: the dial, writes and pump, plus the callbacks and
+    # the byte queue they fill.
+    list(APPEND sdl3mcp_common_sources
+        src/WebSocketStream.cpp
+        src/WebSocketStream-Events.cpp
+    )
 else()
     list(APPEND sdl3mcp_common_sources src/SocketStream.cpp)
 endif()
@@ -218,6 +223,7 @@ if(SDL3MCP_BUILD_CLI AND NOT EMSCRIPTEN)
     add_library(sdl3mcp_server_objects OBJECT
         src/StdioStream.cpp
         src/handler/AppPeer.cpp
+        src/handler/AppPeer-Protocol.cpp
         src/handler/Handler-Catalog.cpp
         src/handler/Handler-Forward.cpp
         src/handler/Handler-Loop.cpp

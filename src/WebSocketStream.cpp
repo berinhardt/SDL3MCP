@@ -15,6 +15,8 @@
   HOST:PORT, on both platforms.
 */
 
+#include "WebSocketStream.h"
+
 #include <emscripten/websocket.h>
 
 #include <cstdint>
@@ -24,13 +26,9 @@
 
 #include "Configuration.h"
 #include "SocketStream.h"
-#include "WebSocketStream-Native.h"
 
 namespace sdl3mcp {
 namespace {
-
-constexpr unsigned short kNormalCloseCode = 1000;
-constexpr unsigned short kGoingAwayCloseCode = 1001;
 
 std::string withResult(std::string_view action, int result) {
    return std::string(action) + " (result " + std::to_string(result) + ")";

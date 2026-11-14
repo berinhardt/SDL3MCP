@@ -113,11 +113,12 @@ caller's convenience; it is not a collaborator and does not get a class.
   left-aligned pointers and references.
 - Run it on the files a change touches; do not reformat untouched code in the
   same change.
-- Keep include groups meaningful rather than hand-sorting them; the formatter
-  orders them within a group but keeps the blocks as written (`IncludeBlocks:
-  Preserve`). A preserved block is what lets a unit with no header of its own
-  lead with its class header (`Web-Run.h` in `Web-Child.cpp`): the formatter
-  recognises a main header only by a matching file name.
+- Let the formatter own include order: it groups and sorts them, and
+  `IncludeIsMainRegex` puts a unit's class header first. A definition unit with
+  no header of its own takes a name whose hyphenated suffix strips to its class
+  header — `Handler-Loop.cpp` opens with `Handler.h` and `Web-Run-Child.cpp`
+  with `Web-Run.h` — so the formatter detects that header. A unit whose name
+  cannot map that way gets a matching header.
 
 ### Headers
 

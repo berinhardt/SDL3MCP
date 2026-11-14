@@ -19,7 +19,7 @@
 
   This unit's definitions live in two translation units: Web-Plan.cpp holds
   preflight, the browser lookup, the ports and the plan composition;
-  Web-Profile.cpp holds the profile's seed, lock, sweep and removal, and the
+  Web-Plan-Profile.cpp holds the profile's seed, lock, sweep and removal, and the
   prepareWebLaunch composition that owns them.
 */
 

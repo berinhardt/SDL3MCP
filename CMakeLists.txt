@@ -9,7 +9,6 @@ endif()
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
-option(SDL3MCP_BUILD_SHARED "Build SDL3MCP as a shared library" OFF)
 option(SDL3MCP_BUILD_TESTS "Build the SDL3MCP tests" ${PROJECT_IS_TOP_LEVEL})
 option(SDL3MCP_BUILD_EXAMPLES "Build the SDL3MCP examples" OFF)
 # The browser arm's own suite: an Emscripten doctest executable that dials a
@@ -41,7 +40,6 @@ if(SDL3MCP_WANTS_DOCTEST AND NOT TARGET doctest::doctest)
 endif()
 
 option(SDL3MCP_BUILD_CLI "Build the sdl3mcp Handler executable" OFF)
-option(SDL3MCP_USE_SYSTEM_JSON "Resolve nlohmann_json from the system before vendoring" ON)
 
 # Executable targets opt into app_spawn_<alias> by registering here:
 #   sdl3mcp_app(<alias> <target> [ARGS <arg>...])
@@ -140,31 +138,41 @@ if(NOT TARGET SDL3::SDL3)
     find_package(SDL3 CONFIG REQUIRED)
 endif()
 
-if(SDL3MCP_USE_SYSTEM_JSON)
+# nlohmann/json is header-only and private to the build. It resolves in three
+# steps: a target the parent project already defined, then a package installed
+# in the environment, then a pinned download. Only the include path is taken, so
+# the exported target never asks a consumer to have nlohmann installed.
+if(NOT TARGET nlohmann_json::nlohmann_json)
     find_package(nlohmann_json CONFIG QUIET)
 endif()
 
 if(NOT TARGET nlohmann_json::nlohmann_json)
-    add_library(sdl3mcp_json INTERFACE)
-    target_include_directories(sdl3mcp_json INTERFACE
-        "${CMAKE_CURRENT_SOURCE_DIR}/third_party"
+    include(FetchContent)
+    # The release tag pins the version the deleted vendored header carried.
+    # Tests and install rules stay off: this is an include path, not a build.
+    set(JSON_BuildTests OFF CACHE BOOL "")
+    set(JSON_Install OFF CACHE BOOL "")
+    FetchContent_Declare(nlohmann_json
+        URL https://github.com/nlohmann/json/archive/refs/tags/v3.12.0.tar.gz
+        URL_HASH
+            SHA256=4b92eb0c06d10683f7447ce9406cb97cd4b453be18d7279320f7b2f025c10187
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     )
-    add_library(nlohmann_json::nlohmann_json ALIAS sdl3mcp_json)
+    FetchContent_MakeAvailable(nlohmann_json)
 endif()
 
-# nlohmann/json is header-only and private. Only its include path is taken, so
-# the exported target never asks a consumer to have nlohmann installed.
+if(NOT TARGET nlohmann_json::nlohmann_json)
+    message(FATAL_ERROR
+        "SDL3MCP: nlohmann_json could not be resolved: define the "
+        "nlohmann_json::nlohmann_json target, install its package, or allow "
+        "the pinned FetchContent download")
+endif()
+
 get_target_property(SDL3MCP_JSON_INCLUDE_DIRS
     nlohmann_json::nlohmann_json INTERFACE_INCLUDE_DIRECTORIES
 )
 if(NOT SDL3MCP_JSON_INCLUDE_DIRS)
     set(SDL3MCP_JSON_INCLUDE_DIRS "")
-endif()
-
-if(SDL3MCP_BUILD_SHARED)
-    set(sdl3mcp_library_type SHARED)
-else()
-    set(sdl3mcp_library_type STATIC)
 endif()
 
 set(SDL3MCP_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -178,12 +186,10 @@ configure_file(
 # The translation units live in object libraries so the two public consumers and
 # the unit tests can compose them without a second copy of the sources:
 #   * common: JSON-RPC, tools, the session, the stream, configuration and the
-#     dial. It names SDL types but references no SDL symbol, so the Handler can
-#     link it without dragging in a window.
+#     dial. It compiles no SDL, so the Handler can link it without SDL.
 #   * app: the C API, the runtime, and the input/replay/capture/info half. This
-#     is the only half that links SDL.
+#     is the only half that needs SDL.
 #   * server: the Handler. It links common and never SDL.
-# A shared build hides every C++ symbol; only the C API carries SDL_DECLSPEC.
 set(sdl3mcp_common_sources
     src/Configuration.cpp
     src/JsonRpc.cpp
@@ -232,27 +238,16 @@ foreach(sdl3mcp_object_target IN LISTS SDL3MCP_OBJECT_TARGETS)
         VISIBILITY_INLINES_HIDDEN YES
         POSITION_INDEPENDENT_CODE ON
     )
-    # SDL's SDL_DECLSPEC expands to __declspec(dllexport) when DLL_EXPORT is
-    # defined, which is what DEFINE_SYMBOL sets for a shared library. A static
-    # build says SDL_STATIC_LIB so a Windows consumer sees no dllimport.
-    if(SDL3MCP_BUILD_SHARED)
-        target_compile_definitions(${sdl3mcp_object_target} PRIVATE DLL_EXPORT)
-    else()
-        target_compile_definitions(${sdl3mcp_object_target} PRIVATE SDL_STATIC_LIB)
-    endif()
 endforeach()
 
-# The common half takes SDL's include path but not its link line: it includes no
-# SDL header today, because the configuration types are SDL-free. Keeping SDL
-# off its link line is what makes the Handler build without it.
-target_include_directories(sdl3mcp_common_objects PRIVATE
-    $<TARGET_PROPERTY:SDL3::SDL3,INTERFACE_INCLUDE_DIRECTORIES>
-)
+# The common half is compiled with no SDL include path: no file in it may
+# include SDL, and the configuration types are SDL-free. The Handler inherits
+# that, so a stray SDL include in a common file fails the Handler build.
+# The app half is the only half that needs SDL, and only to compile: the final
+# link is the app's job, because the library publishes no SDL target.
+target_link_libraries(sdl3mcp_app_objects PRIVATE SDL3::SDL3)
 
-# The app half is the only half that needs SDL at link time.
-target_link_libraries(sdl3mcp_app_objects PUBLIC SDL3::SDL3)
-
-add_library(SDL3MCP ${sdl3mcp_library_type}
+add_library(SDL3MCP STATIC
     $<TARGET_OBJECTS:sdl3mcp_common_objects>
     $<TARGET_OBJECTS:sdl3mcp_app_objects>
 )
@@ -263,32 +258,21 @@ target_include_directories(SDL3MCP
         "$<BUILD_INTERFACE:${SDL3MCP_GENERATED_DIR}>"
         "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
 )
-target_link_libraries(SDL3MCP PUBLIC SDL3::SDL3)
-if(NOT SDL3MCP_BUILD_SHARED)
-    # Part of the exported interface: a static consumer must not see dllimport.
-    target_compile_definitions(SDL3MCP PUBLIC SDL_STATIC_LIB)
-endif()
-if(EMSCRIPTEN)
-    # emscripten_websocket_* lives in Emscripten's JS library, and the final link
-    # needs it named. As INTERFACE it reaches the application's link line, which
-    # is where the WebSocket arm is pulled in from the archive.
-    target_link_libraries(SDL3MCP INTERFACE "-lwebsocket.js")
-endif()
+# No target_link_libraries(SDL3MCP SDL3::SDL3): on a static library a PRIVATE
+# dependency is exported as $<LINK_ONLY:...>, so it would still publish SDL and
+# force find_dependency(SDL3) on every consumer. The app names SDL itself.
 
-# The SDL-free core both the library and the Handler compose. It is a build-tree
-# target: the installed package exports the library only, so a consumer never
-# needs the internal object libraries.
-add_library(SDL3MCP_COMMON INTERFACE)
+# The SDL-free core both the library and the Handler compose: a real static
+# library built from exactly the common object library, so the Handler links one
+# target instead of a bag of objects. It is a build-tree target: the installed
+# package exports the library only, so a consumer never needs it.
+add_library(SDL3MCP_COMMON STATIC $<TARGET_OBJECTS:sdl3mcp_common_objects>)
 add_library(SDL3MCP::COMMON ALIAS SDL3MCP_COMMON)
 set_target_properties(SDL3MCP_COMMON PROPERTIES EXPORT_NAME COMMON)
-target_link_libraries(SDL3MCP_COMMON INTERFACE sdl3mcp_common_objects)
 target_include_directories(SDL3MCP_COMMON INTERFACE
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
     "$<BUILD_INTERFACE:${SDL3MCP_GENERATED_DIR}>"
     "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
-    # The include path travels with COMMON while SDL stays off its link line;
-    # the configuration types are SDL-free, so no member includes SDL.
-    $<TARGET_PROPERTY:SDL3::SDL3,INTERFACE_INCLUDE_DIRECTORIES>
 )
 
 # The Handler: one executable with a client-facing stream (stdio, or the
@@ -323,13 +307,12 @@ if(SDL3MCP_BUILD_CLI AND NOT EMSCRIPTEN)
         PRIVATE
             "${CMAKE_CURRENT_SOURCE_DIR}/src"
             "${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb"
-            # The common core carries SDL's include path; the Handler itself
-            # includes no SDL header and links no SDL symbol.
-            $<TARGET_PROPERTY:SDL3::SDL3,INTERFACE_INCLUDE_DIRECTORIES>
     )
+    # SDL's include path is deliberately absent: no Handler unit includes SDL,
+    # and a stray include must fail this build rather than pass review.
     target_link_libraries(sdl3mcp_server_objects
         PUBLIC
-            sdl3mcp_common_objects
+            SDL3MCP_COMMON
             nlohmann_json::nlohmann_json
     )
     set_target_properties(sdl3mcp_server_objects PROPERTIES
@@ -348,7 +331,7 @@ if(SDL3MCP_BUILD_CLI AND NOT EMSCRIPTEN)
         "${CMAKE_CURRENT_SOURCE_DIR}/src"
     )
     target_link_libraries(sdl3mcp PRIVATE
-        sdl3mcp_common_objects
+        SDL3MCP_COMMON
         nlohmann_json::nlohmann_json
     )
 endif()

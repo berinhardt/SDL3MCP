@@ -23,15 +23,6 @@
       "binaryDir": "${sourceDir}/build/debug"
     },
     {
-      "name": "shared",
-      "displayName": "Debug shared library",
-      "inherits": "base",
-      "binaryDir": "${sourceDir}/build/shared",
-      "cacheVariables": {
-        "SDL3MCP_BUILD_SHARED": "ON"
-      }
-    },
-    {
       "name": "asan",
       "displayName": "Debug with AddressSanitizer and UndefinedBehaviorSanitizer",
       "inherits": "base",
@@ -50,10 +41,6 @@
       "configurePreset": "debug"
     },
     {
-      "name": "shared",
-      "configurePreset": "shared"
-    },
-    {
       "name": "asan",
       "configurePreset": "asan"
     }
@@ -62,13 +49,6 @@
     {
       "name": "debug",
       "configurePreset": "debug",
-      "output": {
-        "outputOnFailure": true
-      }
-    },
-    {
-      "name": "shared",
-      "configurePreset": "shared",
       "output": {
         "outputOnFailure": true
       }

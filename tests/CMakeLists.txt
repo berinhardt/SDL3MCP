@@ -1,9 +1,11 @@
 # Unit tests.
 #
-# A suite that includes the private src/ headers links the object libraries: a
-# shared build hides those symbols from its dynamic symbol table, and the
-# sources are compiled once. A suite that uses only the public C API links
-# SDL3MCP::SDL3MCP, so the shared build's exported surface is exercised too.
+# A suite that includes the private src/ headers links the common archive and
+# the app object library: the sources are compiled once for the library, and
+# the suite reaches internal symbols the C ABI does not name. A suite that uses
+# only the public C API links SDL3MCP::SDL3MCP, so the public surface is
+# exercised too. A suite that links an object library names SDL itself, because
+# the library publishes no SDL.
 #
 # A browser configure has no POSIX test suite. Its one suite is the WebSocket
 # arm, run under Node against a local server, and it is registered only when the
@@ -20,10 +22,13 @@ if(EMSCRIPTEN)
                 "${CMAKE_CURRENT_SOURCE_DIR}/../src"
             )
             # The suite links the real archive, so the WebSocket arm is pulled
-            # from the same object the application links; its INTERFACE also
-            # carries -lwebsocket.js and SDL3.
+            # from the same object the application links. The library publishes
+            # no SDL, so the suite adds SDL and the JS library itself, exactly
+            # like a consumer's Emscripten link line.
             target_link_libraries(sdl3mcp_test_websocket_node PRIVATE
                 SDL3MCP::SDL3MCP
+                SDL3::SDL3
+                "-lwebsocket.js"
                 doctest::doctest
             )
             # ASYNCIFY is what lets the browser event loop run between pumps,
@@ -49,9 +54,9 @@ endif()
 find_package(Threads REQUIRED)
 
 # The private half of the library: protocol, session, tools, configuration and
-# the app-side pipeline. Linking the object libraries keeps the suite reachable
-# from a shared build, where these symbols are hidden.
-set(SDL3MCP_TEST_INTERNAL_LIBRARY sdl3mcp_common_objects sdl3mcp_app_objects)
+# the app-side pipeline. The common archive and the app object library keep the
+# suite reachable to private symbols.
+set(SDL3MCP_TEST_INTERNAL_LIBRARY SDL3MCP_COMMON sdl3mcp_app_objects)
 
 # One doctest suite is one executable, so a failing case is reported by doctest
 # and the remaining cases still run. A suite named <family>_tests builds the
@@ -94,19 +99,24 @@ function(sdl3mcp_add_test sdl3mcp_test_name sdl3mcp_test_source)
 endfunction()
 
 # The public header compiles as C11 and as C++20, and the release is 1.0.0.
+# The C test is a C-compiled consumer, so it names SDL itself: the library
+# publishes no SDL include path.
 add_executable(sdl3mcp_test_library_header_c library_header_c.c)
 set_target_properties(sdl3mcp_test_library_header_c PROPERTIES
     LINKER_LANGUAGE CXX)
 target_compile_features(sdl3mcp_test_library_header_c PRIVATE c_std_11)
-target_link_libraries(sdl3mcp_test_library_header_c PRIVATE SDL3MCP::SDL3MCP)
+target_link_libraries(sdl3mcp_test_library_header_c PRIVATE
+    SDL3MCP::SDL3MCP
+    SDL3::SDL3
+)
 add_test(NAME library_header_c COMMAND sdl3mcp_test_library_header_c)
 
 sdl3mcp_add_test(header_cpp header_cpp.cpp
     LIBRARY SDL3MCP::SDL3MCP)
 
-# The protocol core is SDL-free, so its suite links the common object library
-# alone: a wire unit that starts calling SDL breaks this build instead of
-# dragging a window and a GPU into a protocol test.
+# The protocol core is SDL-free, so its suite links the common library alone: a
+# wire unit that starts calling SDL breaks this build instead of dragging a
+# window and a GPU into a protocol test.
 add_executable(sdl3mcp_test_protocol_core protocol_core_tests.cpp)
 target_compile_features(sdl3mcp_test_protocol_core PRIVATE cxx_std_20)
 target_include_directories(sdl3mcp_test_protocol_core PRIVATE
@@ -115,7 +125,7 @@ target_include_directories(sdl3mcp_test_protocol_core PRIVATE
     ${SDL3MCP_JSON_INCLUDE_DIRS}
 )
 target_link_libraries(sdl3mcp_test_protocol_core PRIVATE
-    sdl3mcp_common_objects
+    SDL3MCP_COMMON
     nlohmann_json::nlohmann_json
     doctest::doctest
 )
@@ -134,7 +144,7 @@ if(TARGET sdl3mcp)
     )
     target_link_libraries(sdl3mcp_test_handler PRIVATE
         sdl3mcp_server_objects
-        sdl3mcp_common_objects
+        SDL3MCP_COMMON
         nlohmann_json::nlohmann_json
         doctest::doctest
         Threads::Threads
@@ -149,7 +159,7 @@ if(TARGET sdl3mcp)
         "${CMAKE_CURRENT_SOURCE_DIR}/../src"
     )
     target_link_libraries(sdl3mcp_handler_fake_app PRIVATE
-        sdl3mcp_common_objects
+        SDL3MCP_COMMON
         nlohmann_json::nlohmann_json
     )
 
@@ -169,7 +179,7 @@ if(TARGET sdl3mcp)
     # process or a browser.
     sdl3mcp_add_test(web_tests web_tests.cpp
         LIBRARY sdl3mcp_server_objects
-        LIBS sdl3mcp_common_objects nlohmann_json::nlohmann_json Threads::Threads
+        LIBS Threads::Threads
         INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/../src/handler")
 endif()
 

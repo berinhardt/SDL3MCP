@@ -44,10 +44,10 @@ as the current contract.
   work is a TODO in `src/SocketStream.cpp` and `src/StdioStream.cpp`.
 - **C11 or C++20** for a consumer. The library itself is C++20 and its headers
   are self-contained.
-- **nlohmann/json** at build time, resolved from the system first
-  (`SDL3MCP_USE_SYSTEM_JSON=ON`) and falling back to the vendored header in
-  `third_party/nlohmann`. It is a private, header-only dependency: a consumer
-  never needs it installed.
+- **nlohmann/json** at build time, resolved by this project's dependency
+  policy: an existing `nlohmann_json::nlohmann_json` target, then
+  `find_package(nlohmann_json CONFIG)`, then a pinned `v3.12.0` download. It is
+  a private, header-only dependency: a consumer never needs it installed.
 - **doctest** for the test suite, **Python 3** for `readme_check`, and
   **Node.js** plus Emscripten for the optional WebSocket suite.
 
@@ -69,12 +69,11 @@ examples still build, and the Handler suites are skipped.
 `CMakePresets.json` wraps the same configurations:
 
 ```sh
-cmake --preset debug  && cmake --build --preset debug  && ctest --preset debug
-cmake --preset shared && cmake --build --preset shared && ctest --preset shared
-cmake --preset asan   && cmake --build --preset asan   && ctest --preset asan
+cmake --preset debug && cmake --build --preset debug && ctest --preset debug
+cmake --preset asan  && cmake --build --preset asan  && ctest --preset asan
 ```
 
-All three presets turn on the tests, the examples and the Handler. `asan` runs
+Both presets turn on the tests, the examples and the Handler. `asan` runs
 with leak detection on; the tests that use SDL's dummy video driver scope it off
 for themselves because the driver keeps process-wide allocations they cannot
 free.
@@ -83,25 +82,38 @@ free.
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `SDL3MCP_BUILD_SHARED` | `OFF` | Build `SDL3MCP` as a shared library. |
 | `SDL3MCP_BUILD_TESTS` | `ON` when top-level | Build the doctest suites. |
 | `SDL3MCP_BUILD_EXAMPLES` | `OFF` | Build `examples/minimal`. |
 | `SDL3MCP_BUILD_CLI` | `OFF` | Build the `sdl3mcp` Handler. |
-| `SDL3MCP_USE_SYSTEM_JSON` | `ON` | Try `find_package(nlohmann_json)` before vendoring. |
 | `SDL3MCP_BUILD_NODE_TESTS` | `OFF` | Build the Emscripten WebSocket suite (needs Node). |
 
 ### Targets
 
 | Target | What it is |
 | --- | --- |
-| `SDL3MCP::SDL3MCP` | The library: the SDL-free protocol core plus the app half. This is the only target the installed package exports. |
+| `SDL3MCP::SDL3MCP` | The library: the SDL-free protocol core plus the app half, as a static library. This is the only target the installed package exports. |
 | `SDL3MCP::SERVER` | The `sdl3mcp` Handler executable. Defined exactly when `SDL3MCP_BUILD_CLI=ON` on a desktop configure; there is no Emscripten Handler. |
-| `SDL3MCP::COMMON` | The SDL-free core both compose: JSON-RPC, session, tools, stream, configuration, dial. |
+| `SDL3MCP::COMMON` | The SDL-free core both compose as a static library: JSON-RPC, session, tools, stream, configuration, dial. |
 
 The object libraries behind them (`sdl3mcp_common_objects`,
-`sdl3mcp_app_objects`, `sdl3mcp_server_objects`) are internal. A shared build
-compiles every internal symbol with hidden visibility, so `libSDL3MCP.so`
-exports the six C entry points and nothing else.
+`sdl3mcp_app_objects`, `sdl3mcp_server_objects`) are internal. **The library is
+static only and publishes no SDL:** it carries no SDL target, no SDL include
+path and no linkage macro. A consumer links `SDL3MCP::SDL3MCP` plus the SDL
+target it chooses on its own link line:
+
+```cmake
+find_package(SDL3 CONFIG REQUIRED)
+target_link_libraries(app PRIVATE SDL3MCP::SDL3MCP SDL3::SDL3-static)
+```
+
+Name `SDL3::SDL3-static`, not plain `SDL3::SDL3`: the plain alias resolves to
+whichever SDL the environment configured, and a shared SDL conflicts with a
+static app. On Emscripten the final link also needs `-lwebsocket.js`, because
+the library's WebSocket arm calls `emscripten_websocket_*`:
+
+```cmake
+target_link_libraries(app PRIVATE SDL3MCP::SDL3MCP SDL3::SDL3-static "-lwebsocket.js")
+```
 
 ### The Emscripten build
 
@@ -114,6 +126,10 @@ ctest --test-dir build/web --output-on-failure
 
 `SDL3MCP_BUILD_NODE_TESTS=ON` adds the WebSocket suite, which CTest runs through
 Node; without Node it is skipped with a warning.
+
+A page that links the library must add `-lwebsocket.js` to its own final link,
+as §Targets shows: the library no longer carries it, and the flag is what
+satisfies the `emscripten_websocket_*` calls.
 
 The browser build compiles `src/WebSocketStream.cpp` in place of
 `src/SocketStream.cpp` and `src/StdioStream.cpp`. It accepts only `--mcp=off`
@@ -475,7 +491,9 @@ with `sdl3mcp_app`. Calling `app_spawn_minimal` then runs
 
 `include/SDL3MCP.h` is the complete public surface, and a consumer includes it
 from the include root as `<SDL3MCP.h>`. It compiles as C11 and as C++20, and
-public symbols carry SDL's `SDL_DECLSPEC` and `SDLCALL`.
+public symbols carry SDL's `SDL_DECLSPEC` and `SDLCALL`. The library is static
+only and publishes no SDL, so the consumer names SDL on its own link line
+(§Targets).
 
 The configuration value and the release macros live beside it in
 `include/SDL3MCP_types.h`: it includes neither SDL nor the entry points, so a
@@ -1271,6 +1289,9 @@ browser arm (`src/WebSocketStream.cpp`) replaces the native socket:
 - **Linux only.** The Handler uses one `poll` loop with `signalfd` and `pidfd`,
   `fork`/`exec`, and process groups. Windows is a documented TODO; a `WIN32`
   configure stops with a `FATAL_ERROR`.
+- **Static only.** `SDL3MCP` is a static library and publishes no SDL. The
+  consumer links the SDL target it chooses (`SDL3::SDL3-static`) and, on
+  Emscripten, `-lwebsocket.js`.
 - **One application session at a time.** A second connection is accepted then
   closed.
 - **One MCP session per library instance.** `--mcp=off` is the only way to have
@@ -1302,7 +1323,8 @@ browser arm (`src/WebSocketStream.cpp`) replaces the native socket:
 - the Handler over pipes and sockets, with a fake application and a controllable
   page server/bridge;
 - `targets_check`, which configures a parent project and asserts the three public
-  target names;
+  target names plus the documented build graph (static library, no published
+  SDL, COMMON with sources);
 - `readme_check`, which compiles the README's two complete C examples, parses
   every JSON block, compares the documented tool schemas with the Handler's
   `--dump-tools` catalog, and checks the framing prose, the `sdl_input` text, the

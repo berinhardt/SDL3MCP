@@ -20,7 +20,7 @@ the v0 tree was deleted in the rewrite and survives in `v0.1.0` and history.
 
 - **`README.md` is the contract**: CLI grammar, MCP schemas, framing, loop
   order, public targets, browser arm and limits; §Build has configure, build
-  and `ctest`, the presets (`debug`, `shared`, `asan`), the Emscripten
+  and `ctest`, the presets (`debug`, `asan`), the Emscripten
   configure, and §Tests lists the suites.
 - **`STYLE.md`** is the single standards document: naming, formatting, headers,
   errors, tests and CMake, split into mechanical rules a check enforces and
@@ -73,11 +73,12 @@ section the branch names, not the whole file:
 
 - Work on a ticket branch; never commit to `master` or `develop`, never push
   (merging and pushing are the human's decisions); keep `third_party/` untouched:
-  those submodules are read-only upstreams, and `nlohmann/json` and `stb` are
-  vendored headers, not forks to edit.
+  it is a read-only upstream, and `stb` is a vendored header, not a fork to
+  edit. `nlohmann/json` is resolved at configure time (target, then package,
+  then a pinned download), not vendored.
 
 ## Session self-check
 
 - Did this session avoid asking how to build or run (README §Build), touch
-  `third_party/`, reformat untouched code, leave a thread, break the shared
-  build's C-only export, or fail `ctest` (debug, shared, asan) or `readme_check`?
+  `third_party/`, reformat untouched code, leave a thread, publish SDL from the
+  library, or fail `ctest` (debug, asan) or `readme_check`?

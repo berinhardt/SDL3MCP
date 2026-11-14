@@ -10,8 +10,8 @@
   SDL3MCP_types.h, which this header includes; that header includes neither SDL
   nor the entry points below.
 
-  Linkage follows SDL: public symbols carry SDL_DECLSPEC and SDLCALL. The shared
-  build defines DLL_EXPORT, the static build defines SDL_STATIC_LIB.
+  Linkage follows SDL: public symbols carry SDL_DECLSPEC and SDLCALL. The
+  library is static only.
 */
 
 #ifndef SDL3MCP_H

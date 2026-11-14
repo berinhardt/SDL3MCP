@@ -134,7 +134,9 @@ looks like, and this section says which objects may be compiled together.
   transport arm the build can compile — `SocketStream` natively,
   `WebSocketStream` on Emscripten. `StdioStream` is Handler-only, because the
   library never writes to stdio. A unit that both consumers compile belongs to
-  `COMMON`; a unit that only one compiles does not.
+  `COMMON`; a unit that only one compiles does not. It is a real static library
+  built from the common object library, not an interface shim, so the
+  intersection is visible as a target rather than a convention.
 - **`COMMON` compiles no SDL.** No file compiled into `COMMON` includes SDL,
   directly or through a header of its own. The configuration type is what makes
   the Handler side workable: it names no SDL type, so a unit that only builds
@@ -146,9 +148,10 @@ looks like, and this section says which objects may be compiled together.
 
 ## Build composition
 
-README owns the public build surface: §Targets for *the targets* and *a shared
-build exports only the C surface*, §Requirements for the runtime dependencies
-and *Linux only*, §The Emscripten build for the WebSocket suite. The internals:
+README owns the public build surface: §Targets for *the targets*, *the library
+is static only and publishes no SDL* and *the consumer link line*, §Requirements
+for the runtime dependencies and *Linux only*, §The Emscripten build for the
+WebSocket suite. The internals:
 
 - **What is compiled where.** `src/SocketStream.cpp` and `src/StdioStream.cpp`
   are desktop-only; `src/WebSocketStream.cpp` takes their place on Emscripten.
@@ -157,10 +160,17 @@ and *Linux only*, §The Emscripten build for the WebSocket suite. The internals:
   `sdl3mcp_server_objects`, so the library archive holds no stdio transport.
   `src/StdioStream.cpp` is the Handler's client-facing stream; the library never
   uses it.
-- **Dependencies stay SDL3-only at runtime.** `nlohmann/json` is system-first with
-  the vendored header as the fallback, and is private and header-only.
-  `stb_image_write.h` is vendored but used only by the Handler: one private
-  implementation unit, and the library archive must contain no stb symbol.
+- **Dependencies stay SDL3-only at runtime.** `nlohmann/json` resolves in three
+  steps — an existing target, then its package, then a pinned `v3.12.0` download
+  — and is private and header-only; there is no vendored copy. `stb_image_write.h`
+  is vendored but used only by the Handler: one private implementation unit, and
+  the library archive must contain no stb symbol.
+- **SDL is compiled in, never published.** The app half links `SDL3::SDL3` to
+  compile, and the Handler compiles with no SDL include path at all. The
+  `SDL3MCP` target therefore names no SDL target in its interface: on a static
+  library even a `PRIVATE` dependency is exported as `$<LINK_ONLY:...>`, so the
+  link would still cross to every consumer. The app names SDL itself, and the
+  Emscripten consumer adds `-lwebsocket.js`.
 - **Build notes.** doctest is required for the test suite; a missing doctest is
   a configure error, never a silent zero-test run. A parent that vendors doctest
   through `add_subdirectory` already defines `doctest::doctest` and needs no
@@ -174,9 +184,8 @@ and *Linux only*, §The Emscripten build for the WebSocket suite. The internals:
 
 README owns the public surface: §The library API for the six entry points, the
 C11 contract and the exception boundary (also `STYLE.md` §Errors), and §Targets
-for the shared build exporting only the C surface. The internals:
+for the static library and the consumer's SDL link line. The internals:
 
 - **Linkage follows SDL.** Public symbols carry `SDL_DECLSPEC` and `SDLCALL`.
-  The shared build defines `DLL_EXPORT`; the static build defines
-  `SDL_STATIC_LIB`, including on the exported interface. Do not add a private
-  dllimport/export macro.
+  The library is static only and its target publishes no SDL linkage macro: the
+  consumer links SDL itself. Do not add a private dllimport/export macro.

@@ -106,7 +106,10 @@ caller's convenience; it is not a collaborator and does not get a class.
 - Run it on the files a change touches; do not reformat untouched code in the
   same change.
 - Keep include groups meaningful rather than hand-sorting them; the formatter
-  orders them within a group.
+  orders them within a group but keeps the blocks as written (`IncludeBlocks:
+  Preserve`). A preserved block is what lets a unit with no header of its own
+  lead with its class header (`Web-Run.h` in `Web-Child.cpp`): the formatter
+  recognises a main header only by a matching file name.
 
 ### Headers
 

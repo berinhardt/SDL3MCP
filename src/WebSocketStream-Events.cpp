@@ -11,13 +11,14 @@
   The type and its header are the dial's: this unit declares nothing of its own.
 */
 
+#include "SocketStream.h"
+
 #include <emscripten/websocket.h>
 
 #include <cstddef>
 #include <cstdint>
 #include <string>
 
-#include "SocketStream.h"
 #include "WebSocketStream-Native.h"
 
 namespace sdl3mcp {

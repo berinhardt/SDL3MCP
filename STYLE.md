@@ -82,9 +82,9 @@ is not a current source of truth.
 - **Drained child output.** A harness that spawns a process gives the child a
   file or a draining thread for its stderr, so the child can always finish a
   write; a captured pipe left undrained while the harness blocks on stdout is a
-  deadlock, not a failure report. The worked example is the 1.0 acceptance
-  driver, `.scratch/agent-environment/acceptance.py` in the Catalyst checkout: it
-  opens a per-Handler `.err` file and passes it as `stderr=`.
+  deadlock, not a failure report. The worked example is `tests/handler_tests.cpp`'s
+  `TestProcess`: it gives the child a stderr pipe, and `readStderrLine` drains it,
+  polling the descriptor and buffering partial lines across reads.
 
 ## CMake
 

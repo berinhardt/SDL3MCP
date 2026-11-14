@@ -314,7 +314,11 @@ if(SDL3MCP_BUILD_CLI AND NOT EMSCRIPTEN)
         src/handler/Png.cpp
         src/handler/StbImageWrite.cpp
         src/handler/Targets.cpp
-        src/handler/Web.cpp
+        src/handler/Web-Apps.cpp
+        src/handler/Web-Child.cpp
+        src/handler/Web-Plan.cpp
+        src/handler/Web-Profile.cpp
+        src/handler/Web-Run.cpp
     )
     target_compile_features(sdl3mcp_server_objects PRIVATE cxx_std_20)
     target_include_directories(sdl3mcp_server_objects

@@ -9,7 +9,6 @@
 #include <unistd.h>
 
 #include <algorithm>
-#include <array>
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
@@ -40,6 +39,11 @@ constexpr std::int64_t kMaxTimeoutMs = 60000;
   when it has nothing to send, and the Handler only bounds the wait.
 */
 constexpr std::int64_t kForwardGraceMs = 500;
+/*
+  While a web run is waiting for its page server and bridge, the loop probes
+  the two ports on every turn; this bounds how long poll may sleep first.
+*/
+constexpr int kWebProbePollMs = 25;
 
 constexpr std::string_view kSpawnSchema = R"({
   "type": "object",
@@ -65,6 +69,33 @@ std::string spawnDescription(std::string_view alias) {
           "`spawned <alias> (pid N)`; a timeout or exec failure names the reason "
           "and the pid, and the process is not stopped (spawn-and-forget). "
           "Example: {\"timeout_ms\":5000}";
+}
+
+std::string webSpawnDescription(std::string_view alias) {
+   return "Start the web application configured for the alias " +
+          std::string(alias) +
+          ": a page server, a WebSocket bridge and an isolated Firefox, then "
+          "wait for the browser application to connect to the bridge and "
+          "complete the MCP handshake. The page URL, bridge endpoint and "
+          "throwaway profile are printed on stderr. One application at a time: "
+          "a call while one is attached or starting fails. Arguments: optional "
+          "timeout_ms (1-60000, default the Handler's --timeout-ms) covering the "
+          "launch and the handshake. Returns `spawned <alias> (browser pid N)`; "
+          "a timeout stops the page server and bridge and removes the profile, "
+          "and the browser is left running (spawn-and-forget). "
+          "Example: {\"timeout_ms\":5000}";
+}
+
+const char* webChildName(WebChild child) {
+   switch (child) {
+      case WebChild::PageServer:
+         return "page server";
+      case WebChild::Bridge:
+         return "bridge";
+      case WebChild::Browser:
+         return "browser";
+   }
+   return "child";
 }
 
 /*
@@ -283,7 +314,7 @@ int Handler::run() {
    installChildReaping();
 
    std::string error;
-   if (!loadTargets(error)) {
+   if (!loadSources(error)) {
       std::fprintf(stderr, "sdl3mcp: %s\n", error.c_str());
       std::fflush(stderr);
       return 2;
@@ -320,24 +351,26 @@ int Handler::run() {
    }
 
    while (running_) {
-      std::array<pollfd, 5> descriptors{};
-      descriptors[0].fd = clientFd_;
-      descriptors[0].events = POLLIN;
+      std::vector<pollfd> descriptors;
+      descriptors.reserve(8);
+
+      descriptors.push_back(pollfd{clientFd_, POLLIN, 0});
       if (clientSession_ && clientSession_->stream().wantsWrite()) {
          descriptors[0].events |= POLLOUT;
       }
-      descriptors[1].fd = listener_.fd();
-      descriptors[1].events = POLLIN;
-      descriptors[2].fd = appFd_;
-      descriptors[2].events = POLLIN;
+      descriptors.push_back(pollfd{listener_.fd(), POLLIN, 0});
+      descriptors.push_back(pollfd{appFd_, POLLIN, 0});
       if (appPeer_ && appPeer_->wantsWrite()) {
          descriptors[2].events |= POLLOUT;
       }
-      descriptors[3].fd = signalFd_;
-      descriptors[3].events = POLLIN;
-      descriptors[4].fd =
-          pendingSpawn_.has_value() ? pendingSpawn_->errorFd : -1;
-      descriptors[4].events = POLLIN;
+      descriptors.push_back(pollfd{signalFd_, POLLIN, 0});
+      descriptors.push_back(
+          pollfd{pendingSpawn_.has_value() ? pendingSpawn_->errorFd : -1, POLLIN, 0});
+
+      const std::size_t webBase = descriptors.size();
+      if (webRun_) {
+         webRun_->appendPollFds(descriptors);
+      }
 
       const auto beforePoll = Clock::now();
       const int ready = ::poll(descriptors.data(), descriptors.size(),
@@ -385,6 +418,11 @@ int Handler::run() {
          serviceSpawnExec();
       }
 
+      if (running_ && webRun_) {
+         serviceWeb(now, descriptors.data() + webBase,
+                    descriptors.size() - webBase);
+      }
+
       if (running_) {
          expireWaiters(now);
          expireForwards(now);
@@ -413,13 +451,35 @@ int Handler::run() {
    return 0;
 }
 
-bool Handler::loadTargets(std::string& error) {
+bool Handler::loadSources(std::string& error) {
    targets_.clear();
+   webApps_.clear();
    error.clear();
-   if (options_.targetsPaths.empty()) {
-      return true;
+
+   if (!options_.targetsPaths.empty() &&
+       !loadSpawnTargets(options_.targetsPaths, targets_, error)) {
+      return false;
    }
-   return loadSpawnTargets(options_.targetsPaths, targets_, error);
+   if (!options_.webPaths.empty() &&
+       !loadWebApps(options_.webPaths, webApps_, error)) {
+      return false;
+   }
+
+   /*
+     One alias map. A name defined by both sources would make one of the two
+     entries unreachable, so it is a startup error naming both files.
+   */
+   for (const WebApp& web : webApps_) {
+      for (const SpawnTarget& target : targets_) {
+         if (target.alias == web.alias) {
+            error = "alias \"" + web.alias + "\" is defined in both \"" +
+                    target.source + "\" and \"" + web.source + "\"";
+            return false;
+         }
+      }
+   }
+
+   return true;
 }
 
 int Handler::printDryRun() {
@@ -430,29 +490,81 @@ int Handler::printDryRun() {
          break;
       }
    }
-   if (target == nullptr) {
-      std::fprintf(stderr, "sdl3mcp: --dry-run: unknown alias \"%s\"\n",
-                   options_.dryRunAlias.c_str());
-      std::fflush(stderr);
-      return 2;
+   if (target != nullptr) {
+      /*
+        A dry run binds nothing, so a port still at zero is the endpoint the
+        spawn would have been told about: print the placeholder rather than a
+        guess.
+      */
+      const std::string endpoint =
+          options_.listenPort == 0
+              ? std::string("HOST:PORT")
+              : endpointText(options_.listenHost, options_.listenPort);
+
+      std::string line = "command:";
+      for (const std::string& argument : targetCommand(*target, endpoint)) {
+         line += " " + shellQuote(argument);
+      }
+      std::printf("%s\n", line.c_str());
+      std::fflush(stdout);
+      return 0;
    }
 
-   /*
-     A dry run binds nothing, so a port still at zero is the endpoint the spawn
-     would have been told about: print the placeholder rather than a guess.
-   */
-   const std::string endpoint =
-       options_.listenPort == 0
-           ? std::string("HOST:PORT")
-           : endpointText(options_.listenHost, options_.listenPort);
+   for (const WebApp& candidate : webApps_) {
+      if (candidate.alias != options_.dryRunAlias) {
+         continue;
+      }
 
-   std::string line = "command:";
-   for (const std::string& argument : targetCommand(*target, endpoint)) {
-      line += " " + shellQuote(argument);
+      WebLaunchOptions web;
+      web.pageRoot = candidate.root;
+      web.handlerEndpoint =
+          options_.listenPort == 0
+              ? std::string("HOST:PORT")
+              : endpointText(options_.listenHost, options_.listenPort);
+
+      std::string error;
+      if (!preflightWebLaunch(web, error) || !pickWebPorts(web, error)) {
+         std::fprintf(stderr, "sdl3mcp: --dry-run: %s\n", error.c_str());
+         std::fflush(stderr);
+         return 2;
+      }
+
+      /*
+        A plan print names the profile a launch would seed and creates nothing:
+        the directory belongs to the run that starts children, and a printing
+        process has none to remove it.
+      */
+      web.profileDir = plannedProfilePath();
+
+      std::vector<std::vector<std::string>> plan;
+      if (!makeWebLaunchPlan(web, plan, error)) {
+         std::fprintf(stderr, "sdl3mcp: --dry-run: %s\n", error.c_str());
+         std::fflush(stderr);
+         return 2;
+      }
+
+      const std::string bridge =
+          std::string(kWebLoopbackHost) + ":" + std::to_string(web.bridgePort);
+      std::printf("page=http://%s:%u/%s?mcp=%s\n", kWebLoopbackHost,
+                  static_cast<unsigned>(web.pagePort), web.entry.c_str(),
+                  bridge.c_str());
+      std::printf("bridge=%s\n", bridge.c_str());
+      std::printf("profile=%s\n", web.profileDir.c_str());
+      for (const std::vector<std::string>& command : plan) {
+         std::string line = "command:";
+         for (const std::string& argument : command) {
+            line += " " + shellQuote(argument);
+         }
+         std::printf("%s\n", line.c_str());
+      }
+      std::fflush(stdout);
+      return 0;
    }
-   std::printf("%s\n", line.c_str());
-   std::fflush(stdout);
-   return 0;
+
+   std::fprintf(stderr, "sdl3mcp: --dry-run: unknown alias \"%s\"\n",
+                options_.dryRunAlias.c_str());
+   std::fflush(stderr);
+   return 2;
 }
 
 void Handler::buildBaseTools() {
@@ -493,6 +605,15 @@ void Handler::buildBaseTools() {
           parseDefinition(kSpawnSchema), parseDefinition(kSpawnAnnotations),
           [this, spawnTarget](ToolOrder order, ToolCompletionDelegate& completion) {
              handleSpawn(order, completion, spawnTarget);
+          }});
+   }
+   for (const WebApp& app : webApps_) {
+      const WebApp webApp = app;
+      baseTools_.push_back(Tool{
+          "app_spawn_" + app.alias, webSpawnDescription(app.alias),
+          parseDefinition(kSpawnSchema), parseDefinition(kSpawnAnnotations),
+          [this, webApp](ToolOrder order, ToolCompletionDelegate& completion) {
+             handleWebSpawn(order, completion, webApp);
           }});
    }
 }
@@ -706,7 +827,8 @@ void Handler::handleWaitSession(const ToolOrder& order,
 void Handler::handleSpawn(const ToolOrder& order,
                           ToolCompletionDelegate& completion,
                           const SpawnTarget& target) {
-   if (appPeer_ != nullptr || appReady_ || pendingSpawn_.has_value()) {
+   if (appPeer_ != nullptr || appReady_ || pendingSpawn_.has_value() ||
+       webRun_ != nullptr) {
       completion.complete(ToolResult::text(
           "an application is already attached; one spawn at a time", true));
       return;
@@ -738,8 +860,151 @@ void Handler::handleSpawn(const ToolOrder& order,
    }
 }
 
-bool Handler::startTarget(const SpawnTarget& target,
-                          std::string_view endpoint,
+void Handler::handleWebSpawn(const ToolOrder& order,
+                             ToolCompletionDelegate& completion,
+                             const WebApp& app) {
+   if (appPeer_ != nullptr || appReady_ || pendingSpawn_.has_value() ||
+       webRun_ != nullptr) {
+      completion.complete(ToolResult::text(
+          "an application is already attached; one spawn at a time", true));
+      return;
+   }
+
+   std::int64_t timeoutMs = options_.timeoutMs;
+   if (order.arguments.contains("timeout_ms")) {
+      std::int64_t requested = 0;
+      if (!readInteger(order.arguments, "timeout_ms", requested) || requested < 1 ||
+          requested > kMaxTimeoutMs) {
+         completion.complete(ToolResult::text(
+             "app_spawn_" + app.alias + " timeout_ms must be in 1..60000", true));
+         return;
+      }
+      timeoutMs = requested;
+   }
+
+   /*
+     The listener is bound before the loop accepts tool calls, so its endpoint
+     is the one the bridge is told to dial.
+   */
+   WebLaunchOptions web;
+   web.pageRoot = app.root;
+   web.handlerEndpoint =
+       endpointText(options_.listenHost, listener_.boundPort());
+
+   std::string error;
+   if (!prepareWebLaunch(web, error)) {
+      completion.complete(
+          ToolResult::text("app_spawn_" + app.alias + ": " + error, true));
+      return;
+   }
+
+   auto run = std::make_unique<WebRun>();
+   if (!run->start(std::move(web), error)) {
+      completion.complete(
+          ToolResult::text("app_spawn_" + app.alias + ": " + error, true));
+      return;
+   }
+   webRun_ = std::move(run);
+
+   const WebLaunchOptions& started = webRun_->options();
+   const std::string bridge =
+       std::string(kWebLoopbackHost) + ":" + std::to_string(started.bridgePort);
+   std::fprintf(stderr,
+                "sdl3mcp: web: page=http://%s:%u/%s?mcp=%s bridge=%s profile=%s\n",
+                kWebLoopbackHost, static_cast<unsigned>(started.pagePort),
+                started.entry.c_str(), bridge.c_str(), bridge.c_str(),
+                started.profileDir.c_str());
+   std::fflush(stderr);
+
+   PendingSpawn pending;
+   pending.kind = PendingSpawn::Kind::Web;
+   pending.alias = app.alias;
+   pending.completion = &completion;
+   pending.deadline = Clock::now() + std::chrono::milliseconds(timeoutMs);
+   pending.timeoutMs = timeoutMs;
+   pendingSpawn_ = std::move(pending);
+}
+
+void Handler::serviceWeb(Clock::time_point now,
+                         const pollfd* webFds,
+                         std::size_t webFdCount) {
+   if (!webRun_) {
+      return;
+   }
+
+   const WebStackEvent event = webRun_->service(now, webFds, webFdCount);
+
+   /* The browser's pid is only known once the tools accept. */
+   if (pendingSpawn_.has_value() &&
+       pendingSpawn_->kind == PendingSpawn::Kind::Web &&
+       pendingSpawn_->pid < 0 && webRun_->browserStarted()) {
+      pendingSpawn_->pid = webRun_->browserPid();
+   }
+
+   if (event.kind != WebStackEvent::Kind::None) {
+      finishWebRun(event);
+   }
+}
+
+void Handler::finishWebRun(WebStackEvent event) {
+   if (!webRun_) {
+      return;
+   }
+
+   const pid_t browserPid = webRun_->browserPid();
+   /*
+     Firefox exiting is the normal end: it is already gone, so only the tools
+     are stopped. A tool's death is a failure, and the browser is part of the
+     run, so it goes down with them.
+   */
+   const WebStopMode mode = event.kind == WebStackEvent::Kind::BrowserExited
+                                ? WebStopMode::ToolsOnly
+                                : WebStopMode::AllProcesses;
+   webRun_->stop(mode);
+   webRun_.reset();
+
+   if (pendingSpawn_.has_value() &&
+       pendingSpawn_->kind == PendingSpawn::Kind::Web) {
+      std::string text;
+      if (!event.detail.empty()) {
+         text = "app_spawn_" + pendingSpawn_->alias + ": " + event.detail;
+      } else if (event.kind == WebStackEvent::Kind::BrowserExited) {
+         text = "app_spawn_" + pendingSpawn_->alias +
+                ": the browser exited before the application connected";
+         if (browserPid > 0) {
+            text += " (browser pid " + std::to_string(browserPid) + ")";
+         }
+      } else {
+         text = "app_spawn_" + pendingSpawn_->alias + ": the " +
+                webChildName(event.child) +
+                " exited before the application connected";
+      }
+      completeSpawn(text, true);
+      return;
+   }
+
+   if (event.kind == WebStackEvent::Kind::BrowserExited) {
+      std::fprintf(stderr,
+                   "sdl3mcp: web: the browser exited; the web stack was stopped\n");
+   } else if (!event.detail.empty()) {
+      std::fprintf(stderr, "sdl3mcp: web: %s; the web stack was stopped\n",
+                   event.detail.c_str());
+   } else {
+      std::fprintf(stderr, "sdl3mcp: web: the %s exited; the web stack was stopped\n",
+                   webChildName(event.child));
+   }
+   std::fflush(stderr);
+}
+
+void Handler::stopWebRun() {
+   if (!webRun_) {
+      return;
+   }
+   webRun_->stop();
+   webRun_.reset();
+}
+
+bool Handler::startTarget(const SpawnTarget& target, std::string_view endpoint,
                           std::int64_t timeoutMs,
                           ToolCompletionDelegate& completion,
                           std::string& error) {
@@ -883,11 +1148,22 @@ void Handler::expireSpawn(Clock::time_point now) {
       return;
    }
 
-   const std::string text =
+   std::string text =
        "app_spawn_" + pendingSpawn_->alias + " timed out after " +
        std::to_string(pendingSpawn_->timeoutMs) +
-       " ms waiting for the application to connect; process pid " +
-       std::to_string(pendingSpawn_->pid) + " may still be running";
+       " ms waiting for the application to connect";
+   if (pendingSpawn_->kind == PendingSpawn::Kind::Web) {
+      /* A timed-out web spawn stops its stack; the browser is spawn-and-forget. */
+      text += "; the web stack was stopped";
+      if (pendingSpawn_->pid > 0) {
+         text += "; browser pid " + std::to_string(pendingSpawn_->pid) +
+                 " may still be running";
+      }
+      stopWebRun();
+   } else {
+      text += "; process pid " + std::to_string(pendingSpawn_->pid) +
+              " may still be running";
+   }
    completeSpawn(text, true);
 }
 
@@ -907,6 +1183,9 @@ void Handler::completeSpawn(std::string text, bool isError) {
 void Handler::cancelSpawn() {
    if (!pendingSpawn_.has_value()) {
       return;
+   }
+   if (pendingSpawn_->kind == PendingSpawn::Kind::Web) {
+      stopWebRun();
    }
    if (pendingSpawn_->errorFd >= 0) {
       ::close(pendingSpawn_->errorFd);
@@ -1077,12 +1356,20 @@ int Handler::nextPollTimeoutMs(Clock::time_point now) const {
    if (pendingSpawn_.has_value()) {
       consider(pendingSpawn_->deadline);
    }
+   if (webRun_) {
+      if (const auto deadline = webRun_->nextDeadline()) {
+         consider(*deadline);
+      }
+   }
    if (appPeer_ != nullptr && !appPeer_->isReady() && !appPeer_->isClosed()) {
       consider(appPeer_->handshakeDeadline());
    }
 
+   /* While the tools are starting, the loop must probe their ports often. */
+   const bool probingWeb = webRun_ && !webRun_->browserStarted();
+
    if (!next.has_value()) {
-      return -1;
+      return probingWeb ? kWebProbePollMs : -1;
    }
    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
                               *next - now)
@@ -1090,7 +1377,11 @@ int Handler::nextPollTimeoutMs(Clock::time_point now) const {
    if (remaining <= 0) {
       return 0;
    }
-   return static_cast<int>(std::min<long long>(remaining, 600000));
+   const long long capped = std::min<long long>(remaining, 600000);
+   if (probingWeb) {
+      return static_cast<int>(std::min<long long>(capped, kWebProbePollMs));
+   }
+   return static_cast<int>(capped);
 }
 
 void Handler::shutdown() {
@@ -1098,6 +1389,8 @@ void Handler::shutdown() {
    forwards_.clear();
    /* Spawn-and-forget: drop the bookkeeping, never the process. */
    cancelSpawn();
+   /* The web stack is Handler-owned infrastructure and never outlives it. */
+   stopWebRun();
 
    if (appPeer_ != nullptr) {
       std::unique_ptr<AppPeer> peer = std::move(appPeer_);
@@ -1128,7 +1421,13 @@ void Handler::onAppAttached(std::vector<nlohmann::json> tools) {
    completeWaiters("an application session attached");
 
    if (pendingSpawn_.has_value()) {
-      completeSpawn("spawned " + pendingSpawn_->alias + " (pid " +
+      if (pendingSpawn_->kind == PendingSpawn::Kind::Web &&
+          pendingSpawn_->pid < 0 && webRun_) {
+         pendingSpawn_->pid = webRun_->browserPid();
+      }
+      const bool isWeb = pendingSpawn_->kind == PendingSpawn::Kind::Web;
+      completeSpawn("spawned " + pendingSpawn_->alias + " (" +
+                        (isWeb ? "browser pid " : "pid ") +
                         std::to_string(pendingSpawn_->pid) + ")",
                     false);
    }

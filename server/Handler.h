@@ -19,9 +19,11 @@
 
 #pragma once
 
+#include <poll.h>
 #include <sys/types.h>
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -38,6 +40,7 @@
 #include "Targets.h"
 #include "Tool.h"
 #include "ToolCatalog.h"
+#include "Web.h"
 
 namespace sdl3mcp {
 
@@ -80,9 +83,15 @@ class Handler : public AppPeerHandler {
    /*
      One app_spawn_<alias> waiting for its application to connect and handshake.
      The exec channel is close-on-exec, so EOF is the success signal and any
-     bytes are the reason the child could not exec.
+     bytes are the reason the child could not exec. A web spawn has no exec
+     channel: its pid is the browser's and it is only known once the page and
+     bridge accept.
    */
    struct PendingSpawn {
+      enum class Kind { Target,
+                        Web };
+
+      Kind kind = Kind::Target;
       std::string alias;
       pid_t pid = -1;
       int errorFd = -1;
@@ -97,8 +106,8 @@ class Handler : public AppPeerHandler {
    std::vector<nlohmann::json> mergedTools() const;
    void publishToolsIfChanged(bool notify);
 
-   /* Loads --targets sources; a failure is fatal before anything is created. */
-   bool loadTargets(std::string& error);
+   /* Loads --targets and --web sources; a failure is fatal before anything is created. */
+   bool loadSources(std::string& error);
    /* Prints the argv app_spawn_<alias> would run and starts nothing. */
    int printDryRun();
 
@@ -112,6 +121,9 @@ class Handler : public AppPeerHandler {
    void handleSpawn(const ToolOrder& order,
                     ToolCompletionDelegate& completion,
                     const SpawnTarget& target);
+   void handleWebSpawn(const ToolOrder& order,
+                       ToolCompletionDelegate& completion,
+                       const WebApp& app);
    void handleForward(const ToolOrder& order, ToolCompletionDelegate& completion);
 
    bool startTarget(const SpawnTarget& target,
@@ -123,6 +135,14 @@ class Handler : public AppPeerHandler {
    void expireSpawn(std::chrono::steady_clock::time_point now);
    void completeSpawn(std::string text, bool isError);
    void cancelSpawn();
+
+   /* Starts the browser when the tools accept; reports an ended stack. */
+   void serviceWeb(std::chrono::steady_clock::time_point now,
+                   const pollfd* webFds,
+                   std::size_t webFdCount);
+   void finishWebRun(WebStackEvent event);
+   /* Stops the page server, bridge and browser, then removes the profile. */
+   void stopWebRun();
 
    void completeWaiters(const std::string& text);
    void expireWaiters(std::chrono::steady_clock::time_point now);
@@ -143,6 +163,7 @@ class Handler : public AppPeerHandler {
    ToolCatalog catalog_;
    std::vector<Tool> baseTools_;
    SpawnTargets targets_;
+   WebApps webApps_;
 
    std::unique_ptr<Session> clientSession_;
    int clientFd_ = -1;
@@ -157,6 +178,7 @@ class Handler : public AppPeerHandler {
    std::vector<PendingWait> waiters_;
    std::map<std::uint64_t, PendingForward> forwards_;
    std::optional<PendingSpawn> pendingSpawn_;
+   std::unique_ptr<WebRun> webRun_;
    nlohmann::json publishedTools_;
 
    int signalFd_ = -1;

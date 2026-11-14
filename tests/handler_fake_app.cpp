@@ -15,6 +15,8 @@
   --dial-delay-ms postpones the dial (a spawn timeout); --exit-before-connect
   exits without dialing (an app that dies first); --initialize-delay-ms proves
   the spawn waits for the handshake instead of returning when the socket opens.
+  --browser-url reads the bridge endpoint from a page URL, so the same process
+  stands in for the browser a web spawn starts.
 */
 
 #include <netdb.h>
@@ -66,6 +68,7 @@ void writeAll(int fd, const void* data, std::size_t size) {
 
 struct Options {
    std::string mcpAddress;
+   std::string browserUrl;
    std::string pidFile;
    std::string argvFile;
    int dialDelayMs = 0;
@@ -84,6 +87,36 @@ bool parseInteger(std::string_view text, int& value) {
    return result.ec == std::errc{} && result.ptr == text.data() + text.size();
 }
 
+/* The page query the browser was opened with: the mcp parameter is the bridge. */
+bool mcpQueryEndpoint(const std::string& url, std::string& endpoint) {
+   const std::size_t question = url.find('?');
+   if (question == std::string::npos) {
+      return false;
+   }
+
+   std::size_t position = question + 1;
+   while (position < url.size()) {
+      const std::size_t equals = url.find('=', position);
+      const std::size_t ampersand = url.find('&', position);
+      if (equals == std::string::npos ||
+          (ampersand != std::string::npos && equals > ampersand)) {
+         return false;
+      }
+      const std::string name = url.substr(position, equals - position);
+      const std::size_t valueEnd =
+          ampersand == std::string::npos ? url.size() : ampersand;
+      if (name == "mcp") {
+         endpoint = url.substr(equals + 1, valueEnd - (equals + 1));
+         return !endpoint.empty();
+      }
+      if (ampersand == std::string::npos) {
+         return false;
+      }
+      position = ampersand + 1;
+   }
+   return false;
+}
+
 bool parseOptions(int argc, char** argv, Options& options) {
    for (int index = 1; index < argc; ++index) {
       const std::string_view argument = argv[index];
@@ -91,6 +124,10 @@ bool parseOptions(int argc, char** argv, Options& options) {
 
       if (argument.rfind("--mcp=", 0) == 0) {
          options.mcpAddress = std::string(argument.substr(6));
+      } else if (argument.rfind("--browser-url=", 0) == 0) {
+         options.browserUrl = std::string(argument.substr(14));
+      } else if (argument == "--browser-url" && hasValue) {
+         options.browserUrl = argv[++index];
       } else if (argument == "--pid-file" && hasValue) {
          options.pidFile = argv[++index];
       } else if (argument == "--argv-file" && hasValue) {
@@ -124,6 +161,11 @@ bool parseOptions(int argc, char** argv, Options& options) {
       } else if (argument == "--stay-after-close") {
          options.stayAfterClose = true;
       } else {
+         return false;
+      }
+   }
+   if (options.mcpAddress.empty() && !options.browserUrl.empty()) {
+      if (!mcpQueryEndpoint(options.browserUrl, options.mcpAddress)) {
          return false;
       }
    }

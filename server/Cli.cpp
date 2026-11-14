@@ -17,6 +17,8 @@ constexpr std::string_view kConnectOption = "--connect";
 constexpr std::string_view kConnectPrefix = "--connect=";
 constexpr std::string_view kTargetsOption = "--targets";
 constexpr std::string_view kTargetsPrefix = "--targets=";
+constexpr std::string_view kWebOption = "--web";
+constexpr std::string_view kWebPrefix = "--web=";
 constexpr std::string_view kDryRunOption = "--dry-run";
 constexpr std::string_view kDryRunPrefix = "--dry-run=";
 constexpr std::string_view kTimeoutOption = "--timeout-ms";
@@ -137,6 +139,22 @@ HandlerCliResult parseHandlerCommandLine(
          continue;
       }
 
+      if (argument == kWebOption) {
+         result.error = "--web requires a path written as --web=PATH";
+         return result;
+      }
+      if (argument.rfind(kWebPrefix, 0) == 0) {
+         const std::string_view value(argument.data() + kWebPrefix.size(),
+                                      argument.size() - kWebPrefix.size());
+         if (value.empty()) {
+            result.error = "--web requires a non-empty path";
+            return result;
+         }
+         result.options.webPaths.emplace_back(value);
+         index += 1;
+         continue;
+      }
+
       if (argument == kDryRunOption) {
          result.error =
              "--dry-run requires an alias written as --dry-run=ALIAS";
@@ -204,14 +222,15 @@ HandlerCliResult parseHandlerCommandLine(
    }
 
    if (result.options.hasDryRun && !result.options.hasAppSource()) {
-      result.error = "--dry-run requires an app source (--targets=PATH)";
+      result.error = "--dry-run requires an app source (--targets=PATH or --web=PATH)";
       return result;
    }
 
    if (!result.options.hasListen) {
       if (!result.options.hasAppSource()) {
          result.error =
-             "missing --listen=HOST:PORT (or an app source: --targets=PATH)";
+             "missing --listen=HOST:PORT (or an app source: --targets=PATH or "
+             "--web=PATH)";
          return result;
       }
       /* An app source needs somewhere for the spawned app to dial back. */
@@ -226,16 +245,21 @@ HandlerCliResult parseHandlerCommandLine(
 
 std::string handlerUsageText() {
    return "usage: sdl3mcp [--listen=HOST:PORT] [--connect=HOST:PORT] "
-          "[--targets=PATH ...] [--timeout-ms=N] [--dry-run=ALIAS]\n"
+          "[--targets=PATH ...] [--web=PATH ...] [--timeout-ms=N] "
+          "[--dry-run=ALIAS]\n"
           "  --listen=HOST:PORT   accept one application connection at HOST:PORT\n"
           "                       (default 127.0.0.1:0 when an app source is given)\n"
           "  --connect=HOST:PORT  dial an upstream MCP client (a Relay)\n"
           "  --targets=PATH       an alias-to-argv app source; a JSON file or a\n"
           "                       directory of *.json files (repeatable)\n"
+          "  --web=PATH           an alias-to-web-root app source; a JSON file\n"
+          "                       mapping each alias to the root it serves\n"
+          "                       (repeatable)\n"
           "  --timeout-ms=N       forward/attach/spawn budget in ms (1..60000,\n"
           "                       default 10000)\n"
-          "  --dry-run=ALIAS      print the argv app_spawn_<alias> would run and\n"
-          "                       start nothing\n"
+          "  --dry-run=ALIAS      print the argv app_spawn_<alias> would run, or\n"
+          "                       the web commands/page/bridge/profile, and start\n"
+          "                       nothing\n"
           "  --help               print this help and exit\n"
           "  --version            print the Handler version and exit";
 }

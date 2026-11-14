@@ -21,6 +21,7 @@
 #include <poll.h>
 #include <signal.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -37,6 +38,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "Cli.h"
@@ -60,6 +62,8 @@ const IgnoreSigpipe g_ignoreSigpipe;
 std::string g_handler;
 /* And the fake application a --targets entry spawns as argv[2]. */
 std::string g_fakeApp;
+/* And the controllable page server/bridge a web spawn starts as argv[3]. */
+std::string g_webStack;
 
 /* A private file the test owns, removed on destruction. */
 struct TempPath {
@@ -139,6 +143,33 @@ struct TempDir {
 };
 
 constexpr int kLineTimeoutMs = 5000;
+
+/* Saves and restores one environment variable for a test that needs a private
+   PATH, so the fake tools never leak into another case. */
+struct EnvGuard {
+   std::string name;
+   bool hadValue = false;
+   std::string value;
+
+   explicit EnvGuard(std::string variable) : name(std::move(variable)) {
+      const char* existing = std::getenv(name.c_str());
+      if (existing != nullptr) {
+         hadValue = true;
+         value = existing;
+      }
+   }
+
+   ~EnvGuard() {
+      if (hadValue) {
+         ::setenv(name.c_str(), value.c_str(), 1);
+      } else {
+         ::unsetenv(name.c_str());
+      }
+   }
+
+   EnvGuard(const EnvGuard&) = delete;
+   EnvGuard& operator=(const EnvGuard&) = delete;
+};
 
 std::string endpointText(const std::string& host, std::uint16_t port) {
    return host + ":" + std::to_string(port);
@@ -273,6 +304,7 @@ struct TestProcess {
    int fromChild = -1;
    int stderrChild = -1;
    int exitCode = -1;
+   std::string stderrBuffer;
 
    TestProcess() = default;
    TestProcess(const TestProcess&) = delete;
@@ -343,12 +375,58 @@ struct TestProcess {
 
    std::string readStderrLine(int timeoutMs) {
       std::string line;
-      FdChannel channel;
-      channel.readFd = stderrChild;
-      if (!channel.readLine(line, timeoutMs)) {
+      if (!readStderrLine(line, timeoutMs)) {
          return {};
       }
       return line;
+   }
+
+   /*
+     One line at a time from a buffer that survives calls: a web spawn prints
+     several diagnostics and they may arrive in one read.
+   */
+   bool readStderrLine(std::string& line, int timeoutMs) {
+      const auto deadline =
+          std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+      for (;;) {
+         const std::size_t newline = stderrBuffer.find('\n');
+         if (newline != std::string::npos) {
+            line.assign(stderrBuffer, 0, newline);
+            stderrBuffer.erase(0, newline + 1);
+            if (!line.empty() && line.back() == '\r') {
+               line.pop_back();
+            }
+            return true;
+         }
+
+         const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    deadline - std::chrono::steady_clock::now())
+                                    .count();
+         if (remaining <= 0) {
+            return false;
+         }
+
+         pollfd descriptor{};
+         descriptor.fd = stderrChild;
+         descriptor.events = POLLIN;
+         const int ready = ::poll(&descriptor, 1, static_cast<int>(remaining));
+         if (ready < 0) {
+            if (errno == EINTR) {
+               continue;
+            }
+            return false;
+         }
+         if (ready == 0) {
+            continue;
+         }
+
+         char chunk[4096];
+         const ssize_t count = ::read(stderrChild, chunk, sizeof chunk);
+         if (count <= 0) {
+            return false;
+         }
+         stderrBuffer.append(chunk, static_cast<std::size_t>(count));
+      }
    }
 
    /* Reads the Handler's `listening on` line and returns the bound port. */
@@ -929,6 +1007,153 @@ void startServerWith(TestProcess& process,
    client.channel.writeFd = process.toChild;
 }
 
+/* Writes an executable shell script. */
+void writeScript(const std::string& path, const std::string& contents) {
+   writeFile(path, contents);
+   CHECK(::chmod(path.c_str(), 0755) == 0);
+}
+
+bool loopbackPortAccepts(std::uint16_t port) {
+   int fd = -1;
+   if (!connectTcp("127.0.0.1", port, fd)) {
+      return false;
+   }
+   ::close(fd);
+   return true;
+}
+
+bool pathExists(const std::string& path) {
+   struct stat status{};
+   return ::stat(path.c_str(), &status) == 0;
+}
+
+bool pathGone(const std::string& path, int timeoutMs = kLineTimeoutMs) {
+   const auto deadline =
+       std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+   for (;;) {
+      if (!pathExists(path)) {
+         return true;
+      }
+      if (std::chrono::steady_clock::now() >= deadline) {
+         return false;
+      }
+      std::this_thread::sleep_for(10ms);
+   }
+}
+
+std::uint16_t portAfter(const std::string& text, const std::string& prefix) {
+   const std::size_t start = text.find(prefix);
+   if (start == std::string::npos) {
+      return 0;
+   }
+   const std::size_t begin = start + prefix.size();
+   std::size_t end = begin;
+   while (end < text.size() && text[end] >= '0' && text[end] <= '9') {
+      ++end;
+   }
+   return static_cast<std::uint16_t>(
+       std::strtol(text.substr(begin, end - begin).c_str(), nullptr, 10));
+}
+
+/*
+  A web run's three processes, faked with no Python, no websocat and no browser:
+  the page server and the bridge are the test's own helper, and the "browser" is
+  the fake application reading the bridge endpoint from the page URL.
+*/
+struct FakeWebStack {
+   enum class Browser {
+      /* Dials the bridge and speaks MCP, like the page's application. */
+      App,
+      /* Never dials: a spawn that must time out. */
+      Slow,
+      /* Stays alive after the Handler closes its socket (spawn-and-forget). */
+      StayAfterClose,
+   };
+
+   TempDir bin;
+   TempDir root;
+   TempDir state;
+   std::string webPath;
+   EnvGuard pathGuard{"PATH"};
+   EnvGuard browserGuard{"BROWSER"};
+
+   explicit FakeWebStack(Browser browser = Browser::App) {
+      writeFile(root.file("index.html"), "<!doctype html>");
+      writeScript(bin.file("python3"),
+                  "#!/bin/sh\n"
+                  "port=\"$3\"\n"
+                  "exec " +
+                      g_webStack + " --listen \"$port\" --pid-file " +
+                      pythonPid() + "\n");
+      writeScript(bin.file("websocat"),
+                  "#!/bin/sh\n"
+                  "listen=\"$2\"\n"
+                  "tcp=\"$3\"\n"
+                  "port=\"${listen##*:}\"\n"
+                  "exec " +
+                      g_webStack +
+                      " --bridge \"$port\" \"${tcp#tcp:}\" "
+                      "--pid-file " +
+                      bridgePid() + "\n");
+
+      std::string browserScript;
+      if (browser == Browser::Slow) {
+         /* A browser that starts and never dials: the spawn must time out. */
+         browserScript = "#!/bin/sh\nexec " + g_webStack + " --sleep --pid-file " +
+                         browserPid() + "\n";
+      } else {
+         browserScript =
+             "#!/bin/sh\n"
+             "for arg in \"$@\"; do url=\"$arg\"; done\n"
+             "exec " +
+             g_fakeApp + " --browser-url \"$url\" --pid-file " +
+             browserPid();
+         if (browser == Browser::StayAfterClose) {
+            browserScript += " --stay-after-close";
+         }
+         browserScript += "\n";
+      }
+      writeScript(bin.file("firefox"), browserScript);
+
+      webPath = state.file("web.json");
+      writeFile(webPath, nlohmann::json{{"demo", root.path}}.dump());
+
+      ::setenv("PATH", bin.path.c_str(), 1);
+      ::unsetenv("BROWSER");
+   }
+
+   std::string pythonPid() const { return state.file("python.pid"); }
+   std::string bridgePid() const { return state.file("bridge.pid"); }
+   std::string browserPid() const { return state.file("browser.pid"); }
+};
+
+struct WebStackLine {
+   std::uint16_t pagePort = 0;
+   std::uint16_t bridgePort = 0;
+   std::string profile;
+};
+
+/* Reads the Handler's one-line web diagnostic, skipping earlier diagnostics. */
+WebStackLine readWebStackLine(TestProcess& process, int timeoutMs = kLineTimeoutMs) {
+   for (;;) {
+      std::string line;
+      if (!process.readStderrLine(line, timeoutMs)) {
+         return {};
+      }
+      if (line.find("page=") == std::string::npos) {
+         continue;
+      }
+      WebStackLine parsed;
+      parsed.pagePort = portAfter(line, "page=http://127.0.0.1:");
+      parsed.bridgePort = portAfter(line, "bridge=127.0.0.1:");
+      const std::size_t profile = line.find("profile=");
+      if (profile != std::string::npos) {
+         parsed.profile = line.substr(profile + std::strlen("profile="));
+      }
+      return parsed;
+   }
+}
+
 }  // namespace
 
 TEST_CASE("targets files validate and accumulate") {
@@ -1062,6 +1287,85 @@ TEST_CASE("a target dry run prints the argv and starts nothing") {
       CHECK(process.exitCode != 0);
       CHECK(err.find("gamma") != std::string::npos);
    }
+}
+
+TEST_CASE("a web dry run prints the plan and starts nothing") {
+   TempDir bin;
+   TempDir root;
+   writeFile(root.file("index.html"), "<!doctype html>");
+   for (const char* name : {"python3", "websocat", "firefox"}) {
+      const std::string executable = bin.file(name);
+      writeFile(executable, "#!/bin/sh\n");
+      CHECK(::chmod(executable.c_str(), 0755) == 0);
+   }
+
+   TempDir directory;
+   const std::string webPath = directory.file("web.json");
+   writeFile(webPath, nlohmann::json{{"demo", root.path}}.dump());
+
+   EnvGuard pathGuard("PATH");
+   EnvGuard browserGuard("BROWSER");
+   ::setenv("PATH", bin.path.c_str(), 1);
+   ::unsetenv("BROWSER");
+
+   TestProcess process;
+   process.start(g_handler, {"--web=" + webPath, "--dry-run=demo"});
+   const std::string out = readAllFd(process.fromChild, kLineTimeoutMs);
+   CHECK(process.waitForExit(kLineTimeoutMs));
+   CHECK(process.exitCode == 0);
+
+   /* The page URL and the bridge endpoint name the same ephemeral bridge. */
+   const std::size_t pagePrefix = out.find("page=http://127.0.0.1:");
+   REQUIRE(pagePrefix != std::string::npos);
+   const std::size_t pagePortStart =
+       pagePrefix + std::strlen("page=http://127.0.0.1:");
+   const std::size_t pagePortEnd = out.find('/', pagePortStart);
+   REQUIRE(pagePortEnd != std::string::npos);
+   const std::string pagePort =
+       out.substr(pagePortStart, pagePortEnd - pagePortStart);
+   CHECK(out.find("/index.html?mcp=127.0.0.1:") != std::string::npos);
+
+   const std::size_t bridgeLine = out.find("bridge=127.0.0.1:");
+   REQUIRE(bridgeLine != std::string::npos);
+   const std::string bridgePort = out.substr(bridgeLine + std::strlen("bridge=127.0.0.1:"),
+                                             out.find('\n', bridgeLine) -
+                                                 (bridgeLine + std::strlen("bridge=127.0.0.1:")));
+   CHECK(!bridgePort.empty());
+   CHECK(pagePort != bridgePort);
+
+   /* The profile is the template a launch would fill, not a created directory. */
+   const std::size_t profileLine = out.find("profile=");
+   REQUIRE(profileLine != std::string::npos);
+   const std::string profile = out.substr(profileLine + std::strlen("profile="),
+                                          out.find('\n', profileLine) -
+                                              (profileLine + std::strlen("profile=")));
+   CHECK(profile.find("sdl3mcp-web-XXXXXX") != std::string::npos);
+   CHECK(profile.find("sdl3mcp-web-XXXXXX") == profile.size() - std::strlen("sdl3mcp-web-XXXXXX"));
+
+   /* Exactly the three documented commands, each on its own line. */
+   const std::string pythonLine = "command: " + bin.file("python3") +
+                                  " -m http.server " + pagePort +
+                                  " --bind 127.0.0.1 --directory " + root.path;
+   CHECK(out.find(pythonLine) != std::string::npos);
+   CHECK(out.find("command: " + bin.file("websocat") + " --binary ws-l:127.0.0.1:" +
+                  bridgePort + " tcp:HOST:PORT") != std::string::npos);
+   CHECK(out.find("command: " + bin.file("firefox") +
+                  " --no-remote --new-instance --profile " + profile +
+                  " --width 1280 --height 800 ") != std::string::npos);
+   CHECK(out.find("http://127.0.0.1:" + pagePort + "/index.html?mcp=127.0.0.1:" +
+                  bridgePort) != std::string::npos);
+
+   /* A dry run binds and starts nothing. */
+   CHECK(readAllFd(process.stderrChild, 100).find("listening on") ==
+         std::string::npos);
+
+   /* An unknown alias is an error that names it. */
+   TestProcess unknown;
+   unknown.start(g_handler, {"--web=" + webPath, "--dry-run=gamma"});
+   const std::string err = readAllFd(unknown.stderrChild, kLineTimeoutMs);
+   CHECK(unknown.waitForExit(kLineTimeoutMs));
+   CHECK(unknown.exitCode != 0);
+   CHECK(err.find("gamma") != std::string::npos);
 }
 
 TEST_CASE("a targets server advertises spawn tools and spawns one app at a time") {
@@ -1299,6 +1603,38 @@ TEST_CASE("an invalid targets source is fatal before the listener binds") {
    CHECK(err.find("listening on") == std::string::npos);
 }
 
+TEST_CASE("an invalid web source is fatal before the listener binds") {
+   TempPath file;
+   writeFile(file.path, "{}");
+
+   TestProcess process;
+   process.start(g_handler, {"--web=" + file.path});
+   const std::string err = readAllFd(process.stderrChild, kLineTimeoutMs);
+   CHECK(process.waitForExit(kLineTimeoutMs));
+   CHECK(process.exitCode == 2);
+   CHECK(err.find("web file") != std::string::npos);
+   CHECK(err.find("defines no aliases") != std::string::npos);
+   CHECK(err.find("listening on") == std::string::npos);
+}
+
+TEST_CASE("a web alias that collides with a targets alias is fatal") {
+   TempDir directory;
+   const std::string targetsPath = directory.file("targets.json");
+   const std::string webPath = directory.file("web.json");
+   writeFile(targetsPath, R"({"demo":["/bin/true"]})");
+   writeFile(webPath, R"({"demo":"build/web"})");
+
+   TestProcess process;
+   process.start(g_handler, {"--targets=" + targetsPath, "--web=" + webPath});
+   const std::string err = readAllFd(process.stderrChild, kLineTimeoutMs);
+   CHECK(process.waitForExit(kLineTimeoutMs));
+   CHECK(process.exitCode == 2);
+   CHECK(err.find("demo") != std::string::npos);
+   CHECK(err.find(targetsPath) != std::string::npos);
+   CHECK(err.find(webPath) != std::string::npos);
+   CHECK(err.find("listening on") == std::string::npos);
+}
+
 TEST_CASE("the handler command line") {
    using sdl3mcp::parseHandlerCommandLine;
 
@@ -1359,6 +1695,31 @@ TEST_CASE("the handler command line") {
    CHECK(!parseHandlerCommandLine({"--targets="}).ok);
    CHECK(!parseHandlerCommandLine({"--targets=a.json", "--targets"}).ok);
 
+   /* --web is a second app source with the same default listener. */
+   const auto webOnly = parseHandlerCommandLine({"--web=web.json"});
+   CHECK(webOnly.ok);
+   CHECK(webOnly.options.hasListen);
+   CHECK(webOnly.options.listenHost == "127.0.0.1");
+   CHECK(webOnly.options.listenPort == 0);
+   CHECK((webOnly.options.webPaths == std::vector<std::string>{"web.json"}));
+
+   /* Both sources may be given, and each keeps its own list. */
+   const auto bothSources =
+       parseHandlerCommandLine({"--targets=t.json", "--web=w.json"});
+   CHECK(bothSources.ok);
+   CHECK((bothSources.options.targetsPaths == std::vector<std::string>{"t.json"}));
+   CHECK((bothSources.options.webPaths == std::vector<std::string>{"w.json"}));
+
+   const auto repeatedWeb =
+       parseHandlerCommandLine({"--web=a.json", "--web=b.json"});
+   CHECK(repeatedWeb.ok);
+   CHECK((repeatedWeb.options.webPaths ==
+          std::vector<std::string>{"a.json", "b.json"}));
+
+   CHECK(!parseHandlerCommandLine({"--web"}).ok);
+   CHECK(!parseHandlerCommandLine({"--web="}).ok);
+   CHECK(!parseHandlerCommandLine({"--web=w.json", "--web"}).ok);
+
    /* --dry-run names one alias and needs no listener of its own. */
    const auto dryRun =
        parseHandlerCommandLine({"--targets=a.json", "--dry-run=alpha"});
@@ -1369,12 +1730,17 @@ TEST_CASE("the handler command line") {
    CHECK(!parseHandlerCommandLine({"--targets=a.json", "--dry-run="}).ok);
    CHECK(!parseHandlerCommandLine({"--dry-run=alpha"}).ok);
 
+   /* A web alias is a dry-run target too, so --web alone satisfies the check. */
+   CHECK(parseHandlerCommandLine({"--web=w.json", "--dry-run=demo"}).ok);
+   CHECK(!parseHandlerCommandLine({"--web=w.json", "--dry-run="}).ok);
+
    const auto help = parseHandlerCommandLine({"--help"});
    CHECK(help.ok);
    CHECK(help.exit);
    CHECK(help.exitCode == 0);
    CHECK(help.message.find("--listen") != std::string::npos);
    CHECK(help.message.find("--targets") != std::string::npos);
+   CHECK(help.message.find("--web") != std::string::npos);
    CHECK(help.message.find("--dry-run") != std::string::npos);
 }
 
@@ -1881,16 +2247,180 @@ TEST_CASE("a relay with targets spawns an app through the default listener") {
    ::close(upstreamListener);
 }
 
+TEST_CASE("a web spawn starts the stack, reports the browser pid, and cleans up") {
+   FakeWebStack stack;
+   TestProcess process;
+   std::uint16_t port = 0;
+   McpClient client;
+   startServerWith(process, port, client, {"--web=" + stack.webPath}, 5000);
+   CHECK(!client.initialize().contains("error"));
+
+   const nlohmann::json idle = client.toolsList();
+   const std::vector<std::string> expectedNames{
+       "app_spawn_demo", "sdl_capture", "sdl_info", "sdl_input", "sdl_terminate",
+       "wait_session"};
+   CHECK(toolNames(idle) == expectedNames);
+
+   const nlohmann::json spawned =
+       client.callTool("app_spawn_demo", nlohmann::json::object(), 10000);
+   CHECK(spawned["result"]["isError"] == false);
+   const std::string spawnedText = resultText(spawned);
+   CHECK(spawnedText.rfind("spawned demo (browser pid ", 0) == 0);
+
+   /* The pid is Firefox's, which the fake browser wrote before it dialed. */
+   const pid_t browser = waitForPidFile(stack.browserPid());
+   CHECK(browser > 0);
+   CHECK(spawnedText.find(std::to_string(browser)) != std::string::npos);
+   CHECK(processExists(browser));
+
+   /* The launch printed its page URL, bridge and throwaway profile. */
+   const WebStackLine line = readWebStackLine(process);
+   CHECK(line.pagePort != 0);
+   CHECK(line.bridgePort != 0);
+   CHECK(line.pagePort != line.bridgePort);
+   CHECK(line.profile.find("sdl3mcp-web-") != std::string::npos);
+   CHECK(pathExists(line.profile));
+   CHECK(loopbackPortAccepts(line.pagePort));
+   CHECK(loopbackPortAccepts(line.bridgePort));
+
+   /* The browser app is attached and its tools forward through the Handler. */
+   const nlohmann::json info = client.callTool("sdl_info");
+   CHECK(info["result"]["isError"] == false);
+   CHECK(resultText(info) == "fake target app info");
+   CHECK(client.toolsList()["result"].dump() == idle["result"].dump());
+
+   /* One application at a time, across both app sources. */
+   const nlohmann::json second = client.callTool("app_spawn_demo");
+   CHECK(second["result"]["isError"] == true);
+   CHECK(resultText(second) ==
+         "an application is already attached; one spawn at a time");
+
+   /* sdl_terminate ends the app; Firefox exiting stops the stack and profile. */
+   CHECK(client.callTool("sdl_terminate")["result"]["isError"] == false);
+   CHECK(awaitNoApp(client));
+   CHECK(processIsGone(browser, 5000));
+   CHECK(pathGone(line.profile));
+   CHECK(!loopbackPortAccepts(line.pagePort));
+   CHECK(!loopbackPortAccepts(line.bridgePort));
+   CHECK(client.toolsList()["result"].dump() == idle["result"].dump());
+
+   process.closeStdin();
+   CHECK(process.waitForExit(kLineTimeoutMs));
+}
+
+TEST_CASE("a web bridge death stops the stack and reports the child") {
+   /*
+     The fake browser outlives its socket on purpose: the page server and bridge
+     death must take Firefox down too, not merely wait for it to notice.
+   */
+   FakeWebStack stack(FakeWebStack::Browser::StayAfterClose);
+   TestProcess process;
+   std::uint16_t port = 0;
+   McpClient client;
+   startServerWith(process, port, client, {"--web=" + stack.webPath}, 5000);
+   CHECK(!client.initialize().contains("error"));
+
+   CHECK(client.callTool("app_spawn_demo", nlohmann::json::object(), 10000)
+             ["result"]["isError"] == false);
+   const WebStackLine line = readWebStackLine(process);
+   const pid_t bridge = waitForPidFile(stack.bridgePid());
+   const pid_t browser = waitForPidFile(stack.browserPid());
+   CHECK(bridge > 0);
+   CHECK(browser > 0);
+
+   ::kill(bridge, SIGKILL);
+
+   /* The Handler names the child, stops the rest, and removes the profile. */
+   std::string report;
+   for (;;) {
+      REQUIRE(process.readStderrLine(report, kLineTimeoutMs));
+      if (report.find("bridge exited") != std::string::npos) {
+         break;
+      }
+   }
+   CHECK(pathGone(line.profile));
+   CHECK(!loopbackPortAccepts(line.pagePort));
+
+   /* The app's socket died with the bridge, so the Handler is idle again. */
+   CHECK(awaitNoApp(client));
+   CHECK(processIsGone(browser, 5000));
+
+   process.closeStdin();
+   CHECK(process.waitForExit(kLineTimeoutMs));
+}
+
+TEST_CASE("a web spawn that never connects times out and stops the stack") {
+   FakeWebStack stack(FakeWebStack::Browser::Slow);
+   TestProcess process;
+   std::uint16_t port = 0;
+   McpClient client;
+   startServerWith(process, port, client, {"--web=" + stack.webPath}, 5000);
+   CHECK(!client.initialize().contains("error"));
+
+   const auto started = std::chrono::steady_clock::now();
+   const nlohmann::json answer =
+       client.callTool("app_spawn_demo", nlohmann::json{{"timeout_ms", 400}});
+   const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - started)
+                            .count();
+   CHECK(answer["result"]["isError"] == true);
+   const std::string text = resultText(answer);
+   CHECK(text.find("400") != std::string::npos);
+   CHECK(text.find("web stack") != std::string::npos);
+   CHECK(elapsed >= 350);
+   CHECK(elapsed < 4000);
+
+   /* The timeout stops the tools and removes the profile; the browser is an
+      app and is left running (spawn-and-forget). */
+   const WebStackLine line = readWebStackLine(process);
+   CHECK(pathGone(line.profile));
+   CHECK(!loopbackPortAccepts(line.pagePort));
+   CHECK(!loopbackPortAccepts(line.bridgePort));
+   const pid_t browser = waitForPidFile(stack.browserPid());
+   CHECK(browser > 0);
+   CHECK(processIsGone(browser, 5000));
+
+   CHECK(awaitNoApp(client));
+   process.closeStdin();
+   CHECK(process.waitForExit(kLineTimeoutMs));
+}
+
+TEST_CASE("handler shutdown stops the whole web stack") {
+   FakeWebStack stack(FakeWebStack::Browser::StayAfterClose);
+   TestProcess process;
+   std::uint16_t port = 0;
+   McpClient client;
+   startServerWith(process, port, client, {"--web=" + stack.webPath}, 5000);
+   CHECK(!client.initialize().contains("error"));
+
+   CHECK(client.callTool("app_spawn_demo", nlohmann::json::object(), 10000)
+             ["result"]["isError"] == false);
+   const WebStackLine line = readWebStackLine(process);
+   const pid_t browser = waitForPidFile(stack.browserPid());
+   CHECK(browser > 0);
+
+   /* stdin EOF ends the Handler, and the whole run goes with it. */
+   process.closeStdin();
+   CHECK(process.waitForExit(kLineTimeoutMs));
+   CHECK(processIsGone(browser, 5000));
+   CHECK(pathGone(line.profile));
+   CHECK(!loopbackPortAccepts(line.pagePort));
+   CHECK(!loopbackPortAccepts(line.bridgePort));
+}
+
 int main(int argc, char** argv) {
    /* doctest owns argv once it runs, so it sees only the binary name. */
    doctest::Context context(1, argv);
    context.setAsDefaultForAssertsOutOfTestCases();
-   CHECK(argc >= 3);
+   CHECK(argc >= 4);
    if (argc >= 2) {
       g_handler = argv[1];
    }
    if (argc >= 3) {
       g_fakeApp = argv[2];
+   }
+   if (argc >= 4) {
+      g_webStack = argv[3];
    }
    return context.run();
 }

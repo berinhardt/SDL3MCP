@@ -413,6 +413,7 @@ if(NOT EMSCRIPTEN)
         server/Png.cpp
         server/StbImageWrite.cpp
         server/Targets.cpp
+        server/Web.cpp
     )
     target_compile_features(sdl3mcp_server_objects PRIVATE cxx_std_20)
     target_include_directories(sdl3mcp_server_objects

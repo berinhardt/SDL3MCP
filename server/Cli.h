@@ -6,6 +6,7 @@
     --listen=HOST:PORT                 the downstream application listener
     --connect=HOST:PORT                dial an upstream MCP client (a Relay)
     --targets=PATH                     an alias-to-argv app source (repeatable)
+    --web=PATH                         an alias-to-web-root app source (repeatable)
     --timeout-ms=N                     forward/attach/spawn budget, default 10000
     --dry-run=ALIAS                    print what app_spawn_<alias> would run
 
@@ -44,6 +45,8 @@ struct HandlerOptions {
 
    /* Every --targets source, in command-line order. */
    std::vector<std::string> targetsPaths;
+   /* Every --web source, in command-line order. */
+   std::vector<std::string> webPaths;
 
    /* --dry-run=ALIAS prints what app_spawn_<alias> would run and starts nothing. */
    bool hasDryRun = false;
@@ -53,10 +56,12 @@ struct HandlerOptions {
    bool relay() const noexcept { return hasConnect; }
 
    /*
-     True when a --targets or (later) --web source contributes app_spawn_*
-     tools. --listen is then optional and defaults to loopback:0.
+     True when a --targets or --web source contributes app_spawn_* tools.
+     --listen is then optional and defaults to loopback:0.
    */
-   bool hasAppSource() const noexcept { return !targetsPaths.empty(); }
+   bool hasAppSource() const noexcept {
+      return !targetsPaths.empty() || !webPaths.empty();
+   }
 };
 
 struct HandlerCliResult {

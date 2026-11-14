@@ -94,6 +94,7 @@ bool appendTargetsFile(const std::string& path,
 
       SpawnTarget target;
       target.alias = alias;
+      target.source = path;
       for (const nlohmann::json& value : *entry) {
          if (!value.is_string()) {
             error = "targets entry \"" + alias +

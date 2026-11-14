@@ -31,6 +31,8 @@ struct SpawnTarget {
    std::string alias;
    /* argv including argv[0], exactly as the file lists it. */
    std::vector<std::string> argv;
+   /* The --targets file that defined the alias. */
+   std::string source;
 };
 
 using SpawnTargets = std::vector<SpawnTarget>;

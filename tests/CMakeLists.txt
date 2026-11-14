@@ -151,9 +151,24 @@ if(NOT EMSCRIPTEN)
         nlohmann_json::nlohmann_json
     )
 
+    # The controllable page server and WebSocket bridge a web spawn starts in
+    # place of python3 and websocat: no Python, no websocat, no browser.
+    add_executable(sdl3mcp_test_web_stack web_stack_helper.cpp)
+    target_compile_features(sdl3mcp_test_web_stack PRIVATE cxx_std_20)
+    target_link_libraries(sdl3mcp_test_web_stack PRIVATE Threads::Threads)
+
     add_test(NAME handler_tests
              COMMAND sdl3mcp_test_handler $<TARGET_FILE:sdl3mcp_handler>
-                     $<TARGET_FILE:sdl3mcp_handler_fake_app>)
+                     $<TARGET_FILE:sdl3mcp_handler_fake_app>
+                     $<TARGET_FILE:sdl3mcp_test_web_stack>)
+
+    # The web source and the throwaway profile are pure value/filesystem
+    # operations, so their suite links the server objects without a Handler
+    # process or a browser.
+    sdl3mcp_add_test(web_tests web_tests.cpp
+        LIBRARY sdl3mcp_server_objects
+        LIBS sdl3mcp_common_objects nlohmann_json::nlohmann_json Threads::Threads
+        INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/../server")
 endif()
 
 sdl3mcp_add_test(configuration_tests configuration_tests.cpp)

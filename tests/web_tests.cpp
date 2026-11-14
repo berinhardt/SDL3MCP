@@ -315,6 +315,11 @@ TEST_CASE("the web profile is seeded, locked, and removed") {
    CHECK(preferences.find("dom.allow_scripts_to_close_windows") !=
          std::string::npos);
    CHECK(preferences.find("true") != std::string::npos);
+   /* The browser's console is forwarded to the Handler's stderr, and this
+      preference is what makes Firefox write it to the browser's stdout. */
+   CHECK(preferences.find(
+             "user_pref(\"devtools.console.stdout.content\", true);") !=
+         std::string::npos);
    CHECK(exists(directory + "/.lock"));
 
    /* The lock is ownership: a second launcher cannot take it while we hold it. */

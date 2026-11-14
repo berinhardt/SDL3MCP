@@ -165,10 +165,14 @@ constexpr int kUnlockedGraceSeconds = 60;
   One line per preference. The first is the reason the profile exists: the page
   calls window.close() when the application shuts down, and Firefox only allows
   that for a window a script opened or when this preference says so. The rest
-  keep a throwaway profile from stopping on first-run prompts.
+  keep a throwaway profile from stopping on first-run prompts. The console
+  preference is the diagnostic channel: Emscripten's console.log/console.error
+  (the application's own output and any wasm abort) is written to the browser
+  process's stdout, which WebRun forwards to the Handler's stderr.
 */
 constexpr const char* kProfilePreferences =
     "user_pref(\"dom.allow_scripts_to_close_windows\", true);\n"
+    "user_pref(\"devtools.console.stdout.content\", true);\n"
     "user_pref(\"browser.tabs.warnOnClose\", false);\n"
     "user_pref(\"browser.shell.checkDefaultBrowser\", false);\n"
     "user_pref(\"browser.startup.page\", 0);\n"

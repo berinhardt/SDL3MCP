@@ -36,7 +36,15 @@ src/Capture.h/.cpp               capture statistics and regions
 src/Info.h/.cpp                  sdl_info value and serializer
 src/handler/Main.cpp             the Handler entry point
 src/handler/HandlerCli.h/.cpp    Handler command line and usage
-src/handler/Handler.h/.cpp       the poll loop, catalog, forwards, spawn, web
+src/handler/Handler.h            the one Handler class: all loop state
+src/handler/Handler-Loop.cpp     the poll loop and lifecycle
+src/handler/Handler-Catalog.cpp  tool sources, catalog, merge, app attach
+src/handler/Handler-Forward.cpp  forwards, waits and deadlines
+src/handler/Handler-Spawn.cpp    target spawn and the reaper
+src/handler/Handler-Web.cpp      web spawn orchestration and --dry-run
+src/handler/Handler-Catalog.h    the Handler's tool text
+src/handler/Handler-Forward.h    the forwarding unit's own declarations
+src/handler/ToolArguments.h      the shared timeout_ms helpers
 src/handler/AppPeer.h/.cpp       application handshake and forwarding
 src/handler/Listener.h/.cpp      the application listener
 src/handler/Targets.h/.cpp       --targets sources

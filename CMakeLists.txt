@@ -308,7 +308,11 @@ if(SDL3MCP_BUILD_CLI AND NOT EMSCRIPTEN)
     add_library(sdl3mcp_server_objects OBJECT
         src/StdioStream.cpp
         src/handler/AppPeer.cpp
-        src/handler/Handler.cpp
+        src/handler/Handler-Catalog.cpp
+        src/handler/Handler-Forward.cpp
+        src/handler/Handler-Loop.cpp
+        src/handler/Handler-Spawn.cpp
+        src/handler/Handler-Web.cpp
         src/handler/HandlerCli.cpp
         src/handler/Listener.cpp
         src/handler/Png.cpp

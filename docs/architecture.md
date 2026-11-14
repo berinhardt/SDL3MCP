@@ -225,12 +225,15 @@ Node suites. The internals:
   library even a `PRIVATE` dependency is exported as `$<LINK_ONLY:...>`, so the
   link would still cross to every consumer. The app names SDL itself, and the
   Emscripten consumer adds `-lwebsocket.js`.
-- **Build notes.** doctest is required for the test suite; a missing doctest is
-  a configure error, never a silent zero-test run. A parent that vendors doctest
-  through `add_subdirectory` already defines `doctest::doctest` and needs no
-  package. `readme_check` is registered only when Python 3 is found.
-  `targets_check` runs only when SDL3 came from `find_package`, because a parent
-  that vendors SDL leaves `SDL3_DIR` unset. There is no `tsan` preset: the
+- **Build notes.** doctest belongs to both test groups and resolves in three
+  steps — an existing target, then its package, then a pinned `v2.5.3` download —
+  so a missing package is never a silent zero-test run. The tests are split by
+  dependency: `HANDLER_TESTS` links no SDL, and `handler_only_check` configures,
+  builds and tests that half with `CMAKE_DISABLE_FIND_PACKAGE_SDL3=TRUE`;
+  `LIBRARY_TESTS` links the library or the app half and needs SDL.
+  `readme_check` is registered only when Python 3 is found. `targets_check` runs
+  only when SDL3 came from `find_package`, because a parent that vendors SDL
+  leaves `SDL3_DIR` unset. There is no `tsan` preset: the
   library and the Handler are single-threaded, so there is nothing for it to
   find.
 

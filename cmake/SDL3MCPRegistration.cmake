@@ -12,7 +12,9 @@
 #
 # Registration only records into global properties. The write is deferred to the
 # end of the top-level directory, so entries added from any subdirectory land in
-# one file and nothing has to call the writer explicitly.
+# one file and nothing has to call the writer explicitly. The write is also what
+# reads the target, so a registration may come before the target's artifact
+# properties are set.
 
 # Both functions share one alias namespace, so the grammar, the reserved prefix
 # and the duplicate check live here. `registration` is the caller's name, which
@@ -94,29 +96,6 @@ function(sdl3mcp_web alias target)
             "Emscripten configure; only an Emscripten page is served by --web")
     endif()
 
-    if(NOT TARGET "${target}")
-        message(FATAL_ERROR
-            "sdl3mcp_web: target \"${target}\" does not exist")
-    endif()
-
-    get_target_property(sdl3mcp_target_type "${target}" TYPE)
-    if(NOT sdl3mcp_target_type STREQUAL "EXECUTABLE")
-        message(FATAL_ERROR
-            "sdl3mcp_web: target \"${target}\" is a ${sdl3mcp_target_type}, and "
-            "a web app is an executable with an .html artifact")
-    endif()
-
-    # The page is the artifact a browser loads, so a target without one has no
-    # root to serve. The Emscripten app shape sets SUFFIX; the default is a .js
-    # for a Node environment, which is a program, not a page.
-    get_target_property(sdl3mcp_target_suffix "${target}" SUFFIX)
-    if(NOT sdl3mcp_target_suffix STREQUAL ".html")
-        message(FATAL_ERROR
-            "sdl3mcp_web: target \"${target}\" has SUFFIX "
-            "\"${sdl3mcp_target_suffix}\", not \".html\"; give it an .html "
-            "artifact with set_target_properties(${target} PROPERTIES SUFFIX \".html\")")
-    endif()
-
     sdl3mcp_record_alias("${alias}" "${target}" WEB)
     sdl3mcp_schedule_writer()
 endfunction()
@@ -162,6 +141,38 @@ function(sdl3mcp_write_targets)
     )
 endfunction()
 
+# What a web registration needs from its target. The call records only the
+# alias; this runs in the deferred write, because a target's artifact properties
+# may be set after it is registered and the end of the top-level directory is
+# the first moment they are final.
+function(sdl3mcp_require_web_target target)
+    if(NOT TARGET "${target}")
+        message(FATAL_ERROR
+            "sdl3mcp_web: target \"${target}\" does not exist")
+    endif()
+
+    get_target_property(sdl3mcp_target_type "${target}" TYPE)
+    if(NOT sdl3mcp_target_type STREQUAL "EXECUTABLE")
+        message(FATAL_ERROR
+            "sdl3mcp_web: target \"${target}\" is a ${sdl3mcp_target_type}, and "
+            "a web app is an executable with an .html artifact")
+    endif()
+
+    # The page is the artifact a browser loads, so a target without one has no
+    # root to serve. The Emscripten app shape sets SUFFIX; the default is a .js
+    # for a Node environment, which is a program, not a page. A generator
+    # expression has no configure-time value to compare, so it is left to the
+    # generate step rather than rejected here.
+    get_target_property(sdl3mcp_target_suffix "${target}" SUFFIX)
+    if(NOT sdl3mcp_target_suffix MATCHES "\\$<" AND
+       NOT sdl3mcp_target_suffix STREQUAL ".html")
+        message(FATAL_ERROR
+            "sdl3mcp_web: target \"${target}\" has SUFFIX "
+            "\"${sdl3mcp_target_suffix}\", not \".html\"; give it an .html "
+            "artifact with set_target_properties(${target} PROPERTIES SUFFIX \".html\")")
+    endif()
+endfunction()
+
 # The web file maps an alias to the page root: the directory the Handler serves
 # with --web, which is where the .html and the .js/.wasm it names were written.
 function(sdl3mcp_write_web)
@@ -175,6 +186,7 @@ function(sdl3mcp_write_web)
     foreach(sdl3mcp_alias IN LISTS sdl3mcp_aliases)
         get_property(sdl3mcp_target GLOBAL PROPERTY
             "SDL3MCP_ALIAS_${sdl3mcp_alias}_TARGET")
+        sdl3mcp_require_web_target("${sdl3mcp_target}")
 
         if(sdl3mcp_is_first)
             set(sdl3mcp_is_first FALSE)

@@ -62,27 +62,42 @@ function(expect_named text context)
     endforeach()
 endfunction()
 
+# One entry of the written file: the alias maps to the target's output
+# directory, which is the root --web serves.
+function(expect_entry build alias)
+    set(sdl3mcp_web_file "${build}/sdl3mcp-web.json")
+    if(NOT EXISTS "${sdl3mcp_web_file}")
+        message(FATAL_ERROR
+            "check_web_registration: ${sdl3mcp_web_file} was not written")
+    endif()
+    file(READ "${sdl3mcp_web_file}" sdl3mcp_document)
+    string(JSON sdl3mcp_root ERROR_VARIABLE sdl3mcp_error
+        GET "${sdl3mcp_document}" ${alias})
+    if(sdl3mcp_error)
+        message(FATAL_ERROR
+            "check_web_registration: sdl3mcp-web.json has no \"${alias}\" entry: ${sdl3mcp_error}")
+    endif()
+    if(NOT sdl3mcp_root STREQUAL "${build}")
+        message(FATAL_ERROR
+            "check_web_registration: \"${alias}\" is \"${sdl3mcp_root}\", not the target's output directory \"${build}\"")
+    endif()
+endfunction()
+
 # The success case: one accumulated file, one entry per registration, each entry
 # the target's output directory.
 run_case(success TRUE pass)
-set(sdl3mcp_web_file "${CASE_BUILD}/sdl3mcp-web.json")
-if(NOT EXISTS "${sdl3mcp_web_file}")
-    message(FATAL_ERROR
-        "check_web_registration: success wrote no ${sdl3mcp_web_file}")
-endif()
-file(READ "${sdl3mcp_web_file}" sdl3mcp_web_document)
 foreach(sdl3mcp_alias demo other)
-    string(JSON sdl3mcp_root ERROR_VARIABLE sdl3mcp_error
-        GET "${sdl3mcp_web_document}" ${sdl3mcp_alias})
-    if(sdl3mcp_error)
-        message(FATAL_ERROR
-            "check_web_registration: sdl3mcp-web.json has no \"${sdl3mcp_alias}\" entry: ${sdl3mcp_error}")
-    endif()
-    if(NOT sdl3mcp_root STREQUAL "${CASE_BUILD}")
-        message(FATAL_ERROR
-            "check_web_registration: \"${sdl3mcp_alias}\" is \"${sdl3mcp_root}\", not the target's output directory \"${CASE_BUILD}\"")
-    endif()
+    expect_entry("${CASE_BUILD}" ${sdl3mcp_alias})
 endforeach()
+
+# The artifact properties are what the write reads, not the call: a target whose
+# SUFFIX is set after it is registered is the normal shape, and a suffix only
+# the generate step can evaluate has nothing the configure can judge.
+run_case(suffix_after_registration TRUE pass)
+expect_entry("${CASE_BUILD}" demo)
+
+run_case(suffix_generator_expression TRUE pass)
+expect_entry("${CASE_BUILD}" demo)
 
 # A desktop configure has no page root to serve, so the call stops and says why.
 run_case(non_emscripten FALSE fail)

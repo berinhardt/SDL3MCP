@@ -1,0 +1,7 @@
+#!/bin/sh
+# pre-commit: reject a commit the mechanical gate does not pass.
+# Enabled by scripts/install-hooks.sh, which sets core.hooksPath.
+set -eu
+
+root=$(git rev-parse --show-toplevel)
+exec "$root/scripts/check.sh"

@@ -288,7 +288,16 @@ CamelCase is for C++ files; `examples/minimal/main.c` stays C.
 
 - Minimal diffs. Do not reformat untouched code. `.clang-format` (Google base,
   3-space indent, no column limit, left-aligned pointers) applies to touched
-  files; run it rather than restating it.
+  files; `scripts/check.sh` enforces it over every tracked C/C++ file.
+- `scripts/check.sh` is the mechanical gate: `clang-format --dry-run --Werror`,
+  the `debug` configure, the build and `ctest`. Run it before committing. The
+  tracked `scripts/hooks/pre-commit` runs the same script, so `git commit` is
+  rejected while the gate fails; a fresh clone enables it with one command,
+  `scripts/install-hooks.sh` (it sets `core.hooksPath=scripts/hooks`). The hook
+  reuses its build tree (`SDL3MCP_CHECK_BUILD_DIR`, default `build/check`), so it
+  pays only for what changed rather than a clean configure each time. Set
+  `CMAKE_PREFIX_PATH` when doctest is not installed as a package; the script
+  forwards it to CMake.
 - One atomic change per commit. Commit messages describe the change.
 - No dead code, no commented-out code, no speculative parameters.
 - Before each commit, check the diff against this file. Any statement the change

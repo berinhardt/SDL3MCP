@@ -272,15 +272,41 @@ target_include_directories(SDL3MCP PRIVATE
     ${SDL3MCP_JSON_INCLUDE_DIRS}
 )
 
+# The 1.0 protocol core: JSON-RPC, tools, results, the session and the stream.
+# It is SDL-free, so it compiles and links without SDL3::SDL3; the tests link
+# this object library directly, as they do for the v0 halves, because a shared
+# build hides these symbols.
+add_library(sdl3mcp_common_objects OBJECT
+    src/JsonRpc.cpp
+    src/Tool.cpp
+    src/ToolCatalog.cpp
+    src/ToolResult.cpp
+    src/Session.cpp
+    src/Stream.cpp
+)
+target_compile_features(sdl3mcp_common_objects PRIVATE cxx_std_20)
+target_include_directories(sdl3mcp_common_objects
+    PUBLIC
+        "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+        "$<BUILD_INTERFACE:${SDL3MCP_GENERATED_DIR}>"
+    PRIVATE
+        ${SDL3MCP_JSON_INCLUDE_DIRS}
+)
+target_link_libraries(sdl3mcp_common_objects PRIVATE nlohmann_json::nlohmann_json)
+set_target_properties(sdl3mcp_common_objects PROPERTIES
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN YES
+    POSITION_INDEPENDENT_CODE ON
+)
+
 # The 1.0 public target names, added beside the v0 build while the rewrite fills
 # them in: COMMON is the SDL-free core, SERVER is the Handler built on it, and
-# SDL3MCP::SDL3MCP (above) is the library. They carry usage requirements only
-# until later changes attach sources, so nothing links them yet and the v0
-# targets are unchanged. EXPORT_NAME fixes the installed names ahead of the
-# packaging change that adds them to the export set.
+# SDL3MCP::SDL3MCP (above) is the library. EXPORT_NAME fixes the installed
+# names ahead of the packaging change that adds them to the export set.
 add_library(SDL3MCP_COMMON INTERFACE)
 add_library(SDL3MCP::COMMON ALIAS SDL3MCP_COMMON)
 set_target_properties(SDL3MCP_COMMON PROPERTIES EXPORT_NAME COMMON)
+target_link_libraries(SDL3MCP_COMMON INTERFACE sdl3mcp_common_objects)
 target_include_directories(SDL3MCP_COMMON INTERFACE
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
     "$<BUILD_INTERFACE:${SDL3MCP_GENERATED_DIR}>"

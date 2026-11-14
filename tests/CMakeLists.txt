@@ -60,6 +60,23 @@ endfunction()
 
 sdl3mcp_add_test(header_cpp header_cpp.cpp)
 
+# The 1.0 protocol core is SDL-free, so its suite links the common object
+# library alone: a wire unit that starts calling SDL breaks this build instead
+# of dragging a window and a GPU into a protocol test.
+add_executable(sdl3mcp_test_protocol_core protocol_core_tests.cpp)
+target_compile_features(sdl3mcp_test_protocol_core PRIVATE cxx_std_20)
+target_include_directories(sdl3mcp_test_protocol_core PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+    "${SDL3MCP_GENERATED_DIR}"
+    ${SDL3MCP_JSON_INCLUDE_DIRS}
+)
+target_link_libraries(sdl3mcp_test_protocol_core PRIVATE
+    sdl3mcp_common_objects
+    nlohmann_json::nlohmann_json
+    doctest::doctest
+)
+add_test(NAME protocol_core_tests COMMAND sdl3mcp_test_protocol_core)
+
 sdl3mcp_add_test(configuration_tests configuration_tests.cpp)
 
 sdl3mcp_add_test(keymap_tests keymap_tests.cpp)

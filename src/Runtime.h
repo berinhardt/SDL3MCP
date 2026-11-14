@@ -29,6 +29,11 @@ namespace sdl3mcp {
   start(). The native dial completes inside start(), so a failure leaves no
   Runtime behind; the browser dial is asynchronous, so a failure arrives as a
   close or error and ends the page on the next AppIterate.
+
+  A bound window is optional and is needed only by two things: sdl_capture,
+  which refuses with "no window bound", and the window block of sdl_info, which
+  is omitted when nothing is bound. The session pumps and every other tool
+  answers without one.
 */
 class Runtime {
   public:

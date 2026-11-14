@@ -98,8 +98,11 @@ Result<void, TransportError> SocketStream::connect(std::string_view host,
    /* The URL is read during the call itself; the std::string outlives it. */
    attributes.url = url.c_str();
    /*
-     The creating thread is the page's main thread, so the socket stays on it:
-     the callbacks and pump() share that thread and the queue needs no lock.
+     Emscripten ignores this field: its WebSocket library creates every
+     connection on the main thread and marks createOnMainThread a TODO, so the
+     setting is documentation rather than a choice. The callbacks and pump()
+     still share that one thread - under Node there is only one thread at all -
+     which is why the queue needs no lock.
    */
    attributes.createOnMainThread = false;
 

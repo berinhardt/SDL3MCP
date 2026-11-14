@@ -49,7 +49,7 @@ as the current contract.
   `find_package(nlohmann_json CONFIG)`, then a pinned `v3.12.0` download. It is
   a private, header-only dependency: a consumer never needs it installed.
 - **doctest** for the test suite, **Python 3** for `readme_check`, and
-  **Node.js** plus Emscripten for the optional WebSocket suite.
+  **Node.js** 22 or newer plus Emscripten for the two Emscripten suites.
 
 ## Build
 
@@ -85,7 +85,6 @@ free.
 | `SDL3MCP_BUILD_TESTS` | `ON` when top-level | Build the doctest suites. |
 | `SDL3MCP_BUILD_EXAMPLES` | `OFF` | Build `examples/minimal`. |
 | `SDL3MCP_BUILD_CLI` | `OFF` | Build the `sdl3mcp` Handler. |
-| `SDL3MCP_BUILD_NODE_TESTS` | `OFF` | Build the Emscripten WebSocket suite (needs Node). |
 
 ### Targets
 
@@ -118,14 +117,15 @@ target_link_libraries(app PRIVATE SDL3MCP::SDL3MCP SDL3::SDL3-static "-lwebsocke
 ### The Emscripten build
 
 ```sh
-emcmake cmake -S . -B build/web -DSDL3_DIR=/path/to/an/emscripten/sdl3 \
-  -DSDL3MCP_BUILD_NODE_TESTS=ON
+emcmake cmake -S . -B build/web -DSDL3_DIR=/path/to/an/emscripten/sdl3
 cmake --build build/web --parallel
 ctest --test-dir build/web --output-on-failure
 ```
 
-`SDL3MCP_BUILD_NODE_TESTS=ON` adds the WebSocket suite, which CTest runs through
-Node; without Node it is skipped with a warning.
+An Emscripten configure has no POSIX suite, so `SDL3MCP_BUILD_TESTS` — on by
+default at the top level — registers the two Node suites instead: the WebSocket
+transport arm and the whole app path. CTest runs both through Node; without Node
+they are skipped with a configure warning.
 
 A page that links the library must add `-lwebsocket.js` to its own final link,
 as §Targets shows: the library no longer carries it, and the flag is what
@@ -1337,8 +1337,30 @@ browser arm (`src/WebSocketStream.cpp`) replaces the native socket:
   `--dump-tools` catalog, and checks the framing prose, the `sdl_input` text, the
   loop order and the run command.
 
-The optional `SDL3MCP_BUILD_NODE_TESTS=ON` Emscripten configure adds the
-WebSocket suite, run under Node against a local server.
+The Emscripten configure builds no POSIX suite. Its two suites run under Node
+against a local WebSocket server, and `SDL3MCP_BUILD_TESTS` registers them like
+every other suite:
+
+- `node_websocket_tests` drives the transport arm — framing, split messages, the
+  raw payload after a line, writes and a server close — against a scripted peer.
+- `node_web_app_tests` drives the whole app path. The test executable selects
+  SDL's dummy video driver in C++ (Emscripten starts with an empty environment,
+  so `SDL_VIDEODRIVER` has no effect there), creates a real `SDL_Window` and runs
+  the app loop; a test-only `--post-js` file supplies the two page globals the
+  library reads, so the production path is unchanged. The harness is the MCP
+  client: it asserts the accepted page-query dial, `initialize`, `tools/list`,
+  `sdl_info` with `videoDriver: "dummy"` and the window fields, two captures with
+  the exact payload bytes and an advancing frame stamp, `sdl_input` whose actions
+  reach the app as SDL key and mouse events with the held state reported, and
+  `sdl_terminate` with its one quit event and a clean exit 0.
+
+What the Node suites cannot cover still needs a browser, and stays with the
+manual `--web` acceptance run: the Emscripten video driver (canvas sizing, the
+WebGL context, DOM input, the theme listener), the browser's own `WebSocket`
+implementation, a real page's `window.location.search` parsing and
+`window.close()` semantics, the Handler's page server, bridge and profile stack,
+PNG presentation at the MCP edge, and real renderer pixels. The Node suite
+covers the app half, not the Emscripten video driver.
 
 ## Versioning
 

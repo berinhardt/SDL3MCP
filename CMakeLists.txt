@@ -11,31 +11,17 @@ include(CMakePackageConfigHelpers)
 
 option(SDL3MCP_BUILD_TESTS "Build the SDL3MCP tests" ${PROJECT_IS_TOP_LEVEL})
 option(SDL3MCP_BUILD_EXAMPLES "Build the SDL3MCP examples" OFF)
-# The browser arm's own suite: an Emscripten doctest executable that dials a
-# local WebSocket server from Node. It is off by default because it needs the
-# Emscripten toolchain and Node, and it is the only suite an Emscripten
-# configure builds.
-option(SDL3MCP_BUILD_NODE_TESTS "Build the Emscripten WebSocket suite run under Node.js" OFF)
-if(SDL3MCP_BUILD_NODE_TESTS AND NOT EMSCRIPTEN)
-    message(WARNING
-        "SDL3MCP_BUILD_NODE_TESTS is only meaningful for an Emscripten "
-        "configure; the WebSocket suite is not built")
-endif()
-set(SDL3MCP_WANTS_DOCTEST
-    ${SDL3MCP_BUILD_TESTS}
-)
-if(EMSCRIPTEN AND SDL3MCP_BUILD_NODE_TESTS)
-    set(SDL3MCP_WANTS_DOCTEST ON)
-endif()
 
 # A parent project that vendors doctest through add_subdirectory already defines
 # the target, so the check comes first and the package lookup only runs for a
 # standalone configure. Without doctest the suite would silently register no
-# tests, which reads like a passing run, so this stops instead.
-if(SDL3MCP_WANTS_DOCTEST AND NOT TARGET doctest::doctest)
+# tests, which reads like a passing run, so this stops instead. The tests are
+# the same option on every platform: a desktop configure builds the POSIX
+# suites, and an Emscripten configure builds the two Node suites.
+if(SDL3MCP_BUILD_TESTS AND NOT TARGET doctest::doctest)
     find_package(doctest CONFIG QUIET)
 endif()
-if(SDL3MCP_WANTS_DOCTEST AND NOT TARGET doctest::doctest)
+if(SDL3MCP_BUILD_TESTS AND NOT TARGET doctest::doctest)
     message(FATAL_ERROR "SDL3MCP: a test option is ON but doctest was not found; install doctest (Arch: pacman -S doctest) or configure with -DSDL3MCP_BUILD_TESTS=OFF")
 endif()
 
@@ -354,7 +340,7 @@ if(SDL3MCP_BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()
 
-if(SDL3MCP_BUILD_TESTS OR (EMSCRIPTEN AND SDL3MCP_BUILD_NODE_TESTS))
+if(SDL3MCP_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
 endif()

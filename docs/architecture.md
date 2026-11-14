@@ -102,6 +102,28 @@ adds, and the WebSocket lifecycle. The arm itself is `src/WebSocketStream.cpp`,
 the same `Stream` seam as the desktop `SocketStream` (see *Build composition*),
 so no code above the stream names a file descriptor.
 
+Two things are easy to misread there:
+
+- **A window is needed for capture and info, not to run.** Nothing in the app
+  half requires a bound window to pump the session: without one `sdl_capture`
+  refuses with `no window bound`, and `sdl_info` omits `videoDriver` and the
+  window block. The app-path suite therefore creates a real window with SDL's
+  dummy driver rather than faking one, so `SDL3MCP_SetWindow`'s measurement and
+  the window block of `sdl_info` are exercised too.
+- **The WebSocket is on the main thread because there is only one, not because
+  of a field.** Emscripten ignores `createOnMainThread` — its own WebSocket
+  library marks the field a TODO and creates every connection on the main
+  thread. Under Node there is one thread at all, so the callbacks and `pump()`
+  share it and the queue needs no lock.
+
+The Node suites cover the app half, not the browser. `node_web_app_tests` runs
+the real archive with the dummy video driver, and a test-only `--post-js` file
+supplies `window.location.search` and `window.close()` — the only two browser
+names `src/Api.cpp` reads. The Emscripten video driver (canvas, WebGL, DOM input,
+the theme listener), the browser's WebSocket, a real page's query and close
+semantics, and the Handler's web stack stay with the manual `--web` run; README
+§Tests lists what each covers.
+
 ## The Handler
 
 README owns the Handler contract: §The Handler for *the Handler is one Server
@@ -168,8 +190,8 @@ looks like, and this section says which objects may be compiled together.
 
 README owns the public build surface: §Targets for *the targets*, *the library
 is static only and publishes no SDL* and *the consumer link line*, §Requirements
-for the runtime dependencies and *Linux only*, §The Emscripten build for the
-WebSocket suite. The internals:
+for the runtime dependencies and *Linux only*, §The Emscripten build for the two
+Node suites. The internals:
 
 - **What is compiled where.** `src/SocketStream.cpp` and `src/StdioStream.cpp`
   are desktop-only; `src/WebSocketStream.cpp` takes their place on Emscripten.

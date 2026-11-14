@@ -226,7 +226,8 @@ void Pipeline::completeRequest(Request& request, const Frame& frame) {
    if (request.isInput && request.appliedFrame.has_value()) {
       text = std::to_string(request.actionCount) + " actions applied at frame " +
              std::to_string(*request.appliedFrame) + "; frame " +
-             std::to_string(answer.frame) + " attached";
+             std::to_string(answer.frame) +
+             " attached, rendered after the actions were delivered";
    }
 
    request.completion->complete(ToolResult::rawFrame(

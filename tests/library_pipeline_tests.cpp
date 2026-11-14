@@ -408,7 +408,8 @@ class TestServer {
           afterShared["appliedFrame"].get<std::uint64_t>();
       CHECK(sharedFrame == appliedFrame + 1);
       CHECK(text == "1 actions applied at frame " + std::to_string(appliedFrame) +
-                        "; frame " + std::to_string(sharedFrame) + " attached");
+                        "; frame " + std::to_string(sharedFrame) +
+                        " attached, rendered after the actions were delivered");
       /* Two earlier captures, two shared captures and one input observation. */
       CHECK(afterShared["capture"]["count"] == 5);
       CHECK(afterShared["capture"]["pending"] == false);

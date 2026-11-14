@@ -245,7 +245,8 @@ TEST_CASE_FIXTURE(DummyVideo, "a capture and an input registered together share 
    CHECK(capture.results[0].content["frame"] == 13);
    CHECK(input.results[0].content["frame"] == 13);
    CHECK(input.results[0].content["text"] ==
-         "1 actions applied at frame 12; frame 13 attached");
+         "1 actions applied at frame 12; frame 13 attached, rendered after the "
+         "actions were delivered");
    CHECK(!capture.results[0].content.contains("text"));
    CHECK(pipeline.captureInfo().count == 2);
 }

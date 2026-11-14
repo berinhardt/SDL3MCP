@@ -6,8 +6,6 @@
 */
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
-#include "Web.h"
-
 #include <dirent.h>
 #include <doctest/doctest.h>
 #include <fcntl.h>
@@ -21,6 +19,9 @@
 #include <ctime>
 #include <string>
 #include <vector>
+
+#include "Web-Apps.h"
+#include "Web-Plan.h"
 
 namespace {
 

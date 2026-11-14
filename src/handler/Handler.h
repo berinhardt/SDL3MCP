@@ -41,7 +41,9 @@
 #include "Targets.h"
 #include "Tool.h"
 #include "ToolCatalog.h"
-#include "Web.h"
+#include "Web-Apps.h"
+#include "Web-Plan.h"
+#include "Web-Run.h"
 
 namespace sdl3mcp {
 

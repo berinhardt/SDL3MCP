@@ -20,10 +20,11 @@ together, and `docs/architecture.md` owns it.
 
 ### File size
 
-- **300 lines fails; 150 warns.** A file over 300 lines fails `scripts/check.sh`,
-  and the message names the file and the limit; a file over 150 lines warns
-  without failing. 150 is the target, not the ceiling: a unit that goes past 150
-  is due a split on its next change, and one at 300 is not reviewable.
+- **300 non-comment lines fails; 150 warns.** A file over 300 non-comment lines
+  fails `scripts/check.sh`, and the message names the file and the limit; a file
+  over 150 non-comment lines warns without failing. 150 is the target, not the
+  ceiling: a unit that goes past 150 is due a split on its next change, and one
+  at 300 is not reviewable.
 - **Scope: the product sources.** `include/`, `src/`, and the Handler's tree
   (`src/handler/`). `tests/` and `third_party/` are not in scope.
 - **Tests are exempt on purpose.** A suite's length comes from the scenarios it

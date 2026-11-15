@@ -60,15 +60,23 @@ src/lib/                         the library's SDL half
 src/handler/                     the Handler binary
   Main.cpp                       the Handler entry point
   HandlerCli.h/.cpp              Handler command line and usage
+  HandlerCli-Endpoint.h/.cpp     the --listen/--connect address arguments
+  HandlerCli-Usage.cpp           the usage block main() prints
   Handler.h                      the one Handler class: all loop state
-  Handler-Loop.cpp               the poll loop and lifecycle
-  Handler-Catalog.cpp            tool sources, catalog, merge, app attach
-  Handler-Forward.cpp            forwards, waits and deadlines
-  Handler-Spawn.cpp              target spawn and the reaper
+  Handler-Lifecycle.cpp          construction, client/listener startup, shutdown
+  Handler-Loop.cpp               the poll loop and its dispatch
+  Handler-Catalog.h              the Handler's tool text
+  Handler-Catalog.cpp            tool sources and the base tools
+  Handler-Merge.cpp              catalog merge and tools/list publication
+  Handler-Attach.cpp             listener accept and app attach/change/detach
+  Handler-Wait.cpp               wait_session and its waiters
+  Handler-Forward.cpp            forwards and the application's answers
+  Handler-Present.cpp            a raw frame as a PNG image block
+  Handler-Deadline.cpp           the next poll deadline
+  Handler-Spawn.cpp              target spawn and the exec channel
+  Handler-Reaper.cpp             child reaping and pending-spawn completion
   Handler-Web.cpp                web spawn and the run's service
   Handler-DryRun.cpp             the --dry-run argv print and shell quoting
-  Handler-Catalog.h              the Handler's tool text
-  Handler-Forward.h              the forwarding unit's own declarations
   StdioStream.h/.cpp             the Handler's client-facing stream
   ToolArguments.h                the shared timeout_ms helpers
   AppPeer.h/.cpp                 the application session and its lifecycle

@@ -99,11 +99,11 @@ caller's convenience; it is not a collaborator and does not get a class.
   pre-emptively costs a header, an include and a name in the link, and the next
   reader has to leave the file to understand the caller. **The size cap outranks
   this rule.** When inlining a single-caller helper would push the unit past the
-  300-line hard limit, the helper may be declared in the unit's own matching
-  hyphenated header instead — `Handler-Forward.h` beside
-  `Handler-Forward.cpp` — because a limit the check enforces is not a preference
-  a reviewer may weigh. The header says in its comment that the cap chose the
-  split, so the next reader does not wait for a second caller that is not
+  300-line hard limit, the helper may be lifted into a matching hyphenated unit
+  instead — `HandlerCli-Endpoint.h` beside `HandlerCli-Endpoint.cpp`, called
+  from `HandlerCli.cpp` — because a limit the check enforces is not a preference
+  a reviewer may weigh. That unit's header says in its comment that the cap chose
+  the split, so the next reader does not wait for a second caller that is not
   coming.
 - **More than one caller: it clusters by function.** A private unit named for
   what the helpers do holds them — `ToolArguments.h` for the argument readers

@@ -6,15 +6,11 @@
 #include <string>
 #include <string_view>
 
-#include "Configuration.h"
+#include "HandlerCli-Endpoint.h"
 
 namespace sdl3mcp {
 namespace {
 
-constexpr std::string_view kListenOption = "--listen";
-constexpr std::string_view kListenPrefix = "--listen=";
-constexpr std::string_view kConnectOption = "--connect";
-constexpr std::string_view kConnectPrefix = "--connect=";
 constexpr std::string_view kTargetsOption = "--targets";
 constexpr std::string_view kTargetsPrefix = "--targets=";
 constexpr std::string_view kWebOption = "--web";
@@ -83,54 +79,10 @@ HandlerCliResult parseHandlerCommandLine(
          return result;
       }
 
-      if (argument == kListenOption) {
-         result.error = "--listen requires an address written as --listen=HOST:PORT";
-         return result;
-      }
-      if (argument.rfind(kListenPrefix, 0) == 0) {
-         if (!result.options.listenHost.empty()) {
-            result.error = "--listen may be given only once";
+      if (applyEndpointOption(argument, result)) {
+         if (!result.error.empty()) {
             return result;
          }
-
-         const std::string_view value(argument.data() + kListenPrefix.size(),
-                                      argument.size() - kListenPrefix.size());
-         std::string_view host;
-         std::uint16_t port = 0;
-         /* Port 0 asks the kernel for an ephemeral port. */
-         if (!parseEndpoint(value, host, port, true)) {
-            result.error =
-                "invalid value for --listen: expected HOST:PORT or [V6]:PORT";
-            return result;
-         }
-         result.options.listenHost.assign(host.data(), host.size());
-         result.options.listenPort = port;
-         index += 1;
-         continue;
-      }
-
-      if (argument == kConnectOption) {
-         result.error =
-             "--connect requires an address written as --connect=HOST:PORT";
-         return result;
-      }
-      if (argument.rfind(kConnectPrefix, 0) == 0) {
-         if (!result.options.connectHost.empty()) {
-            result.error = "--connect may be given only once";
-            return result;
-         }
-
-         const std::string_view value(argument.data() + kConnectPrefix.size(),
-                                      argument.size() - kConnectPrefix.size());
-         std::string_view host;
-         std::uint16_t port = 0;
-         if (!parseEndpoint(value, host, port, false)) {
-            result.error =
-                "invalid value for --connect: expected HOST:PORT or [V6]:PORT";
-            return result;
-         }
-         result.options.connectHost.assign(host.data(), host.size());
-         result.options.connectPort = port;
          index += 1;
          continue;
       }
@@ -257,31 +209,6 @@ HandlerCliResult parseHandlerCommandLine(
 
    result.ok = true;
    return result;
-}
-
-std::string handlerUsageText() {
-   return "usage: sdl3mcp [--listen=HOST:PORT] [--connect=HOST:PORT] "
-          "[--targets=PATH ...] [--web=PATH ...] [--timeout-ms=N] "
-          "[--dry-run=ALIAS] [--dump-tools]\n"
-          "  --listen=HOST:PORT   accept one application connection at HOST:PORT;\n"
-          "                       optional, and with an app source it defaults to\n"
-          "                       127.0.0.1:0, an ephemeral loopback port\n"
-          "  --connect=HOST:PORT  dial an upstream MCP client (a Relay)\n"
-          "  --targets=PATH       an alias-to-argv app source; a JSON file or a\n"
-          "                       directory of *.json files (repeatable)\n"
-          "  --web=PATH           an alias-to-web-root app source; a JSON file\n"
-          "                       mapping each alias to the root it serves\n"
-          "                       (repeatable)\n"
-          "  --timeout-ms=N       forward/attach/spawn budget in ms (1..60000,\n"
-          "                       default 10000)\n"
-          "  --dry-run=ALIAS      print the argv app_spawn_<alias> would run, or\n"
-          "                       the web commands/page/bridge/profile, and start\n"
-          "                       nothing\n"
-          "  --dump-tools         print the tools/list catalog as JSON and exit\n"
-          "  --help               print this help and exit\n"
-          "  --version            print the Handler version and exit\n"
-          "An app source or an explicit --listen is required; --dump-tools needs "
-          "neither.";
 }
 
 }  // namespace sdl3mcp

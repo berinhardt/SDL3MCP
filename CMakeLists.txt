@@ -298,12 +298,21 @@ if(SDL3MCP_BUILD_CLI AND NOT EMSCRIPTEN)
         src/handler/StdioStream.cpp
         src/handler/AppPeer.cpp
         src/handler/AppPeer-Protocol.cpp
+        src/handler/Handler-Attach.cpp
         src/handler/Handler-Catalog.cpp
+        src/handler/Handler-Deadline.cpp
         src/handler/Handler-DryRun.cpp
         src/handler/Handler-Forward.cpp
+        src/handler/Handler-Lifecycle.cpp
         src/handler/Handler-Loop.cpp
+        src/handler/Handler-Merge.cpp
+        src/handler/Handler-Present.cpp
+        src/handler/Handler-Reaper.cpp
         src/handler/Handler-Spawn.cpp
+        src/handler/Handler-Wait.cpp
         src/handler/Handler-Web.cpp
+        src/handler/HandlerCli-Endpoint.cpp
+        src/handler/HandlerCli-Usage.cpp
         src/handler/HandlerCli.cpp
         src/handler/Listener.cpp
         src/handler/Png.cpp

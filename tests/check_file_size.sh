@@ -7,8 +7,8 @@
 # both thresholds carry their exact message. scripts/check.sh invokes this
 # fixture before the rule, so the rule and its proof cannot drift apart.
 #
-# The hard limit is 300 while the split work is in progress; ticket 13 flips it
-# to 200 and re-pins cases 2, 3 and 4.
+# The limits are the product rule: 150 warns, 200 fails. Cases 2, 3 and 4 pin
+# both thresholds exactly.
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -100,7 +100,7 @@ expect_fail() {
    lines=$3
    run_rule "$file"
    [ "$status" -ne 0 ] || fail "$label: passed: $out"
-   want="file-size: $file: $lines non-comment lines exceeds the 300-line limit"
+   want="file-size: $file: $lines non-comment lines exceeds the 200-line limit"
    [ "$out" = "$want" ] || fail "$label: want '$want', got '$out'"
 }
 
@@ -133,25 +133,25 @@ fill_file "$soft_over" 160
 expect_count "case 2 soft count" "$soft_over" 160
 expect_warn "case 2 soft limit warns" "$soft_over" 160
 
-# Case 3: the hard threshold is exact: 300 passes with a warning, 301 fails.
+# Case 3: the hard threshold is exact: 200 passes with a warning, 201 fails.
 hard_at=$work/hard-at.cpp
-fill_file "$hard_at" 300
-expect_warn "case 3 hard limit is not exceeded at 300" "$hard_at" 300
+fill_file "$hard_at" 200
+expect_warn "case 3 hard limit is not exceeded at 200" "$hard_at" 200
 
 hard_over=$work/hard-over.cpp
-fill_file "$hard_over" 301
-expect_count "case 3 hard count" "$hard_over" 301
-expect_fail "case 3 hard limit fails" "$hard_over" 301
+fill_file "$hard_over" 201
+expect_count "case 3 hard count" "$hard_over" 201
+expect_fail "case 3 hard limit fails" "$hard_over" 201
 
-# Case 4: 301 code lines behind 300 comment and blank lines still fail, and the
+# Case 4: 201 code lines behind 300 comment and blank lines still fail, and the
 # message reports the code lines only.
 hidden=$work/hidden.cpp
-fill_file "$hidden" 301
+fill_file "$hidden" 201
 line_comments "$hidden" 200
 block_comment "$hidden" 50
 printf '\n\n' >> "$hidden"
-expect_count "case 4 hidden count" "$hidden" 301
-expect_fail "case 4 comments cannot hide a hard file" "$hidden" 301
+expect_count "case 4 hidden count" "$hidden" 201
+expect_fail "case 4 comments cannot hide a hard file" "$hidden" 201
 
 # Case 5: 10 code lines plus a 400-line block comment pass silently; comments
 # cannot manufacture a warning.

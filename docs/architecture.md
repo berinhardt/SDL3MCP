@@ -2,9 +2,10 @@
 
 SDL3MCP's internals: the seams and decisions behind the contract. `README.md` is
 the contract — the CLI grammar, the MCP schemas, framing, the loop order, the
-public targets, the browser arm and the limits. `STYLE.md` fixes how the code is
-written; `CONTRACT.md` is the frozen v0 archive, not the current contract. Where
-a fact is contract, this doc names the README section instead of restating it.
+public targets, the browser arm and the limits. `CODING_STANDARDS.md` fixes how
+the code is written; `CONTRACT.md` is the frozen v0 archive, not the current
+contract. Where a fact is contract, this doc names the README section instead of
+restating it.
 
 ## File layout
 
@@ -117,12 +118,11 @@ both consumers compile, `src/lib/` is the library's SDL half, and
 so a unit that reaches across halves names the directory it reaches into.
 `src/common/` is where a header both halves need lives — `Result.h`, `Posix.h`,
 `Tool.h` — because it is the only directory the Handler can reach without SDL.
+`include/` is the flat public surface: it exposes the C API only and never
+includes a private `src/` header.
 
-C++ file names are CamelCase with a hyphen between compound words (`STYLE.md`
-§Files states the rule and its reason).
-
-C++ file names are CamelCase with a hyphen between compound words (`STYLE.md`
-§Files states the rule and its reason).
+C++ file names are CamelCase with a hyphen between compound words
+(`CODING_STANDARDS.md` §Files and names states the rule and its reason).
 
 ## The wire protocol
 
@@ -223,8 +223,9 @@ The internals behind them:
 
 ## Layering
 
-Layering is a design constraint, not a style rule: `STYLE.md` says what code
-looks like, and this section says which objects may be compiled together.
+Layering is a design constraint, not a coding rule: `CODING_STANDARDS.md` says
+what code looks like, and this section says which objects may be compiled
+together.
 
 - **`SDL3MCP::COMMON` is the intersection of the objects the library and the
   Handler both compile.** Those objects are `Configuration`, `JsonRpc`,
@@ -251,16 +252,24 @@ is static only and publishes no SDL* and *the consumer link line*, §Requirement
 for the runtime dependencies and *Linux only*, §The Emscripten build for the two
 Node suites. The internals:
 
+- **Three object libraries hold the translation units.**
+  `sdl3mcp_common_objects` is the SDL-free core, `sdl3mcp_lib_objects` the
+  library's SDL half, and `sdl3mcp_handler_objects` the Handler. They stay
+  internal: `SDL3MCP::SDL3MCP` archives the common and lib objects,
+  `SDL3MCP::COMMON` is a real static library built from the common objects, and
+  the Handler executable links its own objects, `SDL3MCP_COMMON` and json, so
+  the SDL-free core is one link entry rather than a bag of objects. The test
+  suites link the common archive and the lib object library for private symbols
+  and the public target for the C surface.
 - **What is compiled where.** `src/common/SocketStream.cpp`,
   `src/common/SocketStream-IO.cpp` and `src/handler/StdioStream.cpp` are
   desktop-only;
   `src/common/SocketStream-Websockets.cpp` and
   `src/common/SocketStream-WSEvents.cpp` take their place on Emscripten. The
   common object library holds the dial arm the build can compile and the
-  protocol above it; `src/handler/StdioStream.cpp` is compiled into
-  `sdl3mcp_handler_objects`, so the library archive holds no stdio transport.
-  `src/handler/StdioStream.cpp` is the Handler's client-facing stream; the
-  library never uses it.
+  protocol above it; `src/handler/StdioStream.cpp` is the Handler's
+  client-facing stream and is compiled into `sdl3mcp_handler_objects`, so the
+  library archive holds no stdio transport.
 - **Dependencies stay SDL3-only at runtime.** `nlohmann/json` resolves in three
   steps — an existing target, then its package, then a pinned `v3.12.0` download
   — and is private and header-only; there is no vendored copy. `stb_image_write.h`
@@ -292,8 +301,8 @@ Node suites. The internals:
 ## ABI and linkage
 
 README owns the public surface: §The library API for the six entry points, the
-C11 contract and the exception boundary (also `STYLE.md` §Errors), and §Targets
-for the static library and the consumer's SDL link line. The internals:
+C11 contract and the exception boundary (also `CODING_STANDARDS.md` §Errors), and
+§Targets for the static library and the consumer's SDL link line. The internals:
 
 - **No linkage macro.** The library is static only and Windows is a configure
   error, so the public declarations carry neither an import/export attribute nor

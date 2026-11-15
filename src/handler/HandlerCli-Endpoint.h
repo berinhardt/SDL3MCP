@@ -4,7 +4,7 @@
 
   applyEndpointOption has exactly one caller, but inlining it would take
   HandlerCli.cpp past the file-size hard limit, so it lives here with its own
-  header (STYLE.md §Helper placement).
+  header (CODING_STANDARDS.md §Helper placement).
 */
 
 #pragma once

@@ -9,9 +9,10 @@
   spawn-and-forget. The browser's exit status is read with waitpid() when the
   pidfd fires, so a non-zero exit can be reported.
 
-  This unit's definitions live in two translation units: Web-Run.cpp holds the
-  class's lifetime, poll and stop, and Web-Run-Child.cpp holds the child launch —
-  fork, exec, pidfd watching and the loopback readiness probe.
+  This unit's definitions live in three translation units: Web-Run.cpp holds the
+  class's lifetime and stop, Web-Run-Service.cpp holds the pidfd polling, the
+  exit recording and the ready deadline, and Web-Run-Child.cpp holds the child
+  launch — fork, exec, pidfd watching and the loopback readiness probe.
 */
 
 #pragma once

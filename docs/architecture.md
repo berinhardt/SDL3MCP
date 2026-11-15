@@ -65,7 +65,8 @@ src/handler/                     the Handler binary
   Handler-Catalog.cpp            tool sources, catalog, merge, app attach
   Handler-Forward.cpp            forwards, waits and deadlines
   Handler-Spawn.cpp              target spawn and the reaper
-  Handler-Web.cpp                web spawn orchestration and --dry-run
+  Handler-Web.cpp                web spawn and the run's service
+  Handler-DryRun.cpp             the --dry-run argv print and shell quoting
   Handler-Catalog.h              the Handler's tool text
   Handler-Forward.h              the forwarding unit's own declarations
   StdioStream.h/.cpp             the Handler's client-facing stream
@@ -77,11 +78,14 @@ src/handler/                     the Handler binary
   Targets.h/.cpp                 --targets sources
   Web-Apps.h/.cpp                --web sources and the alias dictionary
   Web-Plan.h                     the web launch options and plan declarations
-  Web-Plan.cpp                   preflight, browser, ports, plan composition
-  Web-Plan-Profile.cpp           profile seed, lock, sweep and removal
+  Web-Plan.cpp                   plan composition
+  Web-Plan-Preflight.cpp         preflight, browser lookup, ports
+  Web-Plan-Profile.cpp           profile seed, lock and prepare
+  Web-Plan-Sweep.cpp             abandoned-profile sweep and tree removal
   Web-Run.h                      WebRun and its events
-  Web-Run.cpp                    the run's lifetime, poll and stop
+  Web-Run.cpp                    the run's lifetime and stop
   Web-Run-Child.cpp              child launch, pidfd watch, readiness probe
+  Web-Run-Service.cpp            poll set, exit recording, ready deadline
   Png.h/.cpp                     PNG + base64 presentation
   StbImageWrite.cpp              the one stb implementation unit
 

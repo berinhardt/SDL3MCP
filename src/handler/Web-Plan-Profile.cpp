@@ -1,6 +1,5 @@
 #include "Web-Plan.h"
 
-#include <dirent.h>
 #include <fcntl.h>
 #include <sys/file.h>
 #include <sys/stat.h>
@@ -10,8 +9,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <ctime>
-#include <optional>
 #include <string>
 
 namespace sdl3mcp {
@@ -19,13 +16,7 @@ namespace {
 
 /* The template mkdtemp() fills; its suffix must be the last six characters. */
 constexpr const char* kProfileTemplate = "sdl3mcp-web-XXXXXX";
-constexpr const char* kLockFile = ".lock";
 constexpr const char* kFallbackProfileParent = "/tmp";
-
-/* The prefix a seeded profile carries, which is also what the sweep looks for. */
-constexpr const char* kProfilePrefix = "sdl3mcp-web-";
-/* Long enough that a directory still being created is never mistaken for one. */
-constexpr int kUnlockedGraceSeconds = 60;
 
 /*
   One line per preference. The first is the reason the profile exists: the page
@@ -54,14 +45,6 @@ bool isWritableDirectory(const char* path) {
           ::access(path, W_OK) == 0;
 }
 
-std::string profileParent() {
-   const char* runtime = std::getenv("XDG_RUNTIME_DIR");
-   if (isWritableDirectory(runtime)) {
-      return runtime;
-   }
-   return kFallbackProfileParent;
-}
-
 Result<void, TransportError> writePreferences(const std::string& directory) {
    const std::string path = directory + "/user.js";
    std::FILE* file = std::fopen(path.c_str(), "w");
@@ -80,16 +63,15 @@ Result<void, TransportError> writePreferences(const std::string& directory) {
    return {};
 }
 
-/* The mtime test that keeps the sweep off a directory a launcher is creating. */
-bool olderThan(const std::string& path, int seconds) {
-   struct stat status{};
-   if (::stat(path.c_str(), &status) != 0) {
-      return false;
-   }
-   return std::time(nullptr) - status.st_mtime > seconds;
-}
-
 }  // namespace
+
+std::string profileParent() {
+   const char* runtime = std::getenv("XDG_RUNTIME_DIR");
+   if (isWritableDirectory(runtime)) {
+      return runtime;
+   }
+   return kFallbackProfileParent;
+}
 
 Result<void, TransportError> prepareWebLaunch(WebLaunchOptions& options) {
    const Result<void, TransportError> preflight = preflightWebLaunch(options);
@@ -142,7 +124,7 @@ Result<void, TransportError> seedProfile(std::string& directory, int& lockFd) {
      O_CLOEXEC keeps the three children from inheriting it and making a dead
      run look alive.
    */
-   const int fd = ::open((candidate + "/" + kLockFile).c_str(),
+   const int fd = ::open((candidate + "/" + kProfileLockFile).c_str(),
                          O_CREAT | O_RDWR | O_CLOEXEC, 0600);
    if (fd < 0) {
       const int openError = errno;
@@ -167,92 +149,6 @@ Result<void, TransportError> seedProfile(std::string& directory, int& lockFd) {
    directory = std::move(candidate);
    lockFd = fd;
    return {};
-}
-
-/* A browser leaves thousands of files, so the profile needs a whole tree gone. */
-Result<void, TransportError> removeProfileTree(const std::string& path) {
-   struct stat status{};
-   if (::lstat(path.c_str(), &status) != 0) {
-      const int lookupError = errno;
-      if (lookupError == ENOENT) {
-         return {};
-      }
-      return TransportError{"cannot remove " + path + ": " +
-                            std::strerror(lookupError)};
-   }
-   if (!S_ISDIR(status.st_mode)) {
-      if (::unlink(path.c_str()) == 0) {
-         return {};
-      }
-      return TransportError{"cannot remove " + path + ": " +
-                            std::strerror(errno)};
-   }
-
-   DIR* directory = ::opendir(path.c_str());
-   if (directory == nullptr) {
-      return TransportError{"cannot remove " + path + ": " +
-                            std::strerror(errno)};
-   }
-
-   std::optional<TransportError> firstFailure;
-   while (const dirent* entry = ::readdir(directory)) {
-      const std::string name(entry->d_name);
-      if (name == "." || name == "..") {
-         continue;
-      }
-      const Result<void, TransportError> removed =
-          removeProfileTree(path + "/" + name);
-      if (!removed && !firstFailure.has_value()) {
-         firstFailure = removed.error();
-      }
-   }
-   ::closedir(directory);
-
-   if (firstFailure.has_value()) {
-      return *firstFailure;
-   }
-   if (::rmdir(path.c_str()) != 0) {
-      return TransportError{"cannot remove " + path + ": " +
-                            std::strerror(errno)};
-   }
-   return {};
-}
-
-Result<int, TransportError> sweepAbandonedProfiles() {
-   const std::string parent = profileParent();
-   DIR* directory = ::opendir(parent.c_str());
-   if (directory == nullptr) {
-      return TransportError{"cannot scan " + parent + ": " +
-                            std::strerror(errno)};
-   }
-
-   int removed = 0;
-   while (const dirent* entry = ::readdir(directory)) {
-      const std::string name(entry->d_name);
-      if (name.rfind(kProfilePrefix, 0) != 0) {
-         continue;
-      }
-      const std::string path = parent + "/" + name;
-      const int fd = ::open((path + "/" + kLockFile).c_str(), O_RDWR | O_CLOEXEC);
-      if (fd < 0) {
-         if (errno == ENOENT && olderThan(path, kUnlockedGraceSeconds)) {
-            if (removeProfileTree(path)) {
-               ++removed;
-            }
-         }
-         continue;
-      }
-      const bool owned = ::flock(fd, LOCK_EX | LOCK_NB) != 0;
-      ::close(fd);
-      if (owned) {
-         continue;
-      }
-      if (removeProfileTree(path)) {
-         ++removed;
-      }
-   }
-   ::closedir(directory);
-   return removed;
 }
 
 std::string plannedProfilePath() {

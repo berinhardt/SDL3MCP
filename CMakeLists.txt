@@ -299,6 +299,7 @@ if(SDL3MCP_BUILD_CLI AND NOT EMSCRIPTEN)
         src/handler/AppPeer.cpp
         src/handler/AppPeer-Protocol.cpp
         src/handler/Handler-Catalog.cpp
+        src/handler/Handler-DryRun.cpp
         src/handler/Handler-Forward.cpp
         src/handler/Handler-Loop.cpp
         src/handler/Handler-Spawn.cpp
@@ -310,9 +311,12 @@ if(SDL3MCP_BUILD_CLI AND NOT EMSCRIPTEN)
         src/handler/Targets.cpp
         src/handler/Web-Apps.cpp
         src/handler/Web-Plan.cpp
+        src/handler/Web-Plan-Preflight.cpp
         src/handler/Web-Plan-Profile.cpp
+        src/handler/Web-Plan-Sweep.cpp
         src/handler/Web-Run.cpp
         src/handler/Web-Run-Child.cpp
+        src/handler/Web-Run-Service.cpp
     )
     target_compile_features(sdl3mcp_handler_objects PRIVATE cxx_std_20)
     target_include_directories(sdl3mcp_handler_objects

@@ -17,10 +17,11 @@
   its lifetime, which is what lets a later launch tell a live profile from an
   abandoned one (sweepAbandonedProfiles).
 
-  This unit's definitions live in two translation units: Web-Plan.cpp holds
-  preflight, the browser lookup, the ports and the plan composition;
-  Web-Plan-Profile.cpp holds the profile's seed, lock, sweep and removal, and the
-  prepareWebLaunch composition that owns them.
+  This unit's definitions live in four translation units: Web-Plan.cpp holds the
+  plan composition, Web-Plan-Preflight.cpp holds preflight, the browser lookup
+  and the ports, Web-Plan-Profile.cpp holds the profile's seed and lock and the
+  prepareWebLaunch composition that owns them, and Web-Plan-Sweep.cpp holds the
+  sweep and removal of abandoned profiles.
 */
 
 #pragma once
@@ -37,6 +38,22 @@ namespace sdl3mcp {
 constexpr const char* kWebEntry = "index.html";
 /* Every web endpoint is bound and probed on loopback. */
 constexpr const char* kWebLoopbackHost = "127.0.0.1";
+/* The lock file a seeded profile carries; its flock marks a live run. */
+constexpr const char* kProfileLockFile = ".lock";
+
+/*
+  True when `path` names an executable this process may run. Shared by the
+  preflight's PATH search and the plan's field validation, so both answer the
+  same question the same way.
+*/
+bool isExecutable(const std::string& path);
+
+/*
+  The directory a throwaway profile lives under: $XDG_RUNTIME_DIR when it is a
+  writable directory, otherwise /tmp. Shared by the seed and sweep units so a
+  profile is always looked for where it would have been created.
+*/
+std::string profileParent();
 
 /* One web launch: the resolved tools, the endpoints, and the owned profile. */
 struct WebLaunchOptions {

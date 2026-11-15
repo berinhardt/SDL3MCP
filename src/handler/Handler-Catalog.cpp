@@ -5,16 +5,10 @@
 #include <utility>
 
 #include "ToolArguments.h"
+#include "ToolDefinitions-Schemas.h"
 #include "ToolDefinitions.h"
 
 namespace sdl3mcp {
-namespace {
-
-nlohmann::json parseDefinition(std::string_view text) {
-   return nlohmann::json::parse(text.begin(), text.end());
-}
-
-}  // namespace
 
 Result<void, ProtocolError> Handler::loadSources() {
    targets_.clear();

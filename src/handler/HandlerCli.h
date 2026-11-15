@@ -29,6 +29,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace sdl3mcp {
@@ -89,6 +90,20 @@ struct HandlerCliResult {
    /* Why the parse failed, when ok is false. */
    std::string error;
 };
+
+/*
+  Applies one argument when it names --listen or --connect.
+
+  Returns false when the argument belongs to another option and the parse loop
+  should keep matching. Returns true when it was an endpoint option: either
+  result.options now carries the parsed value, or result.error names why the
+  argument was rejected.
+
+  applyEndpointOption has exactly one caller, but inlining it would take
+  HandlerCli.cpp past the file-size hard limit, so its declaration lives in this
+  header, the unit's matching one (CODING_STANDARDS.md §Helper placement).
+*/
+bool applyEndpointOption(std::string_view argument, HandlerCliResult& result);
 
 /*
   Parses argv without argv[0]. Returns ok=false with a one-line explanation when

@@ -6,7 +6,7 @@
   and a working event queue. The driver is selected in C++ because Emscripten
   starts with an empty ENV, so SDL_VIDEODRIVER from the process environment
   never reaches SDL. That, plus a test-only --post-js shim for the two page
-  globals src/Api.cpp reads, is the whole seam: the production path is unchanged
+  globals src/lib/Api.cpp reads, is the whole seam: the production path is unchanged
   and the real archive is linked.
 
   The suite is the app thread. It runs the app loop exactly as a game does -

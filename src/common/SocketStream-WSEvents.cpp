@@ -4,14 +4,14 @@
 
   A callback is the page's code path, not the loop's. It copies the bytes it was
   handed (the browser owns that buffer only until the callback returns) and
-  records the close or error; pump(), in WebSocketStream.cpp, delivers both, in
-  the order they arrived. Nothing here answers a line, so the protocol layer
-  keeps the one path StreamBase gives it.
+  records the close or error; pump(), in SocketStream-Websockets.cpp, delivers
+  both, in the order they arrived. Nothing here answers a line, so the protocol
+  layer keeps the one path StreamBase gives it.
 
   The type and its header are the dial's: this unit declares nothing of its own.
 */
 
-#include "WebSocketStream.h"
+#include "SocketStream.h"
 
 #include <emscripten/websocket.h>
 
@@ -19,7 +19,7 @@
 #include <cstdint>
 #include <string>
 
-#include "SocketStream.h"
+#include "SocketStream-Websockets.h"
 
 namespace sdl3mcp {
 

@@ -1,4 +1,4 @@
-#include "Input-Arguments.h"
+#include "InputArguments.h"
 
 #include <array>
 #include <cstddef>
@@ -7,8 +7,8 @@
 #include <utility>
 
 #include "Capture.h"
-#include "Input-Actions.h"
-#include "Input-Properties.h"
+#include "InputActions.h"
+#include "InputProperties.h"
 
 namespace sdl3mcp {
 namespace {

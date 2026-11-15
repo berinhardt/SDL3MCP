@@ -214,7 +214,7 @@ int SocketStream::fd() const noexcept {
    return native_->fd;
 }
 
-int SocketStream::writeFd() const noexcept {
+int SocketStream::outputFd() const noexcept {
    /* One descriptor carries both directions. */
    return native_->fd;
 }

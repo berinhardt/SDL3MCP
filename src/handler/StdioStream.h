@@ -43,7 +43,7 @@ class StdioStream : public StreamBase {
    /* The descriptor a poll loop watches for requests. */
    int inputFd() const noexcept { return inputFd_; }
    /* The descriptor a poll loop watches for POLLOUT while a write is pending. */
-   int writeFd() const noexcept override { return outputFd_; }
+   int outputFd() const noexcept override { return outputFd_; }
 
   private:
    bool flush();

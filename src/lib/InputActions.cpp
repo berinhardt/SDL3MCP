@@ -1,13 +1,13 @@
-#include "Input-Actions.h"
+#include "InputActions.h"
 
 #include <array>
 #include <span>
 #include <string>
 #include <string_view>
 
-#include "Input-Keyboard.h"
-#include "Input-Pointer.h"
-#include "Input-Properties.h"
+#include "InputKeyboard.h"
+#include "InputPointer.h"
+#include "InputProperties.h"
 
 namespace sdl3mcp {
 namespace {

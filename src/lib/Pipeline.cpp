@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "AppInput.h"
+#include "TextInputScope.h"
 #include "ToolResult.h"
 
 namespace sdl3mcp {
@@ -21,33 +22,6 @@ bool batchHasText(const InputBatch& batch) {
                          return std::holds_alternative<TextInput>(action);
                       });
 }
-
-/*
-  Starts text input for the lifetime of one batch, because synthetic text needs
-  no keyboard focus, and stops it again only when this scope started it, so the
-  previous state is restored on every exit path.
-*/
-class TextInputScope {
-  public:
-   TextInputScope(SDL_Window* window, bool needed) : window_(window) {
-      if (needed && window_ != nullptr && !SDL_TextInputActive(window_)) {
-         started_ = SDL_StartTextInput(window_);
-      }
-   }
-
-   ~TextInputScope() {
-      if (started_) {
-         SDL_StopTextInput(window_);
-      }
-   }
-
-   TextInputScope(const TextInputScope&) = delete;
-   TextInputScope& operator=(const TextInputScope&) = delete;
-
-  private:
-   SDL_Window* window_ = nullptr;
-   bool started_ = false;
-};
 
 /* True when every event reached SDL's queue; modifiers are mirrored either way. */
 bool pushPlanEvents(SDL_Window* window, const KeyReplayer& keyReplayer,

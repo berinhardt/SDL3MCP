@@ -16,6 +16,10 @@ the v0 tree was deleted in the rewrite and survives in `v0.1.0` and history.
   client (stdio, or an upstream socket in Relay mode), accepts one application
   at a time, presents captures as PNG, and spawns from `--targets` and `--web`.
 
+The tree is three product directories: `src/common/` is the SDL-free core both
+halves compile, `src/lib/` is the library's SDL half, and `src/handler/` is the
+binary; `docs/architecture.md` §File layout owns the map.
+
 ## Where the truth lives
 
 - **`README.md` is the contract**: CLI grammar, MCP schemas, framing, loop
@@ -36,7 +40,8 @@ section the branch names, not the whole file:
 
 - **Touching the Handler** — the poll loop, forwarding, merging, spawn, the web
   stack → *The Handler*, *File descriptor ownership*.
-- **The browser arm** — `WebSocketStream.cpp`, the page query → *The browser arm*.
+- **The browser arm** — `src/common/SocketStream-Websockets.cpp`, the page query →
+  *The browser arm*.
 - **The wire protocol or a tool result** — `Session`, `Stream`, framing, input →
   *The wire protocol*.
 - **The build targets or test layout** — object libraries, visibility, linkage →
@@ -70,8 +75,9 @@ section the branch names, not the whole file:
   pinned fetch resolves it. The full `ctest` includes `handler_only_check`, the
   no-SDL Handler configure/build/test, so the SDL-free half is enforced.
 - The tests are two groups by dependency: `HANDLER_TESTS` (SDL-free) and
-  `LIBRARY_TESTS` (links the library or the app half, so SDL). README
-  §Dependencies is the matrix; `SDL3MCP_BUILD_TESTS` only sets both defaults.
+  `LIBRARY_TESTS` (links the library or the app half, so SDL). Neither group is
+  an option: each derives from `SDL3MCP_BUILD_TESTS` and the half it exercises.
+  README §Tests states the derivation and §Dependencies is the matrix.
 - One atomic change per commit, with a message that describes it; no dead code,
   no commented-out code, no speculative parameters. Before each commit, check
   the diff against this file and fix any statement the change contradicts.

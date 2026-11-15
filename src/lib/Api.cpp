@@ -45,7 +45,7 @@ SDL_AppResult reportException(const char* entryPoint, const char* what) {
 
 }  // namespace
 
-extern "C" SDL_DECLSPEC SDL_AppResult SDLCALL
+extern "C" SDL_AppResult
 SDL3MCP_AppInit(SDL3MCP_Configuration* config, int argc, char** argv) {
    try {
       if (g_lifecycleClaimed.exchange(true)) {
@@ -108,7 +108,7 @@ SDL3MCP_AppInit(SDL3MCP_Configuration* config, int argc, char** argv) {
    }
 }
 
-extern "C" SDL_DECLSPEC SDL_AppResult SDLCALL SDL3MCP_SetWindow(SDL_Window* window) {
+extern "C" SDL_AppResult SDL3MCP_SetWindow(SDL_Window* window) {
    try {
       if (!g_runtime) {
          SDL_SetError("SDL3MCP_SetWindow called before SDL3MCP_AppInit");
@@ -122,7 +122,7 @@ extern "C" SDL_DECLSPEC SDL_AppResult SDLCALL SDL3MCP_SetWindow(SDL_Window* wind
    }
 }
 
-extern "C" SDL_DECLSPEC SDL_AppResult SDLCALL SDL3MCP_AppIterate(void) {
+extern "C" SDL_AppResult SDL3MCP_AppIterate(void) {
    try {
       if (!g_runtime) {
          return SDL_APP_CONTINUE;
@@ -135,7 +135,7 @@ extern "C" SDL_DECLSPEC SDL_AppResult SDLCALL SDL3MCP_AppIterate(void) {
    }
 }
 
-extern "C" SDL_DECLSPEC void SDLCALL SDL3MCP_AppShutdown(void) {
+extern "C" void SDL3MCP_AppShutdown(void) {
    try {
       if (g_runtime) {
          g_runtime->shutdown();
@@ -164,7 +164,7 @@ extern "C" SDL_DECLSPEC void SDLCALL SDL3MCP_AppShutdown(void) {
 #endif
 }
 
-extern "C" SDL_DECLSPEC bool SDLCALL SDL3MCP_FrameRequested(void) {
+extern "C" bool SDL3MCP_FrameRequested(void) {
    try {
       return g_runtime ? g_runtime->frameRequested() : false;
    } catch (...) {
@@ -172,7 +172,7 @@ extern "C" SDL_DECLSPEC bool SDLCALL SDL3MCP_FrameRequested(void) {
    }
 }
 
-extern "C" SDL_DECLSPEC void SDLCALL
+extern "C" void
 SDL3MCP_WriteFrame(const uint8_t* data, size_t size, int width, int height) {
    try {
       if (g_runtime) {

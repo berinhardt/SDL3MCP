@@ -1,6 +1,6 @@
 # Proves the Handler half is SDL-free by configuring a tree of its own: the
-# library and its suites are off, SDL discovery is disabled outright, and the
-# Handler and the Handler suites must configure, build and pass.
+# library half is off, so its test group derives off, SDL discovery is disabled,
+# and the Handler and the Handler suites must configure, build and pass.
 #
 # CMAKE_DISABLE_FIND_PACKAGE_SDL3 turns any find_package(SDL3) into a configure
 # error, so the configure itself is the check: an unconditional SDL lookup, or
@@ -47,9 +47,7 @@ set(sdl3mcp_configure
     -B "${sdl3mcp_build}"
     "-DSDL3MCP_BUILD_LIBRARY=OFF"
     "-DSDL3MCP_BUILD_CLI=ON"
-    "-DSDL3MCP_BUILD_TESTS=OFF"
-    "-DSDL3MCP_BUILD_HANDLER_TESTS=ON"
-    "-DSDL3MCP_BUILD_LIBRARY_TESTS=OFF"
+    "-DSDL3MCP_BUILD_TESTS=ON"
     "-DSDL3MCP_HANDLER_ONLY_FIXTURE=OFF"
     "-DCMAKE_DISABLE_FIND_PACKAGE_SDL3=TRUE"
 )

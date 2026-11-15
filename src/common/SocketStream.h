@@ -34,9 +34,9 @@ namespace sdl3mcp {
   pump(). A short write is not a failure; only a real send error is.
 
   The platform arm is PIMPL so the Emscripten implementation can hold its own
-  state in WebSocketStream.cpp without changing this header. There the dial is
-  asynchronous: connect() creates the WebSocket and registers callbacks, and
-  the open, messages, close and error arrive on the page's own thread.
+  state in SocketStream-Websockets.cpp without changing this header. There the
+  dial is asynchronous: connect() creates the WebSocket and registers callbacks,
+  and the open, messages, close and error arrive on the page's own thread.
 */
 class SocketStream : public StreamBase {
   public:
@@ -71,7 +71,7 @@ class SocketStream : public StreamBase {
    int fd() const noexcept;
 
    /* The same descriptor: a socket reads and writes on one fd. */
-   int writeFd() const noexcept override;
+   int outputFd() const noexcept override;
 
    bool sendText(std::string_view text) override;
    bool sendBinary(const std::uint8_t* data, std::size_t size) override;

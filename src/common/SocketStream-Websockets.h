@@ -2,9 +2,9 @@
 
 /*
   The browser arm's own header, shared by its two units: the dial, the writes
-  and pump() read the socket and drain the queue (WebSocketStream.cpp), the
-  callbacks fill the queue and record the close or error
-  (WebSocketStream-Events.cpp).
+  and pump() read the socket and drain the queue (SocketStream-Websockets.cpp),
+  the callbacks fill the queue and record the close or error
+  (SocketStream-WSEvents.cpp).
 
   SocketStream declares `struct Native;` and this header defines it. One
   definition in one place, because a nested type cannot be defined by both

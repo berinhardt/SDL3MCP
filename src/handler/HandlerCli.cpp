@@ -6,8 +6,6 @@
 #include <string>
 #include <string_view>
 
-#include "HandlerCli-Endpoint.h"
-
 namespace sdl3mcp {
 namespace {
 

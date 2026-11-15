@@ -71,7 +71,7 @@ src/lib/                         the library's SDL half
 src/handler/                     the Handler binary
   Main.cpp                       the Handler entry point
   HandlerCli.h/.cpp              Handler command line and usage
-  HandlerCli-Endpoint.h/.cpp     the --listen/--connect address arguments
+  HandlerCli-Endpoint.cpp        the --listen/--connect address arguments
   HandlerCli-Usage.cpp           the usage block main() prints
   Handler.h                      the one Handler class: all loop state
   Handler-Lifecycle.cpp          construction, client/listener startup, shutdown

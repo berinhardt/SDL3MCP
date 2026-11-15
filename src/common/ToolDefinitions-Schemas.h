@@ -7,8 +7,9 @@
   sdl_capture, the tools that answer with a frame. ToolDefinitions.cpp composes
   them in the advertised order and is the unit the rest of the tree includes.
 
-  parseDefinition is inline here so each family parses its own records with one
-  statement of the same policy instead of a second copy per unit.
+  parseDefinition is inline here so every definer — the two family units and
+  the Handler's own wait/session/spawn schemas — parses with one statement of
+  the same policy instead of a second copy per unit.
 */
 
 #include <nlohmann/json.hpp>

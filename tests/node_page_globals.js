@@ -2,7 +2,7 @@
   The two page globals the library reads, supplied to the Node suite only.
 
   A real page provides window.location.search (the ?mcp=HOST:PORT dial) and
-  window.close() (the tab closing on shutdown), and src/Api.cpp reads exactly
+  window.close() (the tab closing on shutdown), and src/lib/Api.cpp reads exactly
   those two browser names. Under Node nothing provides them.
 
   This file is passed to the test executable as --post-js and must stay post-js:

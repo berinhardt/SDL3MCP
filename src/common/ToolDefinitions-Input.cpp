@@ -41,8 +41,8 @@ constexpr std::string_view kInputDescription =
 /*
   A key action has no repeat property: repeat a press by sending another action
   instead, which keeps the batch a plain ordered list of single events. The
-  region member is the same object sdl_capture takes, parsed by the same helper,
-  so the schemas cannot drift from the accepted documents.
+  region member describes the same object sdl_capture takes, and the runtime
+  region parser is shared, so the accepted documents cannot drift.
 */
 constexpr std::string_view kInputSchema = R"({
   "type": "object",

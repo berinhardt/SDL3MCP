@@ -1,8 +1,9 @@
 #!/bin/sh
-# The file-size rule from STYLE.md, over the first-party product sources.
+# The file-size rule from CODING_STANDARDS.md, over the first-party product
+# sources.
 #
 # Lines are counted by scripts/count-code-lines.awk, so blank lines and comments
-# do not count and a code line with a trailing comment does. A source over 300
+# do not count and a code line with a trailing comment does. A source over 200
 # non-comment lines fails; one over 150 warns. With no arguments the rule checks
 # the tracked C/C++ product sources it belongs to (include/ and src/, which
 # carries src/handler/); with arguments it checks exactly those files, which is
@@ -11,7 +12,7 @@
 set -eu
 
 soft_limit=150
-hard_limit=300
+hard_limit=200
 counter=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/count-code-lines.awk
 
 hard_failed=0

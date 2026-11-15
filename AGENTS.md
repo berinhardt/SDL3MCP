@@ -27,10 +27,11 @@ binary; `docs/architecture.md` §File layout owns the map.
   and `ctest`, the presets (`debug`, `asan`), the Emscripten configure and the
   dependency matrix (doctest, SDL, nlohmann, stb, Python, Node, Emscripten),
   and §Tests lists the suites.
-- **`STYLE.md`** is the single standards document: naming, formatting, headers,
-  errors, tests and CMake, split into mechanical rules a check enforces and
+- **`CODING_STANDARDS.md`** is the single coding-standards document: code-writing
+  rules only, split into the mechanical file-size rule a check enforces and the
   judgement rules a reviewer owns; its §Tests carries the payload-floor and
-  drained-child-output rules.
+  drained-child-output rules. Design constraints live in
+  `docs/architecture.md`; the build contract lives in `README.md`.
   **`CONTRACT.md`** is the frozen v0 archive, not the current contract.
 
 ## Architecture
@@ -51,7 +52,7 @@ section the branch names, not the whole file:
 
 - Wire names are snake_case (`max_frame_bytes`); C++ names are camelCase; types
   are PascalCase; file names are CamelCase with a hyphen between compound words
-  (`Handler-Loop.cpp`). `STYLE.md` is the authority.
+  (`Handler-Loop.cpp`). `CODING_STANDARDS.md` is the authority.
 - Change the implementation and the matching README section together, including
   the tool JSON schemas when a parameter changes.
 - `tests/check_readme.py` enforces the two complete examples, the JSON blocks,

@@ -24,21 +24,31 @@ src/common/                      the SDL-free core: everything the library and
   JsonRpc.h/.cpp                 one parsed request/answer
   Posix.h                        the shared descriptor helpers
   Result.h                       Result<T, E> for both halves
-  Session.h/.cpp                 one peer: initialize, ping, tools/list, calls
+  Session.h/.cpp                 one peer: lifecycle, framing, pending orders
+  Session-Requests.cpp           initialize, ping, tools/list and calls
   Stream.h/.cpp                  Stream + StreamBase (line/payload buffer)
-  SocketStream.h/.cpp            native dial
+  SocketStream.h/.cpp            native dial and close
+  SocketStream-IO.cpp            native writes, reads and pump
+  SocketStream-Native.h          the native arm's PIMPL state
   SocketStream-Websockets.cpp    Emscripten dial (same header)
   SocketStream-WSEvents.cpp      browser callbacks and byte queue
   SocketStream-Websockets.h      the browser arm's PIMPL state and close codes
   Tool.h                         name, description, schema, invoke
   ToolCatalog.h/.cpp             map<name, Tool>
-  ToolDefinitions.h/.cpp         the four application tools' metadata
+  ToolDefinitions.h/.cpp         the four tools' order and lookup
+  ToolDefinitions-Info.cpp       sdl_info and sdl_terminate metadata
+  ToolDefinitions-Input.cpp      sdl_input and sdl_capture metadata
+  ToolDefinitions-Schemas.h      the record declarations and the parser
   ToolResult.h/.cpp              content or raw payload, self-encoded
 
 src/lib/                         the library's SDL half
   Api.cpp                        the C ABI over Runtime
-  Runtime.h/.cpp                 process-wide state; start/iterate/shutdown
-  Pipeline.h/.cpp                the app-thread input/capture pipeline
+  Runtime.h/.cpp                 process-wide state; start/setWindow/shutdown
+  Runtime-Catalog.cpp            the four tools' invoke wiring
+  Runtime-Iterate.cpp            the frame loop and the quit handshake
+  Pipeline.h/.cpp                the pipeline's state and registration
+  Pipeline-Frames.cpp            answering with the written frame
+  Pipeline-Input.cpp             applying a batch to SDL
   TextInputScope.h/.cpp          text input for the lifetime of one batch
   Input.h                        action model, validation and chord interface
   Input.cpp                      model validation
@@ -241,8 +251,9 @@ is static only and publishes no SDL* and *the consumer link line*, §Requirement
 for the runtime dependencies and *Linux only*, §The Emscripten build for the two
 Node suites. The internals:
 
-- **What is compiled where.** `src/common/SocketStream.cpp` and
-  `src/handler/StdioStream.cpp` are desktop-only;
+- **What is compiled where.** `src/common/SocketStream.cpp`,
+  `src/common/SocketStream-IO.cpp` and `src/handler/StdioStream.cpp` are
+  desktop-only;
   `src/common/SocketStream-Websockets.cpp` and
   `src/common/SocketStream-WSEvents.cpp` take their place on Emscripten. The
   common object library holds the dial arm the build can compile and the

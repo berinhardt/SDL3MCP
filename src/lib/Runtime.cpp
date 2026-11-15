@@ -1,21 +1,16 @@
+/*
+  The Runtime's state and lifecycle: construction, the dial, the window binding,
+  shutdown, and the sdl_info snapshot. The frame loop is in Runtime-Iterate.cpp
+  and the catalog construction in Runtime-Catalog.cpp.
+*/
+
 #include "Runtime.h"
 
-#include <SDL3MCP.h>
-
-#include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
 #include <utility>
-#include <vector>
 
-#include "Capture.h"
-#include "Input.h"
-#include "InputArguments.h"
-#include "Mouse.h"
 #include "SocketStream.h"
-#include "Tool.h"
-#include "ToolDefinitions.h"
-#include "ToolResult.h"
 
 namespace sdl3mcp {
 namespace {
@@ -134,73 +129,6 @@ SDL_AppResult Runtime::setWindow(SDL_Window* window) {
    return SDL_APP_CONTINUE;
 }
 
-SDL_AppResult Runtime::iterate() {
-   /*
-     The frame the app wrote since the last iterate serves every request that was
-     registered before it. Completing first keeps a request registered in this
-     pump from being answered by the frame the app wrote for the previous one.
-     A batch that failed to apply answers here too, one frame after it was
-     applied, with an error and no frame.
-   */
-   pipeline_.completeFailures();
-   pipeline_.completeWrittenFrame();
-
-   /*
-     The pump is the server loop: every available line is answered here, on the
-     app thread. Input and capture register their requests in this pass and are
-     applied to the frame below.
-   */
-   if (session_) {
-      session_->pump();
-   }
-
-   ++frameCounter_;
-   pipeline_.applyRegisteredInputs(frameCounter_);
-
-   /*
-     A transport error during the pump retires the session's orders. Drop the
-     requests they were going to answer instead of completing into a closed
-     stream.
-   */
-   if (session_ && !session_->isOpen()) {
-      pipeline_.discardRequests();
-   }
-
-#ifdef __EMSCRIPTEN__
-   /*
-     The browser's transport is the WebSocket, and a page with no client has
-     nothing left to serve: a session that had opened and then ended, or a dial
-     that reported an error, quits the app once. The dial is asynchronous, so
-     "not open" is also the normal state between AppInit and the first frame;
-     only a session that has opened (or failed) counts as an end.
-   */
-   if (session_) {
-      if (session_->isOpen()) {
-         sessionOpened_ = true;
-      } else if (!sessionClosed_ &&
-                 (sessionOpened_ || !session_->lastError().empty())) {
-         sessionClosed_ = true;
-         terminateRequested_ = true;
-      }
-   }
-#endif
-
-   /*
-     One quit request makes one SDL_EVENT_QUIT. A failed push restores the flag
-     so the next iterate retries instead of losing the request.
-   */
-   if (terminateRequested_) {
-      terminateRequested_ = false;
-      SDL_Event event{};
-      event.type = SDL_EVENT_QUIT;
-      if (!SDL_PushEvent(&event)) {
-         terminateRequested_ = true;
-      }
-   }
-
-   return SDL_APP_CONTINUE;
-}
-
 void Runtime::shutdown() {
    pipeline_.releaseHeldInput();
    pipeline_.discardRequests();
@@ -215,50 +143,6 @@ void Runtime::writeFrame(const std::uint8_t* data,
                          int width,
                          int height) noexcept {
    pipeline_.writeFrame(data, size, width, height, frameCounter_ + 1);
-}
-
-void Runtime::buildCatalog() {
-   for (const ToolDefinition& definition : applicationToolDefinitions()) {
-      Tool tool{definition.name, definition.description, definition.inputSchema, definition.annotations, {}};
-      if (definition.name == "sdl_info") {
-         tool.invoke = [this](ToolOrder, ToolCompletionDelegate& completion) {
-            completion.complete(ToolResult::text(infoToJson(infoSnapshot()).dump(2)));
-         };
-      } else if (definition.name == "sdl_input") {
-         tool.invoke = [this](ToolOrder order, ToolCompletionDelegate& completion) {
-            Result<InputRequest, ProtocolError> request =
-                parseInputArguments(order.arguments);
-            if (!request) {
-               completion.complete(
-                   ToolResult::text(std::move(request.error().message), true));
-               return;
-            }
-            pipeline_.registerInput(std::move(request->batch),
-                                    std::move(request->region), completion);
-         };
-      } else if (definition.name == "sdl_capture") {
-         tool.invoke = [this](ToolOrder order, ToolCompletionDelegate& completion) {
-            Result<CaptureArguments, ProtocolError> arguments =
-                parseCaptureArguments(order.arguments);
-            if (!arguments) {
-               completion.complete(
-                   ToolResult::text(std::move(arguments.error().message), true));
-               return;
-            }
-            if (window_ == nullptr) {
-               completion.complete(ToolResult::text("no window bound", true));
-               return;
-            }
-            pipeline_.registerCapture(std::move(arguments->region), completion);
-         };
-      } else if (definition.name == "sdl_terminate") {
-         tool.invoke = [this](ToolOrder, ToolCompletionDelegate& completion) {
-            terminateRequested_ = true;
-            completion.complete(ToolResult::text("termination requested"));
-         };
-      }
-      catalog_.add(std::move(tool));
-   }
 }
 
 Info Runtime::infoSnapshot() const {

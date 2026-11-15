@@ -172,9 +172,12 @@ set(sdl3mcp_common_sources
     src/common/Configuration-Usage.cpp
     src/common/JsonRpc.cpp
     src/common/Session.cpp
+    src/common/Session-Requests.cpp
     src/common/Stream.cpp
     src/common/ToolCatalog.cpp
     src/common/ToolDefinitions.cpp
+    src/common/ToolDefinitions-Info.cpp
+    src/common/ToolDefinitions-Input.cpp
     src/common/ToolResult.cpp
 )
 if(EMSCRIPTEN)
@@ -187,7 +190,12 @@ if(EMSCRIPTEN)
         src/common/SocketStream-WSEvents.cpp
     )
 else()
-    list(APPEND sdl3mcp_common_sources src/common/SocketStream.cpp)
+    # The native arm is two units too: the dial and close, then the writes,
+    # reads and pump; both share the PIMPL state in SocketStream-Native.h.
+    list(APPEND sdl3mcp_common_sources
+        src/common/SocketStream.cpp
+        src/common/SocketStream-IO.cpp
+    )
 endif()
 add_library(sdl3mcp_common_objects OBJECT ${sdl3mcp_common_sources})
 
@@ -237,8 +245,12 @@ if(SDL3MCP_BUILD_LIBRARY)
         src/lib/KeyMap.cpp
         src/lib/Mouse.cpp
         src/lib/Pipeline.cpp
+        src/lib/Pipeline-Frames.cpp
+        src/lib/Pipeline-Input.cpp
         src/lib/Replay.cpp
         src/lib/Runtime.cpp
+        src/lib/Runtime-Catalog.cpp
+        src/lib/Runtime-Iterate.cpp
         src/lib/TextInputScope.cpp
     )
     sdl3mcp_configure_object_target(sdl3mcp_lib_objects)

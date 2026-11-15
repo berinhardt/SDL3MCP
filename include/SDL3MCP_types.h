@@ -3,6 +3,10 @@
   and the release macros. A translation unit that only builds or reads a
   configuration includes this header, so it needs neither SDL nor the entry
   points in SDL3MCP.h.
+
+  It is separate on purpose: SDL3MCP::COMMON and src/common/Configuration.h
+  include it without SDL, and merging it into SDL3MCP.h would put SDL on the
+  common include path and break the Handler's SDL-free build.
 */
 
 #ifndef SDL3MCP_TYPES_H

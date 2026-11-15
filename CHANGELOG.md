@@ -23,8 +23,8 @@ linkage, SDL ownership and the nlohmann/json resolution all change.
   `#include <SDL3MCP/SDL3MCP.h>`.
 - **The library is static only.** `SDL3MCP_BUILD_SHARED`, the shared branch, the
   `shared` presets and the `DLL_EXPORT`/`SDL_STATIC_LIB` linkage macros are
-  gone; the header's linkage paragraph now says only that public symbols carry
-  `SDL_DECLSPEC` and `SDLCALL`.
+  gone, and the public declarations carry no linkage macro at all: no
+  `SDL_DECLSPEC` and no `SDLCALL`.
 - **The app links SDL, not the library.** `SDL3MCP::SDL3MCP` publishes no SDL
   target, include path or linkage macro, and the package no longer calls
   `find_dependency(SDL3)`. A consumer links `SDL3MCP::SDL3MCP` plus an SDL
@@ -35,6 +35,10 @@ linkage, SDL ownership and the nlohmann/json resolution all change.
   the vendored `third_party/nlohmann/json.hpp` are gone; resolution is an
   existing target, then `find_package(nlohmann_json)`, then a pinned `v3.12.0`
   download. It stays private and header-only.
+- **The test groups are derived.** `SDL3MCP_BUILD_HANDLER_TESTS` and
+  `SDL3MCP_BUILD_LIBRARY_TESTS` are gone: `HANDLER_TESTS` exists when
+  `SDL3MCP_BUILD_TESTS` and `SDL3MCP_BUILD_CLI` are both on, and `LIBRARY_TESTS`
+  when `SDL3MCP_BUILD_TESTS` and `SDL3MCP_BUILD_LIBRARY` are both on.
 - **`SDL3MCP::COMMON` is a real static library** built from exactly the objects
   the library and the Handler both compile, and no file in it includes SDL.
 - **The Node suite needs no flag.** `SDL3MCP_BUILD_NODE_TESTS` is gone: an

@@ -5,7 +5,7 @@
 
   A page has no fd and nothing to block on. `emscripten_websocket_new` starts the
   connection and the open, message, close and error events arrive later as
-  callbacks on the page's own thread (WebSocketStream-Events.cpp). The callbacks
+  callbacks on the page's own thread (SocketStream-WSEvents.cpp). The callbacks
   never answer anything themselves: they copy the bytes into a queue and record
   the close or error, and pump() feeds the queue through StreamBase exactly as
   the native arm feeds what recv() returned. That keeps the protocol layer on one
@@ -15,7 +15,7 @@
   HOST:PORT, on both platforms.
 */
 
-#include "WebSocketStream.h"
+#include "SocketStream.h"
 
 #include <emscripten/websocket.h>
 
@@ -25,7 +25,7 @@
 #include <utility>
 
 #include "Configuration.h"
-#include "SocketStream.h"
+#include "SocketStream-Websockets.h"
 
 namespace sdl3mcp {
 namespace {
@@ -152,7 +152,7 @@ bool SocketStream::sendBinary(const std::uint8_t* data, std::size_t size) {
    return true;
 }
 
-int SocketStream::writeFd() const noexcept {
+int SocketStream::outputFd() const noexcept {
    /* The browser pushes its writes; there is no descriptor to poll. */
    return -1;
 }

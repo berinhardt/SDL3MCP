@@ -178,7 +178,7 @@ std::string endpointText(const std::string& host, std::uint16_t port) {
 /* One fd pair with a line buffer, enough for both a pipe and a socket. */
 struct FdChannel {
    int readFd = -1;
-   int writeFd = -1;
+   int outputFd = -1;
    std::string buffer;
 
    bool readLine(std::string& line, int timeoutMs = kLineTimeoutMs) {
@@ -276,7 +276,7 @@ struct FdChannel {
       const char* bytes = static_cast<const char*>(data);
       std::size_t offset = 0;
       while (offset < size) {
-         const ssize_t written = ::write(writeFd, bytes + offset, size - offset);
+         const ssize_t written = ::write(outputFd, bytes + offset, size - offset);
          if (written < 0) {
             if (errno == EINTR) {
                continue;
@@ -791,7 +791,7 @@ struct FakeApp {
          return false;
       }
       channel.readFd = fd;
-      channel.writeFd = fd;
+      channel.outputFd = fd;
       return true;
    }
 
@@ -917,7 +917,7 @@ void startServer(TestProcess& process,
                  {"--listen=127.0.0.1:0", "--timeout-ms=" + std::to_string(timeoutMs)});
    port = process.readListeningPort();
    client.channel.readFd = process.fromChild;
-   client.channel.writeFd = process.toChild;
+   client.channel.outputFd = process.toChild;
 }
 
 void attachFakeApp(FakeApp& app,
@@ -1026,7 +1026,7 @@ void startServerWith(TestProcess& process,
    process.start(g_handler, arguments);
    port = process.readListeningPort();
    client.channel.readFd = process.fromChild;
-   client.channel.writeFd = process.toChild;
+   client.channel.outputFd = process.toChild;
 }
 
 /* Writes an executable shell script. */
@@ -2381,7 +2381,7 @@ TEST_CASE("a relay dials its upstream and serves a dial-in app") {
 
    McpClient client;
    client.channel.readFd = upstreamFd;
-   client.channel.writeFd = upstreamFd;
+   client.channel.outputFd = upstreamFd;
    CHECK(!client.initialize().contains("error"));
    CHECK((toolNames(client.toolsList()) ==
           std::vector<std::string>{"sdl_capture", "sdl_info", "sdl_input",
@@ -2448,7 +2448,7 @@ TEST_CASE("a relay with targets spawns an app through the default listener") {
 
    McpClient client;
    client.channel.readFd = upstreamFd;
-   client.channel.writeFd = upstreamFd;
+   client.channel.outputFd = upstreamFd;
    CHECK(!client.initialize().contains("error"));
 
    const nlohmann::json idle = client.toolsList();

@@ -44,7 +44,8 @@ as the current contract.
   `SDL_RenderReadPixels(renderer, rect)` returns an `SDL_Surface *`.
 - **Linux.** The Handler is POSIX-only (one `poll` loop, `signalfd`, `pidfd`,
   `fork`/`exec`). A Windows configure stops with a `FATAL_ERROR`; the Windows
-  work is a TODO in `src/SocketStream.cpp` and `src/StdioStream.cpp`.
+  work is a TODO in `src/common/SocketStream.cpp` and
+  `src/handler/StdioStream.cpp`.
 - **C11 or C++20** for a consumer. The library itself is C++20 and its headers
   are self-contained.
 - **nlohmann/json** at build time, resolved by this project's dependency
@@ -81,14 +82,15 @@ The Handler half needs no SDL package, so it also has a configure of its own:
 
 ```sh
 cmake -S . -B build/handler -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-  -DSDL3MCP_BUILD_LIBRARY=OFF -DSDL3MCP_BUILD_CLI=ON \
-  -DSDL3MCP_BUILD_HANDLER_TESTS=ON -DSDL3MCP_BUILD_LIBRARY_TESTS=OFF
+  -DSDL3MCP_BUILD_LIBRARY=OFF -DSDL3MCP_BUILD_CLI=ON
 cmake --build build/handler --parallel
 ctest --test-dir build/handler --output-on-failure
 ```
 
-`-DCMAKE_DISABLE_FIND_PACKAGE_SDL3=TRUE` makes any `find_package(SDL3)` a
-configure error, so it is the proof that nothing on this path asks for SDL.
+The library half is off, so its test group derives off and this configure runs
+the Handler suites alone. `-DCMAKE_DISABLE_FIND_PACKAGE_SDL3=TRUE` makes any
+`find_package(SDL3)` a configure error, so it is the proof that nothing on this
+path asks for SDL.
 `handler_only_check` in CTest runs exactly this configure/build/test, so the
 gate catches a Handler unit that starts to depend on SDL. This build packages
 nothing: the Handler is a build-tree artifact and the library half is off.
@@ -109,15 +111,12 @@ free.
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `SDL3MCP_BUILD_LIBRARY` | `ON` | Build the library and its SDL app half. `OFF` leaves the SDL-free common core, the Handler and the Handler tests, and needs no SDL package. |
-| `SDL3MCP_BUILD_TESTS` | `ON` when top-level | Convenience: sets the default of both test groups. Set a group explicitly to override it. |
-| `SDL3MCP_BUILD_HANDLER_TESTS` | follows `SDL3MCP_BUILD_TESTS` | Build the SDL-free suites, labelled `HANDLER_TESTS`: `handler_tests`, `web_tests`, `protocol_core_tests`, the configure-time checks and, at the top level, the no-SDL fixture. |
-| `SDL3MCP_BUILD_LIBRARY_TESTS` | follows `SDL3MCP_BUILD_TESTS`, and `OFF` when the library is off | Build the suites that need SDL to configure, build or run — those that link the library or the app half, plus `targets_check` and `readme_check` — labelled `LIBRARY_TESTS`, including the Emscripten Node suites. |
+| `SDL3MCP_BUILD_LIBRARY` | `ON` | Build the library and its SDL app half. `OFF` leaves the SDL-free common core, the Handler and its suites, and needs no SDL package. |
+| `SDL3MCP_BUILD_TESTS` | `ON` when top-level | Build the test groups each built half derives; §Tests states the derivation. |
 | `SDL3MCP_BUILD_CLI` | `OFF` | Build the `sdl3mcp` Handler. |
-| `SDL3MCP_HANDLER_ONLY_FIXTURE` | `ON` | Internal, test-only: register `handler_only_check`, the nested SDL-free configure/build/test. It is registered only when SDL3MCP is the top-level project (the standalone gate owns the invariant); an embedded parent never runs it, and the nested tree turns it off so the recursion stops. |
 
-`SDL3MCP_BUILD_LIBRARY_TESTS=ON` with `SDL3MCP_BUILD_LIBRARY=OFF` is a configure
-error: the library suites link a target that build does not create.
+The test groups are not options, so a combination that cannot work cannot be
+requested.
 
 ### Dependencies
 
@@ -146,8 +145,7 @@ nlohmann/json and the Handler's own code, and nothing else.
 A Handler-only build (`SDL3MCP_BUILD_LIBRARY=OFF`) keeps `SDL3MCP::SERVER` and
 `SDL3MCP::COMMON`; it has no `SDL3MCP::SDL3MCP` target and installs no package.
 
-The object libraries behind them (`sdl3mcp_common_objects`,
-`sdl3mcp_app_objects`, `sdl3mcp_server_objects`) are internal. **The library is
+The object libraries behind them are internal. **The library is
 static only and publishes no SDL:** it carries no SDL target, no SDL include
 path and no linkage macro. A consumer links `SDL3MCP::SDL3MCP` plus the SDL
 target it chooses on its own link line:
@@ -183,10 +181,10 @@ A page that links the library must add `-lwebsocket.js` to its own final link,
 as §Targets shows: the library no longer carries it, and the flag is what
 satisfies the `emscripten_websocket_*` calls.
 
-The browser build compiles `src/WebSocketStream.cpp` in place of
-`src/SocketStream.cpp` and `src/StdioStream.cpp`. It accepts only `--mcp=off`
-and `--mcp=HOST:PORT`; there is no stdio and no `--mcp-help` or `--mcp-version`,
-because a page has no command line to reach them.
+The browser build compiles `src/common/SocketStream-Websockets.cpp` in place of
+`src/common/SocketStream.cpp` and `src/handler/StdioStream.cpp`. It accepts only
+`--mcp=off` and `--mcp=HOST:PORT`; there is no stdio and no `--mcp-help` or
+`--mcp-version`, because a page has no command line to reach them.
 
 ## Quick start
 
@@ -542,15 +540,20 @@ registered, with `--mcp=<the Handler's listener endpoint>`.
 ## The library API
 
 `include/SDL3MCP.h` is the complete public surface, and a consumer includes it
-from the include root as `<SDL3MCP.h>`. It compiles as C11 and as C++20, and
-public symbols carry SDL's `SDL_DECLSPEC` and `SDLCALL`. The library is static
-only and publishes no SDL, so the consumer names SDL on its own link line
-(§Targets).
+from the include root as `<SDL3MCP.h>`. It compiles as C11 and as C++20. The
+library is static only and declares no linkage macro — no import/export
+attribute and no calling convention — because a static archive needs neither and
+Windows is a configure error; `SDLCALL` is empty on Linux, so the ABI is
+unchanged. The library publishes no SDL, so the consumer names SDL on its own
+link line (§Targets).
 
 The configuration value and the release macros live beside it in
 `include/SDL3MCP_types.h`: it includes neither SDL nor the entry points, so a
 translation unit that only builds or reads a configuration needs no SDL headers.
-`<SDL3MCP.h>` includes it for the rest.
+`<SDL3MCP.h>` includes it for the rest. It stays separate because
+`SDL3MCP::COMMON` and `src/common/Configuration.h` include it without SDL:
+merging it into `<SDL3MCP.h>` would put SDL on the common include path and break
+the Handler's SDL-free build.
 
 ### Configuration
 
@@ -1356,7 +1359,8 @@ bridge and the throwaway Firefox profile described in §Spawning.
 ## The browser
 
 A page has no descriptors, no threads, and no command line. The library's
-browser arm (`src/WebSocketStream.cpp`) replaces the native socket:
+browser arm (`src/common/SocketStream-Websockets.cpp`) replaces the native
+socket:
 
 - The page reads `?mcp=HOST:PORT` from `window.location.search`, percent-decodes
   it, and hands the same `--mcp=<value>` argument to the one configuration
@@ -1404,11 +1408,15 @@ browser arm (`src/WebSocketStream.cpp`) replaces the native socket:
 ## Tests
 
 `ctest --test-dir build --output-on-failure` runs both groups; `ctest -L
-HANDLER_TESTS` and `ctest -L LIBRARY_TESTS` select one. The matrix in
-§Dependencies is the test contract, and the split follows it: a test is a
+HANDLER_TESTS` and `ctest -L LIBRARY_TESTS` select one. Neither group is an
+option: `HANDLER_TESTS` exists when `SDL3MCP_BUILD_TESTS` and `SDL3MCP_BUILD_CLI`
+are both on, and `LIBRARY_TESTS` when `SDL3MCP_BUILD_TESTS` and
+`SDL3MCP_BUILD_LIBRARY` are both on, so a group is present exactly when the half
+it exercises is built. The matrix in §Dependencies is the test contract, and the
+split follows it: a test is a
 `LIBRARY_TESTS` test when it needs SDL to configure, build or run, or when it
 tests the library package. Everything else is `HANDLER_TESTS`, which needs no
-SDL. `LIBRARY_TESTS` links the library (or the app object library), except
+SDL. `LIBRARY_TESTS` links the library (or the lib object library), except
 `targets_check` and `readme_check`: they test the library package and need SDL
 at configure/build, but link no SDL themselves.
 
@@ -1455,7 +1463,7 @@ tests the library package:
 
 The Emscripten configure builds no POSIX suite. Its two suites run under Node
 against a local WebSocket server, and they are library tests: they are
-registered when `SDL3MCP_BUILD_LIBRARY_TESTS` is on, which is the default at the
+registered when the library test group is derived, which it is by default at the
 top level:
 
 - `node_websocket_tests` drives the transport arm — framing, split messages, the

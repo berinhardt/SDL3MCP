@@ -74,7 +74,7 @@ class Stream {
      poll entry covers both directions; stdio reads stdin and writes stdout, so
      the write end needs an entry of its own. -1 means there is none.
    */
-   virtual int writeFd() const noexcept { return -1; }
+   virtual int outputFd() const noexcept { return -1; }
 
    void setHandler(StreamHandler* handler) noexcept { handler_ = handler; }
    StreamHandler* handler() const noexcept { return handler_; }

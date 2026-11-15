@@ -1,11 +1,11 @@
-#include "Input-Pointer.h"
+#include "InputPointer.h"
 
 #include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
 
-#include "Input-Properties.h"
+#include "InputProperties.h"
 
 namespace sdl3mcp {
 namespace {

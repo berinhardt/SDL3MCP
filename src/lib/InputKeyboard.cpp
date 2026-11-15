@@ -1,11 +1,11 @@
-#include "Input-Keyboard.h"
+#include "InputKeyboard.h"
 
 #include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
 
-#include "Input-Properties.h"
+#include "InputProperties.h"
 
 namespace sdl3mcp {
 namespace {

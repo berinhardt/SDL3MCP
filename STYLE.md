@@ -24,8 +24,9 @@ together, and `docs/architecture.md` owns it.
   and the message names the file and the limit; a file over 150 lines warns
   without failing. 150 is the target, not the ceiling: a unit that goes past 150
   is due a split on its next change, and one at 300 is not reviewable.
-- **Scope: the product sources.** `include/`, `src/`, and the Handler's tree
-  (`src/handler/`). `tests/` and `third_party/` are not in scope.
+- **Scope: the product sources.** `include/` and `src/`, which carries the
+  `src/common/`, `src/lib/` and `src/handler/` halves. `tests/` and
+  `third_party/` are not in scope.
 - **Tests are exempt on purpose.** A suite's length comes from the scenarios it
   covers, not from a responsibility its author chose. Cutting a test file to fit
   the rule would cut coverage, so no test file is split for size.
@@ -67,12 +68,13 @@ reviewer make it. Cite the rule in review instead of arguing from taste.
 - One primary type per file where practical: a header declares the type its
   matching `.cpp` defines, and the two share a basename.
 - Platform arms of one type share a header and take the platform suffix:
-  `SocketStream.cpp` is the native implementation and `WebSocketStream.cpp` is
-  the Emscripten one. The Emscripten arm's header, `WebSocketStream.h`, carries
-  that arm's shared state under the shared `SocketStream` type —
-  `struct SocketStream::Native` and the close codes — and its basename is what
-  `IncludeIsMainRegex` needs: both `WebSocketStream.cpp` and
-  `WebSocketStream-Events.cpp` strip to it, so it leads their includes.
+  `SocketStream.cpp` is the native implementation,
+  `SocketStream-Websockets.cpp` the Emscripten one, and
+  `SocketStream-WSEvents.cpp` its events half. Both `.cpp` units strip to
+  `SocketStream.h` through `IncludeIsMainRegex`, so it leads their includes; the
+  Emscripten arm's own header, `SocketStream-Websockets.h`, carries that arm's
+  shared state under the shared `SocketStream` type —
+  `struct SocketStream::Native` and the close codes.
 - `include/` is the flat public surface and exposes the C API only; it never
   includes a private `src/` header. `SDL3MCP_types.h` includes neither SDL nor
   the entry points, so a unit can take the types without an SDL include path.
@@ -183,11 +185,11 @@ caller's convenience; it is not a collaborator and does not get a class.
   what belongs in it). `SDL3MCP::SDL3MCP` and the installed package exist when
   the library half is built; a Handler-only build (`SDL3MCP_BUILD_LIBRARY=OFF`)
   keeps `SDL3MCP::SERVER` and `SDL3MCP::COMMON`. The object libraries
-  `sdl3mcp_common_objects`, `sdl3mcp_app_objects`, and `sdl3mcp_server_objects`
-  stay internal.
+  `sdl3mcp_common_objects`, `sdl3mcp_lib_objects`, and
+  `sdl3mcp_handler_objects` stay internal.
 - The library is static only and publishes no SDL: no SDL target, include path,
   linkage macro or Emscripten flag travels with it, so the app names SDL itself.
-  Tests link the common archive and the app object library for private symbols,
+  Tests link the common archive and the lib object library for private symbols,
   and the public target for the C surface.
 - No new third-party dependency without a named blocker. Runtime dependencies
   stay SDL3-only.

@@ -127,16 +127,24 @@ endfunction()
 # review.
 sdl3mcp_assert_no_sdl_include_dirs(SDL3MCP::SDL3MCP)
 sdl3mcp_assert_no_sdl_include_dirs(SDL3MCP::COMMON)
-sdl3mcp_assert_no_sdl_include_dirs(sdl3mcp_server_objects)
+sdl3mcp_assert_no_sdl_include_dirs(sdl3mcp_handler_objects)
 
-# The Handler links COMMON, never SDL.
-get_target_property(sdl3mcp_server_link_libraries sdl3mcp_server_objects
-    INTERFACE_LINK_LIBRARIES)
-if(sdl3mcp_server_link_libraries)
-    foreach(sdl3mcp_entry IN LISTS sdl3mcp_server_link_libraries)
+# The Handler executable links COMMON, never SDL. The object library carries the
+# sources, so the link block is where the two halves meet.
+get_target_property(sdl3mcp_handler_link_libraries sdl3mcp LINK_LIBRARIES)
+set(sdl3mcp_links_common FALSE)
+if(sdl3mcp_handler_link_libraries)
+    foreach(sdl3mcp_entry IN LISTS sdl3mcp_handler_link_libraries)
         if(sdl3mcp_entry MATCHES "^SDL3::")
             message(FATAL_ERROR
                 "SDL3MCP: the Handler links ${sdl3mcp_entry}; it compiles no SDL")
         endif()
+        if(sdl3mcp_entry STREQUAL "SDL3MCP_COMMON")
+            set(sdl3mcp_links_common TRUE)
+        endif()
     endforeach()
+endif()
+if(NOT sdl3mcp_links_common)
+    message(FATAL_ERROR
+        "SDL3MCP: the Handler does not link SDL3MCP_COMMON")
 endif()

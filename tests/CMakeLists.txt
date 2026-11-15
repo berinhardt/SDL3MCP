@@ -16,7 +16,7 @@
 #                  only when the library half is built.
 #
 # A suite that includes the private src/ headers links the common archive and
-# the app object library: the sources are compiled once for the library, and
+# the lib object library: the sources are compiled once for the library, and
 # the suite reaches internal symbols the C ABI does not name. A suite that uses
 # only the public C API links SDL3MCP::SDL3MCP, so the public surface is
 # exercised too. A suite that links an object library names SDL itself, because
@@ -25,9 +25,10 @@
 # A browser configure has no POSIX test suite. Its suites are the WebSocket
 # transport arm and the whole app path, both library tests: they link the
 # archive and SDL, and run under Node against a local server. An Emscripten
-# configure with the library tests off registers nothing.
+# configure with no library half derives no library test group and registers
+# nothing.
 if(EMSCRIPTEN)
-    if(NOT SDL3MCP_BUILD_LIBRARY_TESTS)
+    if(NOT SDL3MCP_LIBRARY_TESTS)
         return()
     endif()
 
@@ -48,7 +49,7 @@ if(EMSCRIPTEN)
     target_compile_features(sdl3mcp_test_websocket_node PRIVATE
         cxx_std_20)
     target_include_directories(sdl3mcp_test_websocket_node PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../src/common"
     )
     target_link_libraries(sdl3mcp_test_websocket_node PRIVATE
         SDL3MCP::SDL3MCP
@@ -99,11 +100,11 @@ endif()
 
 find_package(Threads REQUIRED)
 
-if(SDL3MCP_BUILD_LIBRARY_TESTS)
+if(SDL3MCP_LIBRARY_TESTS)
     # The private half of the library: protocol, session, tools, configuration
-    # and the app-side pipeline. The common archive and the app object library
+    # and the app-side pipeline. The common archive and the lib object library
     # keep the suite reachable to private symbols.
-    set(SDL3MCP_TEST_INTERNAL_LIBRARY SDL3MCP_COMMON sdl3mcp_app_objects)
+    set(SDL3MCP_TEST_INTERNAL_LIBRARY SDL3MCP_COMMON sdl3mcp_lib_objects)
 
     # One doctest suite is one executable, so a failing case is reported by
     # doctest and the remaining cases still run. A suite named <family>_tests
@@ -114,7 +115,8 @@ if(SDL3MCP_BUILD_LIBRARY_TESTS)
     #   LIBRARY <targets>  library or object libraries to link instead of the
     #                      internal one, for suites that use only the public C API.
     #   LIBS <targets>     extra link libraries such as nlohmann_json or Threads.
-    #   INCLUDES <dirs>    extra include directories beyond ../src.
+    #   INCLUDES <dirs>    extra include directories beyond the lib and common
+    #                      halves.
     #   NO_TEST            create the executable without registering a test, for
     #                      a suite that needs its own CTest command or registers
     #                      several tests, as library_lifecycle_tests does.
@@ -131,7 +133,8 @@ if(SDL3MCP_BUILD_LIBRARY_TESTS)
         add_executable(${sdl3mcp_test_target} ${sdl3mcp_test_source})
         target_compile_features(${sdl3mcp_test_target} PRIVATE cxx_std_20)
         target_include_directories(${sdl3mcp_test_target} PRIVATE
-            "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../src/lib"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../src/common"
             ${sdl3mcp_test_INCLUDES}
         )
         target_link_libraries(${sdl3mcp_test_target} PRIVATE
@@ -270,14 +273,14 @@ if(SDL3MCP_BUILD_LIBRARY_TESTS)
     endif()
 endif()
 
-if(SDL3MCP_BUILD_HANDLER_TESTS)
+if(SDL3MCP_HANDLER_TESTS)
     # The protocol core is SDL-free, so its suite links the common library alone:
     # a wire unit that starts calling SDL breaks this build instead of dragging a
     # window and a GPU into a protocol test.
     add_executable(sdl3mcp_test_protocol_core protocol_core_tests.cpp)
     target_compile_features(sdl3mcp_test_protocol_core PRIVATE cxx_std_20)
     target_include_directories(sdl3mcp_test_protocol_core PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../src/common"
         "${SDL3MCP_GENERATED_DIR}"
         ${SDL3MCP_JSON_INCLUDE_DIRS}
     )
@@ -291,17 +294,17 @@ if(SDL3MCP_BUILD_HANDLER_TESTS)
 
     # The Handler end to end: the real executable over pipes and sockets, driven
     # by a test MCP client and a fake application that speaks the library's wire
-    # protocol. No SDL is on this link line, so a server unit that starts calling
+    # protocol. No SDL is on this link line, so a handler unit that starts calling
     # SDL breaks the test build instead of dragging a window into the Handler.
     if(TARGET sdl3mcp)
         add_executable(sdl3mcp_test_handler handler_tests.cpp)
         target_compile_features(sdl3mcp_test_handler PRIVATE cxx_std_20)
         target_include_directories(sdl3mcp_test_handler PRIVATE
-            "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../src/common"
             "${CMAKE_CURRENT_SOURCE_DIR}/../src/handler"
         )
         target_link_libraries(sdl3mcp_test_handler PRIVATE
-            sdl3mcp_server_objects
+            sdl3mcp_handler_objects
             SDL3MCP_COMMON
             nlohmann_json::nlohmann_json
             doctest::doctest
@@ -314,7 +317,7 @@ if(SDL3MCP_BUILD_HANDLER_TESTS)
         add_executable(sdl3mcp_handler_fake_app handler_fake_app.cpp)
         target_compile_features(sdl3mcp_handler_fake_app PRIVATE cxx_std_20)
         target_include_directories(sdl3mcp_handler_fake_app PRIVATE
-            "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../src/common"
         )
         target_link_libraries(sdl3mcp_handler_fake_app PRIVATE
             SDL3MCP_COMMON
@@ -334,16 +337,17 @@ if(SDL3MCP_BUILD_HANDLER_TESTS)
         set_tests_properties(handler_tests PROPERTIES LABELS HANDLER_TESTS)
 
         # The web source and the throwaway profile are pure value/filesystem
-        # operations, so their suite links the server objects without a Handler
-        # process or a browser.
+        # operations, so their suite links the handler objects and the common
+        # archive without a Handler process or a browser.
         add_executable(sdl3mcp_test_web web_tests.cpp)
         target_compile_features(sdl3mcp_test_web PRIVATE cxx_std_20)
         target_include_directories(sdl3mcp_test_web PRIVATE
-            "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../src/common"
             "${CMAKE_CURRENT_SOURCE_DIR}/../src/handler"
         )
         target_link_libraries(sdl3mcp_test_web PRIVATE
-            sdl3mcp_server_objects
+            sdl3mcp_handler_objects
+            SDL3MCP_COMMON
             doctest::doctest
             Threads::Threads
         )
@@ -364,11 +368,11 @@ if(SDL3MCP_BUILD_HANDLER_TESTS)
     set_tests_properties(web_registration_check PROPERTIES LABELS HANDLER_TESTS)
 
     # The SDL-free invariant, proven by a configure/build/test of its own: the
-    # library half and its suites are off, SDL discovery is disabled, and the
-    # Handler plus the Handler suites must still pass. Forwarding the parent's
-    # generator and the dependencies it already resolved keeps the nested
-    # configure off the network. The nested tree passes the fixture option OFF,
-    # so the fixture does not register itself again.
+    # library half is off, SDL discovery is disabled, and the Handler plus the
+    # Handler suites must still pass. Forwarding the parent's generator and the
+    # dependencies it already resolved keeps the nested configure off the
+    # network. The nested configure turns this variable off, so the fixture does
+    # not register itself again.
     #
     # Only the standalone gate registers this fixture. An embedded parent owns
     # neither doctest nor nlohmann/json in the variables the script forwards: it
@@ -376,8 +380,12 @@ if(SDL3MCP_BUILD_HANDLER_TESTS)
     # configure would download them and a consumer's ctest would grow a network
     # dependency and a cold nested build. The SDL-free invariant is this
     # project's gate to keep, so the parent must not run it.
-    option(SDL3MCP_HANDLER_ONLY_FIXTURE
-        "Register the nested SDL-free Handler build as a test (standalone only)" ON)
+    #
+    # Internal, not a cache option or a README row: it is the gate's own switch
+    # for its nested configure, not part of the public build surface.
+    if(NOT DEFINED SDL3MCP_HANDLER_ONLY_FIXTURE)
+        set(SDL3MCP_HANDLER_ONLY_FIXTURE ON)
+    endif()
     if(PROJECT_IS_TOP_LEVEL AND SDL3MCP_HANDLER_ONLY_FIXTURE)
         set(sdl3mcp_handler_only_command
             "-DSDL3MCP_SOURCE_DIR=${PROJECT_SOURCE_DIR}"

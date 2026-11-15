@@ -19,8 +19,8 @@
 #include <variant>
 
 #include "Capture.h"
-#include "Input-Arguments.h"
 #include "Input.h"
+#include "InputArguments.h"
 
 namespace {
 

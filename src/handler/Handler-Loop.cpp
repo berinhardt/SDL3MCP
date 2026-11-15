@@ -102,13 +102,13 @@ int Handler::run() {
       */
       std::size_t clientWriteIndex = 0;
       if (clientSession_ != nullptr && clientSession_->stream().wantsWrite()) {
-         const int writeFd = clientSession_->stream().writeFd();
-         if (writeFd < 0) {
+         const int outputFd = clientSession_->stream().outputFd();
+         if (outputFd < 0) {
             /* Nothing to watch; the stream reports the failure itself. */
-         } else if (writeFd == clientFd_) {
+         } else if (outputFd == clientFd_) {
             descriptors[0].events |= POLLOUT;
          } else {
-            descriptors.push_back(pollfd{writeFd, POLLOUT, 0});
+            descriptors.push_back(pollfd{outputFd, POLLOUT, 0});
             clientWriteIndex = descriptors.size() - 1;
          }
       }

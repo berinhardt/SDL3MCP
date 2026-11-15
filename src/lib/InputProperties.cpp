@@ -1,4 +1,4 @@
-#include "Input-Properties.h"
+#include "InputProperties.h"
 
 #include <cmath>
 #include <string>

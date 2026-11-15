@@ -22,41 +22,27 @@ option(SDL3MCP_BUILD_LIBRARY
 #                  suites that link the library or the app half, plus the
 #                  package checks (targets_check, readme_check), including the
 #                  Emscripten Node suites.
-# SDL3MCP_BUILD_TESTS is the convenience that enables both: it sets their
-# defaults, and an explicit group option overrides it.
+# Neither group is an option: each is derived from the half it exercises, so a
+# suite group exists exactly when that half is built. SDL3MCP_BUILD_TESTS is
+# the single switch; a Handler-only configure gets HANDLER_TESTS and no SDL.
 option(SDL3MCP_BUILD_TESTS
-    "Enable both test groups; set a group to override its default"
+    "Build the test suites derived from the half each group exercises"
     ${PROJECT_IS_TOP_LEVEL})
 
+option(SDL3MCP_BUILD_CLI "Build the sdl3mcp Handler executable" OFF)
+
+set(SDL3MCP_HANDLER_TESTS FALSE)
+set(SDL3MCP_LIBRARY_TESTS FALSE)
 if(SDL3MCP_BUILD_TESTS)
-    set(SDL3MCP_HANDLER_TESTS_DEFAULT ON)
-else()
-    set(SDL3MCP_HANDLER_TESTS_DEFAULT OFF)
-endif()
-# The library suites link the library and the app half, so they cannot exist
-# without them. Off here keeps `-DSDL3MCP_BUILD_LIBRARY=OFF` a valid configure
-# without also remembering the library tests; an explicit ON stops below.
-if(SDL3MCP_BUILD_TESTS AND SDL3MCP_BUILD_LIBRARY)
-    set(SDL3MCP_LIBRARY_TESTS_DEFAULT ON)
-else()
-    set(SDL3MCP_LIBRARY_TESTS_DEFAULT OFF)
+    if(SDL3MCP_BUILD_CLI)
+        set(SDL3MCP_HANDLER_TESTS TRUE)
+    endif()
+    if(SDL3MCP_BUILD_LIBRARY)
+        set(SDL3MCP_LIBRARY_TESTS TRUE)
+    endif()
 endif()
 
-option(SDL3MCP_BUILD_HANDLER_TESTS
-    "Build the SDL-free Handler suites, labelled HANDLER_TESTS"
-    ${SDL3MCP_HANDLER_TESTS_DEFAULT})
-option(SDL3MCP_BUILD_LIBRARY_TESTS
-    "Build the library and app suites, labelled LIBRARY_TESTS"
-    ${SDL3MCP_LIBRARY_TESTS_DEFAULT})
-
-if(SDL3MCP_BUILD_LIBRARY_TESTS AND NOT SDL3MCP_BUILD_LIBRARY)
-    message(FATAL_ERROR
-        "SDL3MCP: SDL3MCP_BUILD_LIBRARY_TESTS is ON but "
-        "SDL3MCP_BUILD_LIBRARY is OFF: the library suites link the library and "
-        "the app half")
-endif()
-
-if(SDL3MCP_BUILD_HANDLER_TESTS OR SDL3MCP_BUILD_LIBRARY_TESTS)
+if(SDL3MCP_HANDLER_TESTS OR SDL3MCP_LIBRARY_TESTS)
     set(SDL3MCP_TESTS_ENABLED TRUE)
 else()
     set(SDL3MCP_TESTS_ENABLED FALSE)
@@ -90,8 +76,6 @@ if(SDL3MCP_TESTS_ENABLED AND NOT TARGET doctest::doctest)
         "v2.5.3 download")
 endif()
 
-option(SDL3MCP_BUILD_CLI "Build the sdl3mcp Handler executable" OFF)
-
 # Executable targets opt into app_spawn_<alias> by registering here:
 #   sdl3mcp_app(<alias> <target> [ARGS <arg>...])
 # and Emscripten pages opt into the same tools with:
@@ -105,21 +89,21 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/SDL3MCPRegistration.cmake")
 #
 # The lookup is conditional: the Handler and its suites compile no SDL, so a
 # Handler-only configure must not require the package. It runs when the
-# library half (or its tests) is on, and tests/handler_only_check.cmake proves
-# the absence with CMAKE_DISABLE_FIND_PACKAGE_SDL3=TRUE.
+# library half is on, and tests/handler_only_check.cmake proves the absence with
+# CMAKE_DISABLE_FIND_PACKAGE_SDL3=TRUE.
 #
 # Reading that variable here is also what keeps a Handler-only configure from
 # reporting it as unused, and the check names the one combination that cannot
 # work: the library half asked for with its only provider disabled.
 if(CMAKE_DISABLE_FIND_PACKAGE_SDL3
    AND NOT TARGET SDL3::SDL3
-   AND (SDL3MCP_BUILD_LIBRARY OR SDL3MCP_BUILD_LIBRARY_TESTS))
+   AND SDL3MCP_BUILD_LIBRARY)
     message(FATAL_ERROR
         "SDL3MCP: the library half needs SDL, but "
         "CMAKE_DISABLE_FIND_PACKAGE_SDL3 is set and no SDL3::SDL3 target "
         "exists")
 endif()
-if(SDL3MCP_BUILD_LIBRARY OR SDL3MCP_BUILD_LIBRARY_TESTS)
+if(SDL3MCP_BUILD_LIBRARY)
     if(NOT TARGET SDL3::SDL3)
         find_package(SDL3 CONFIG REQUIRED)
     endif()
@@ -174,20 +158,24 @@ configure_file(
 # the unit tests can compose them without a second copy of the sources:
 #   * common: JSON-RPC, tools, the session, the stream, configuration and the
 #     dial. It compiles no SDL, so the Handler can link it without SDL.
-#   * app: the C API, the runtime, and the input/replay/capture/info half. This
+#   * lib: the C API, the runtime, and the input/replay/capture/info half. This
 #     is the only half that needs SDL.
-#   * server: the Handler. It links common and never SDL.
+#   * handler: the Handler. It links common and never SDL.
+#
+# Each directory is a bare include root for the targets that need it; there is
+# no src/ catch-all, so a unit that reaches across halves names the directory it
+# reaches into.
 set(sdl3mcp_common_sources
-    src/Configuration.cpp
-    src/Configuration-Arguments.cpp
-    src/Configuration-Endpoint.cpp
-    src/Configuration-Usage.cpp
-    src/JsonRpc.cpp
-    src/Session.cpp
-    src/Stream.cpp
-    src/ToolCatalog.cpp
-    src/ToolDefinitions.cpp
-    src/ToolResult.cpp
+    src/common/Configuration.cpp
+    src/common/Configuration-Arguments.cpp
+    src/common/Configuration-Endpoint.cpp
+    src/common/Configuration-Usage.cpp
+    src/common/JsonRpc.cpp
+    src/common/Session.cpp
+    src/common/Stream.cpp
+    src/common/ToolCatalog.cpp
+    src/common/ToolDefinitions.cpp
+    src/common/ToolResult.cpp
 )
 if(EMSCRIPTEN)
     # A browser has no descriptor and no second thread: the WebSocket arm
@@ -195,16 +183,16 @@ if(EMSCRIPTEN)
     # The arm is two units: the dial, writes and pump, plus the callbacks and
     # the byte queue they fill.
     list(APPEND sdl3mcp_common_sources
-        src/WebSocketStream.cpp
-        src/WebSocketStream-Events.cpp
+        src/common/SocketStream-Websockets.cpp
+        src/common/SocketStream-WSEvents.cpp
     )
 else()
-    list(APPEND sdl3mcp_common_sources src/SocketStream.cpp)
+    list(APPEND sdl3mcp_common_sources src/common/SocketStream.cpp)
 endif()
 add_library(sdl3mcp_common_objects OBJECT ${sdl3mcp_common_sources})
 
-# The common and app object libraries share a compile surface: the public
-# headers, json's include path and hidden visibility. The app library adds SDL
+# The common and lib object libraries share a compile surface: the public
+# headers, json's include path and hidden visibility. The lib library adds SDL
 # afterwards, because it is the only half that needs it.
 function(sdl3mcp_configure_object_target sdl3mcp_object_target)
     target_compile_features(${sdl3mcp_object_target} PRIVATE cxx_std_20)
@@ -228,38 +216,44 @@ endfunction()
 # that, so a stray SDL include in a common file fails the Handler build.
 sdl3mcp_configure_object_target(sdl3mcp_common_objects)
 
-# The app half is the library's other half and the only code that names SDL. A
+# The lib half is the library's other half and the only code that names SDL. A
 # Handler-only build leaves it out, so no SDL include path or target exists
 # anywhere in that build.
 if(SDL3MCP_BUILD_LIBRARY)
-    add_library(sdl3mcp_app_objects OBJECT
-        src/Api.cpp
-        src/AppInput.cpp
-        src/Capture.cpp
-        src/Frame.cpp
-        src/Info.cpp
-        src/Input.cpp
-        src/Input-Actions.cpp
-        src/Input-Arguments.cpp
-        src/Input-Chord.cpp
-        src/Input-Keyboard.cpp
-        src/Input-Modifiers.cpp
-        src/Input-Pointer.cpp
-        src/Input-Properties.cpp
-        src/KeyMap.cpp
-        src/Mouse.cpp
-        src/Pipeline.cpp
-        src/Replay.cpp
-        src/Runtime.cpp
+    add_library(sdl3mcp_lib_objects OBJECT
+        src/lib/Api.cpp
+        src/lib/AppInput.cpp
+        src/lib/Capture.cpp
+        src/lib/Frame.cpp
+        src/lib/Info.cpp
+        src/lib/Input.cpp
+        src/lib/InputActions.cpp
+        src/lib/InputArguments.cpp
+        src/lib/Input-Chord.cpp
+        src/lib/InputKeyboard.cpp
+        src/lib/Input-Modifiers.cpp
+        src/lib/InputPointer.cpp
+        src/lib/InputProperties.cpp
+        src/lib/KeyMap.cpp
+        src/lib/Mouse.cpp
+        src/lib/Pipeline.cpp
+        src/lib/Replay.cpp
+        src/lib/Runtime.cpp
+        src/lib/TextInputScope.cpp
     )
-    sdl3mcp_configure_object_target(sdl3mcp_app_objects)
+    sdl3mcp_configure_object_target(sdl3mcp_lib_objects)
+    # The lib half reaches the common headers by bare name; its own units are in
+    # the same directory, so quoted includes resolve without an include path.
+    target_include_directories(sdl3mcp_lib_objects PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/common"
+    )
     # SDL is a compile-time dependency only: the final link is the app's job,
     # because the library publishes no SDL target.
-    target_link_libraries(sdl3mcp_app_objects PRIVATE SDL3::SDL3)
+    target_link_libraries(sdl3mcp_lib_objects PRIVATE SDL3::SDL3)
 
     add_library(SDL3MCP STATIC
         $<TARGET_OBJECTS:sdl3mcp_common_objects>
-        $<TARGET_OBJECTS:sdl3mcp_app_objects>
+        $<TARGET_OBJECTS:sdl3mcp_lib_objects>
     )
     add_library(SDL3MCP::SDL3MCP ALIAS SDL3MCP)
     target_include_directories(SDL3MCP
@@ -297,11 +291,11 @@ target_include_directories(SDL3MCP_COMMON INTERFACE
 # the common core, so the library archive holds no stdio transport.
 #
 # Presentation lives here: the library sends raw RGBA and this tree encodes PNG
-# and base64. stb is compiled in one server unit, so the library archive holds
+# and base64. stb is compiled in one Handler unit, so the library archive holds
 # no stb symbol.
 if(SDL3MCP_BUILD_CLI AND NOT EMSCRIPTEN)
-    add_library(sdl3mcp_server_objects OBJECT
-        src/StdioStream.cpp
+    add_library(sdl3mcp_handler_objects OBJECT
+        src/handler/StdioStream.cpp
         src/handler/AppPeer.cpp
         src/handler/AppPeer-Protocol.cpp
         src/handler/Handler-Catalog.cpp
@@ -320,37 +314,42 @@ if(SDL3MCP_BUILD_CLI AND NOT EMSCRIPTEN)
         src/handler/Web-Run.cpp
         src/handler/Web-Run-Child.cpp
     )
-    target_compile_features(sdl3mcp_server_objects PRIVATE cxx_std_20)
-    target_include_directories(sdl3mcp_server_objects
+    target_compile_features(sdl3mcp_handler_objects PRIVATE cxx_std_20)
+    target_include_directories(sdl3mcp_handler_objects
         PUBLIC
             "${CMAKE_CURRENT_SOURCE_DIR}/src/handler"
         PRIVATE
-            "${CMAKE_CURRENT_SOURCE_DIR}/src"
+            "${CMAKE_CURRENT_SOURCE_DIR}/include"
+            "${SDL3MCP_GENERATED_DIR}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/common"
             "${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb"
     )
     # SDL's include path is deliberately absent: no Handler unit includes SDL,
-    # and a stray include must fail this build rather than pass review.
-    target_link_libraries(sdl3mcp_server_objects
-        PUBLIC
-            SDL3MCP_COMMON
+    # and a stray include must fail this build rather than pass review. COMMON
+    # is the executable's link entry below, not this library's: the objects only
+    # need the common headers to compile.
+    target_link_libraries(sdl3mcp_handler_objects
+        PRIVATE
             nlohmann_json::nlohmann_json
     )
-    set_target_properties(sdl3mcp_server_objects PROPERTIES
+    set_target_properties(sdl3mcp_handler_objects PROPERTIES
         CXX_VISIBILITY_PRESET hidden
         VISIBILITY_INLINES_HIDDEN YES
         POSITION_INDEPENDENT_CODE ON
     )
 
-    # Main.cpp stays out of the object library: the test suites link the server
-    # objects and must not pick up a second main.
-    add_executable(sdl3mcp src/handler/Main.cpp $<TARGET_OBJECTS:sdl3mcp_server_objects>)
+    # Main.cpp stays out of the object library: the test suites link the handler
+    # objects and must not pick up a second main. The link block is the whole
+    # Handler composition in one place: its objects, the SDL-free core, json.
+    add_executable(sdl3mcp src/handler/Main.cpp)
     add_executable(SDL3MCP::SERVER ALIAS sdl3mcp)
     target_compile_features(sdl3mcp PRIVATE cxx_std_20)
     target_include_directories(sdl3mcp PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/src/handler"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/common"
     )
     target_link_libraries(sdl3mcp PRIVATE
+        $<TARGET_OBJECTS:sdl3mcp_handler_objects>
         SDL3MCP_COMMON
         nlohmann_json::nlohmann_json
     )

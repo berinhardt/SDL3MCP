@@ -1,58 +1,20 @@
+/*
+  The pipeline's state and registration: the window binding, the request
+  queues, the frame the app writes, and the input it releases. Applying a batch
+  is in Pipeline-Input.cpp; answering a written frame is in Pipeline-Frames.cpp.
+*/
+
 #include "Pipeline.h"
 
-#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <string>
 #include <utility>
 #include <vector>
 
-#include "AppInput.h"
-#include "TextInputScope.h"
-#include "ToolResult.h"
+#include "Frame.h"
 
 namespace sdl3mcp {
-namespace {
-
-/* True when any action in the batch carries text, so text input must be active. */
-bool batchHasText(const InputBatch& batch) {
-   return std::any_of(batch.actions.begin(), batch.actions.end(),
-                      [](const InputAction& action) {
-                         return std::holds_alternative<TextInput>(action);
-                      });
-}
-
-/* True when every event reached SDL's queue; modifiers are mirrored either way. */
-bool pushPlanEvents(SDL_Window* window, const KeyReplayer& keyReplayer,
-                    AppliedBatchPlan& plan) {
-   bool allPushed = true;
-   for (std::size_t index = 0; index < plan.eventsByAction.size(); ++index) {
-      const std::optional<SDL_FPoint>& warp = plan.warpsByAction[index];
-      if (warp.has_value() && window != nullptr) {
-         SDL_WarpMouseInWindow(window, warp->x, warp->y);
-      }
-      for (SDL_Event& event : plan.eventsByAction[index]) {
-         if (!SDL_PushEvent(&event)) {
-            allPushed = false;
-            break;
-         }
-      }
-      if (!allPushed) {
-         break;
-      }
-   }
-   SDL_SetModState(keyReplayer.modifiers());
-   return allPushed;
-}
-
-double elapsedMs(std::chrono::steady_clock::time_point started) {
-   return std::chrono::duration<double, std::milli>(
-              std::chrono::steady_clock::now() - started)
-       .count();
-}
-
-}  // namespace
 
 Pipeline::Pipeline(const KeyMap& keyMap, std::uint32_t maxFrameBytes)
     : maxFrameBytes_(maxFrameBytes),
@@ -114,100 +76,6 @@ void Pipeline::registerInput(InputBatch batch,
    request.registeredAt = std::chrono::steady_clock::now();
    request.batch = std::move(batch);
    registered_.push_back(std::move(request));
-}
-
-void Pipeline::applyRegisteredInputs(std::uint64_t frame) {
-   for (Request& request : registered_) {
-      if (request.isInput) {
-         applyInput(request, frame);
-      }
-   }
-   registered_.clear();
-}
-
-void Pipeline::applyInput(Request& request, std::uint64_t frame) {
-   TextInputScope textInput(window_, batchHasText(request.batch));
-   const bool textInputActive =
-       window_ != nullptr && SDL_TextInputActive(window_);
-
-   AppliedBatchPlan plan{keyReplayer_, mouseReplayer_};
-   const Result<void, ProtocolError> applied =
-       buildBatchPlan(request.batch, keyReplayer_, mouseReplayer_, windowID_,
-                      textInputActive, SDL_GetTicksNS(), plan);
-   if (!applied) {
-      request.error = applied.error().message;
-      failed_.push_back(std::move(request));
-      return;
-   }
-
-   keyReplayer_ = plan.keyState;
-   mouseReplayer_ = plan.mouseState;
-
-   if (!pushPlanEvents(window_, keyReplayer_, plan)) {
-      request.error = "SDL event queue full";
-      failed_.push_back(std::move(request));
-      return;
-   }
-
-   appliedFrame_ = frame;
-   request.appliedFrame = frame;
-   pending_.push_back(std::move(request));
-}
-
-void Pipeline::completeFailures() {
-   for (Request& request : failed_) {
-      request.completion->complete(
-          ToolResult::text(std::move(request.error), true));
-   }
-   failed_.clear();
-}
-
-void Pipeline::completeWrittenFrame() {
-   if (!written_.has_value()) {
-      return;
-   }
-
-   const Frame frame = std::move(*written_);
-   written_.reset();
-
-   std::vector<Request> requests = std::move(pending_);
-   pending_.clear();
-   for (Request& request : requests) {
-      completeRequest(request, frame);
-   }
-}
-
-void Pipeline::completeRequest(Request& request, const Frame& frame) {
-   Frame answer = frame;
-   if (request.region.has_value()) {
-      Result<Frame, ProtocolError> cropped = cropFrame(frame, *request.region);
-      if (!cropped) {
-         stats_.lastError = cropped.error().message;
-         request.completion->complete(
-             ToolResult::text(std::move(cropped.error().message), true));
-         return;
-      }
-      answer = std::move(*cropped);
-   }
-
-   ++stats_.count;
-   stats_.lastWidth = answer.width;
-   stats_.lastHeight = answer.height;
-   stats_.lastBytes = answer.pixels.size();
-   stats_.lastMs = elapsedMs(request.registeredAt);
-   stats_.lastError.clear();
-
-   std::string text;
-   if (request.isInput && request.appliedFrame.has_value()) {
-      text = std::to_string(request.actionCount) + " actions applied at frame " +
-             std::to_string(*request.appliedFrame) + "; frame " +
-             std::to_string(answer.frame) +
-             " attached, rendered after the actions were delivered";
-   }
-
-   request.completion->complete(ToolResult::rawFrame(
-       answer.width, answer.height, answer.frame, std::move(answer.pixels),
-       std::move(text)));
 }
 
 void Pipeline::writeFrame(const std::uint8_t* data,

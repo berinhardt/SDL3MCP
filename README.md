@@ -182,9 +182,10 @@ as §Targets shows: the library no longer carries it, and the flag is what
 satisfies the `emscripten_websocket_*` calls.
 
 The browser build compiles `src/common/SocketStream-Websockets.cpp` in place of
-`src/common/SocketStream.cpp` and `src/handler/StdioStream.cpp`. It accepts only
-`--mcp=off` and `--mcp=HOST:PORT`; there is no stdio and no `--mcp-help` or
-`--mcp-version`, because a page has no command line to reach them.
+the native arm (`src/common/SocketStream.cpp` and `src/common/SocketStream-IO.cpp`)
+and `src/handler/StdioStream.cpp`. It accepts only `--mcp=off` and
+`--mcp=HOST:PORT`; there is no stdio and no `--mcp-help` or `--mcp-version`,
+because a page has no command line to reach them.
 
 ## Quick start
 

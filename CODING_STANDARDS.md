@@ -23,9 +23,10 @@ Every rule here is one of two kinds, and the section it sits in says which:
 
 - **200 non-comment lines fails; 150 warns.** A file over 200 non-comment lines
   fails `scripts/check.sh`, and the message names the file and the limit; a file
-  over 150 non-comment lines warns without failing. 150 is the target, not the
-  ceiling: a unit that goes past 150 is due a split on its next change, and one
-  at 200 is not reviewable.
+  over 150 non-comment lines warns and must be listed in the exception ledger
+  (below); an unlisted soft file fails. 150 is the target, not the ceiling: a
+  unit that goes past 150 is due a split on its next change, and one at 200 is
+  not reviewable.
 - **Non-comment lines only.** Blank lines, line comments and block comments do
   not count; a code line with a trailing comment counts as code. The counter is
   `scripts/count-code-lines.awk`, so a string or raw string that looks like a
@@ -36,10 +37,11 @@ Every rule here is one of two kinds, and the section it sits in says which:
 - **Tests are exempt on purpose.** A suite's length comes from the scenarios it
   covers, not from a responsibility its author chose. Cutting a test file to fit
   the rule would cut coverage, so no test file is split for size.
-- **A soft-limit exception is named, not implied.** A file kept above 150 is a
-  decision recorded in the ticket's resolution — one long protocol arm, a
-  generated table — so the next reader knows the size was chosen rather than
-  drifted into. Over 200 is not a decision: the file splits.
+- **A soft-limit exception is listed, not implied.** Every file kept above 150
+  is one line in `scripts/soft-limit-exceptions.tsv`: its path, the counted
+  lines and a one-line reason. The rule fails when the tree and the ledger
+  disagree, so the next reader knows the size was chosen rather than drifted
+  into. Over 200 is not a decision: the file splits.
 
 This is the only mechanical rule. A rule worth a check earns one; a preference a
 check cannot decide stays in the judgement section instead of being weakened

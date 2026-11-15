@@ -11,3 +11,4 @@ compile_commands.json
 *.dll
 *.exe
 .DS_Store
+__pycache__/

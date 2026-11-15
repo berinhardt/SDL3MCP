@@ -1,227 +1,416 @@
-# Unit tests that include the private src/ headers link the library objects
-# (wire and app halves): a shared library hides those symbols from its dynamic
-# symbol table. Tests that only use the public C API keep linking the library
-# target itself.
-if(SDL3MCP_BUILD_SHARED)
-    set(SDL3MCP_TEST_INTERNAL_LIBRARY sdl3mcp_wire_objects sdl3mcp_app_objects)
-else()
-    set(SDL3MCP_TEST_INTERNAL_LIBRARY SDL3MCP::SDL3MCP)
-endif()
+# Unit tests.
+#
+# Two groups, by dependency rather than directory name, so a Handler-only build
+# can run its suites on a machine with no SDL:
+#
+#   HANDLER_TESTS  handler_tests, web_tests, protocol_core_tests and the
+#                  configure-time checks. None needs SDL to configure, build or
+#                  run: the common archive and the server objects hold no SDL
+#                  include path or link line, and the checks are CMake/Python.
+#   LIBRARY_TESTS  every suite that needs SDL to configure, build or run: the
+#                  suites that link the library (SDL3MCP::SDL3MCP) or the app
+#                  object library, plus the Emscripten Node suites. The two
+#                  checks that test the library package rather than link it
+#                  (targets_check, readme_check) are library tests too, because
+#                  both need the library half to configure and build. They exist
+#                  only when the library half is built.
+#
+# A suite that includes the private src/ headers links the common archive and
+# the lib object library: the sources are compiled once for the library, and
+# the suite reaches internal symbols the C ABI does not name. A suite that uses
+# only the public C API links SDL3MCP::SDL3MCP, so the public surface is
+# exercised too. A suite that links an object library names SDL itself, because
+# the library publishes no SDL.
+#
+# A browser configure has no POSIX test suite. Its suites are the WebSocket
+# transport arm and the whole app path, both library tests: they link the
+# archive and SDL, and run under Node against a local server. An Emscripten
+# configure with no library half derives no library test group and registers
+# nothing.
+if(EMSCRIPTEN)
+    if(NOT SDL3MCP_LIBRARY_TESTS)
+        return()
+    endif()
 
-add_executable(sdl3mcp_test_header_c header_c.c)
-set_target_properties(sdl3mcp_test_header_c PROPERTIES LINKER_LANGUAGE CXX)
-target_compile_features(sdl3mcp_test_header_c PRIVATE c_std_11)
-target_link_libraries(sdl3mcp_test_header_c PRIVATE SDL3MCP::SDL3MCP)
-add_test(NAME header_c COMMAND sdl3mcp_test_header_c)
+    find_program(NODE_EXECUTABLE node)
+    if(NOT NODE_EXECUTABLE)
+        message(WARNING
+            "node was not found; the Emscripten suites run under Node and are "
+            "not registered")
+        return()
+    endif()
+
+    # Both suites link the real archive, so the WebSocket arm is pulled from the
+    # object the application links. The library publishes no SDL, so each suite
+    # adds SDL and -lwebsocket.js itself, exactly like a consumer's Emscripten
+    # link line.
+    add_executable(sdl3mcp_test_websocket_node
+        websocket_stream_node_tests.cpp)
+    target_compile_features(sdl3mcp_test_websocket_node PRIVATE
+        cxx_std_20)
+    target_include_directories(sdl3mcp_test_websocket_node PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/../src/common"
+    )
+    target_link_libraries(sdl3mcp_test_websocket_node PRIVATE
+        SDL3MCP::SDL3MCP
+        SDL3::SDL3
+        "-lwebsocket.js"
+        doctest::doctest
+    )
+    # ASYNCIFY is what lets the browser event loop run between pumps, and
+    # EXIT_RUNTIME is what makes main's verdict end the Node process.
+    target_link_options(sdl3mcp_test_websocket_node PRIVATE
+        "-sASYNCIFY"
+        "-sEXIT_RUNTIME=1"
+        "-sENVIRONMENT=node"
+    )
+    add_test(NAME node_websocket_tests
+             COMMAND "${NODE_EXECUTABLE}"
+                     "${CMAKE_CURRENT_SOURCE_DIR}/run_node_websocket_test.js"
+                     "$<TARGET_FILE:sdl3mcp_test_websocket_node>")
+
+    # The app half of the browser path: the dummy video driver supplies a real
+    # window, the archive supplies the protocol, and a test-only post-js file
+    # supplies the two page globals.
+    add_executable(sdl3mcp_test_web_app_node web_app_node_tests.cpp)
+    target_compile_features(sdl3mcp_test_web_app_node PRIVATE
+        cxx_std_20)
+    target_link_libraries(sdl3mcp_test_web_app_node PRIVATE
+        SDL3MCP::SDL3MCP
+        SDL3::SDL3
+        "-lwebsocket.js"
+        doctest::doctest
+    )
+    target_link_options(sdl3mcp_test_web_app_node PRIVATE
+        "-sASYNCIFY"
+        "-sEXIT_RUNTIME=1"
+        "-sENVIRONMENT=node"
+        # Post-js, never pre-js: a window that exists at module load flips
+        # ENVIRONMENT_IS_WEB and trips the -sENVIRONMENT=node assert.
+        "--post-js=${CMAKE_CURRENT_SOURCE_DIR}/node_page_globals.js"
+    )
+    add_test(NAME node_web_app_tests
+             COMMAND "${NODE_EXECUTABLE}"
+                     "${CMAKE_CURRENT_SOURCE_DIR}/run_node_web_app_test.js"
+                     "$<TARGET_FILE:sdl3mcp_test_web_app_node>")
+    set_tests_properties(node_websocket_tests node_web_app_tests
+        PROPERTIES LABELS LIBRARY_TESTS)
+    return()
+endif()
 
 find_package(Threads REQUIRED)
 
-# One doctest suite is one executable, so a failing case is reported by doctest
-# and the remaining cases still run, unlike a hand-rolled main that aborts at
-# the first assertion. The private src/ include and the object-library link let
-# a suite reach the implementation the public header hides. A suite named
-# <family>_tests builds the executable sdl3mcp_test_<family>; the name without
-# the suffix, as for header_cpp, keeps the executable name as it is.
-#
-# Options:
-#   LIBRARY <target>  library or object library to link instead of the internal
-#                     one, for suites that only use the public C API.
-#   LIBS <targets>    extra link libraries such as nlohmann_json or Threads.
-#   INCLUDES <dirs>   extra include directories beyond ../src.
-#   NO_TEST           create the executable without registering a test, for a
-#                     suite that needs its own CTest command or registers
-#                     several tests, as lifecycle_tests does.
-function(sdl3mcp_add_test sdl3mcp_test_name sdl3mcp_test_source)
-    cmake_parse_arguments(sdl3mcp_test "NO_TEST" "LIBRARY" "LIBS;INCLUDES" ${ARGN})
+if(SDL3MCP_LIBRARY_TESTS)
+    # The private half of the library: protocol, session, tools, configuration
+    # and the app-side pipeline. The common archive and the lib object library
+    # keep the suite reachable to private symbols.
+    set(SDL3MCP_TEST_INTERNAL_LIBRARY SDL3MCP_COMMON sdl3mcp_lib_objects)
 
-    string(REGEX REPLACE "_tests$" "" sdl3mcp_test_family "${sdl3mcp_test_name}")
-    set(sdl3mcp_test_target "sdl3mcp_test_${sdl3mcp_test_family}")
+    # One doctest suite is one executable, so a failing case is reported by
+    # doctest and the remaining cases still run. A suite named <family>_tests
+    # builds the executable sdl3mcp_test_<family>; a name without the suffix
+    # keeps the executable name as it is.
+    #
+    # Options:
+    #   LIBRARY <targets>  library or object libraries to link instead of the
+    #                      internal one, for suites that use only the public C API.
+    #   LIBS <targets>     extra link libraries such as nlohmann_json or Threads.
+    #   INCLUDES <dirs>    extra include directories beyond the lib and common
+    #                      halves.
+    #   NO_TEST            create the executable without registering a test, for
+    #                      a suite that needs its own CTest command or registers
+    #                      several tests, as library_lifecycle_tests does.
+    function(sdl3mcp_add_test sdl3mcp_test_name sdl3mcp_test_source)
+        cmake_parse_arguments(sdl3mcp_test "NO_TEST" "LIBRARY" "LIBS;INCLUDES" ${ARGN})
 
-    if(NOT sdl3mcp_test_LIBRARY)
-        set(sdl3mcp_test_LIBRARY ${SDL3MCP_TEST_INTERNAL_LIBRARY})
-    endif()
+        string(REGEX REPLACE "_tests$" "" sdl3mcp_test_family "${sdl3mcp_test_name}")
+        set(sdl3mcp_test_target "sdl3mcp_test_${sdl3mcp_test_family}")
 
-    add_executable(${sdl3mcp_test_target} ${sdl3mcp_test_source})
-    target_compile_features(${sdl3mcp_test_target} PRIVATE cxx_std_20)
-    target_include_directories(${sdl3mcp_test_target} PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/../src"
-        ${sdl3mcp_test_INCLUDES}
-    )
-    target_link_libraries(${sdl3mcp_test_target} PRIVATE
-        ${sdl3mcp_test_LIBRARY}
+        if(NOT sdl3mcp_test_LIBRARY)
+            set(sdl3mcp_test_LIBRARY ${SDL3MCP_TEST_INTERNAL_LIBRARY})
+        endif()
+
+        add_executable(${sdl3mcp_test_target} ${sdl3mcp_test_source})
+        target_compile_features(${sdl3mcp_test_target} PRIVATE cxx_std_20)
+        target_include_directories(${sdl3mcp_test_target} PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/../src/lib"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../src/common"
+            ${sdl3mcp_test_INCLUDES}
+        )
+        target_link_libraries(${sdl3mcp_test_target} PRIVATE
+            ${sdl3mcp_test_LIBRARY}
+            SDL3::SDL3
+            doctest::doctest
+            ${sdl3mcp_test_LIBS}
+        )
+        if(NOT sdl3mcp_test_NO_TEST)
+            add_test(NAME ${sdl3mcp_test_name} COMMAND ${sdl3mcp_test_target})
+            set_tests_properties(${sdl3mcp_test_name}
+                PROPERTIES LABELS LIBRARY_TESTS)
+        endif()
+    endfunction()
+
+    # The public header compiles as C11 and as C++20, and the release is 1.0.0.
+    # The C test is a C-compiled consumer, so it names SDL itself: the library
+    # publishes no SDL include path.
+    add_executable(sdl3mcp_test_library_header_c library_header_c.c)
+    set_target_properties(sdl3mcp_test_library_header_c PROPERTIES
+        LINKER_LANGUAGE CXX)
+    target_compile_features(sdl3mcp_test_library_header_c PRIVATE c_std_11)
+    target_link_libraries(sdl3mcp_test_library_header_c PRIVATE
+        SDL3MCP::SDL3MCP
         SDL3::SDL3
-        doctest::doctest
-        ${sdl3mcp_test_LIBS}
     )
-    if(NOT sdl3mcp_test_NO_TEST)
-        add_test(NAME ${sdl3mcp_test_name} COMMAND ${sdl3mcp_test_target})
+    add_test(NAME library_header_c COMMAND sdl3mcp_test_library_header_c)
+    set_tests_properties(library_header_c PROPERTIES LABELS LIBRARY_TESTS)
+
+    sdl3mcp_add_test(header_cpp header_cpp.cpp
+        LIBRARY SDL3MCP::SDL3MCP)
+
+    # The pure value halves: key names, input planning, the replay state, mouse
+    # normalization, and frame validation/crop.
+    sdl3mcp_add_test(keymap_tests keymap_tests.cpp)
+
+    sdl3mcp_add_test(input_tests input_tests.cpp)
+
+    sdl3mcp_add_test(replay_tests replay_tests.cpp)
+
+    sdl3mcp_add_test(mouse_tests mouse_tests.cpp)
+
+    sdl3mcp_add_test(app_input_tests app_input_tests.cpp
+        LIBS nlohmann_json::nlohmann_json)
+
+    sdl3mcp_add_test(frame_tests frame_tests.cpp)
+
+    # The app-thread pipeline with a recording completion. SDL's dummy video
+    # driver supplies the window a bound input batch needs.
+    sdl3mcp_add_test(pipeline_tests pipeline_tests.cpp
+        LIBS nlohmann_json::nlohmann_json)
+    set_tests_properties(pipeline_tests PROPERTIES ENVIRONMENT
+        "SDL_VIDEODRIVER=dummy;ASAN_OPTIONS=detect_leaks=0:halt_on_error=1")
+
+    # The 1.0 configuration grammar and the two argument parsers are pure: a
+    # value in, a value and a message out, with no window or socket.
+    sdl3mcp_add_test(library_configuration_tests library_configuration_tests.cpp
+        LIBS nlohmann_json::nlohmann_json)
+
+    sdl3mcp_add_test(library_info_tests library_info_tests.cpp
+        LIBS nlohmann_json::nlohmann_json)
+
+    sdl3mcp_add_test(library_arguments_tests library_arguments_tests.cpp
+        LIBS nlohmann_json::nlohmann_json)
+
+    # One lifecycle per process, so every scenario is its own CTest and no
+    # scenario can leak the claimed lifecycle into another.
+    sdl3mcp_add_test(library_lifecycle_tests library_lifecycle_tests.cpp
+        LIBRARY SDL3MCP::SDL3MCP
+        LIBS Threads::Threads
+        NO_TEST)
+    foreach(sdl3mcp_lifecycle_scenario
+            off no_endpoint off_clears_endpoint refused_endpoint second_init
+            uninitialized help version bad_argument)
+        add_test(NAME library_lifecycle_${sdl3mcp_lifecycle_scenario}
+                 COMMAND sdl3mcp_test_library_lifecycle
+                         ${sdl3mcp_lifecycle_scenario})
+        set_tests_properties(library_lifecycle_${sdl3mcp_lifecycle_scenario}
+            PROPERTIES LABELS LIBRARY_TESTS)
+    endforeach()
+
+    # The test app dials a test MCP server on loopback, with the server in its
+    # own thread. SDL's dummy video driver keeps process-wide allocations the
+    # test cannot free, so leak detection is scoped off for these integration
+    # tests only.
+    sdl3mcp_add_test(library_socket_tests library_socket_tests.cpp
+        LIBRARY SDL3MCP::SDL3MCP
+        LIBS nlohmann_json::nlohmann_json Threads::Threads)
+    set_tests_properties(library_socket_tests PROPERTIES ENVIRONMENT
+        "SDL_VIDEODRIVER=dummy;ASAN_OPTIONS=detect_leaks=0:halt_on_error=1")
+
+    # The full input/capture pipeline: a capture is a no-op input, several
+    # requests registered in one pump share the next frame, a region crops it,
+    # and a rejected WriteFrame leaves the request pending.
+    sdl3mcp_add_test(library_pipeline_tests library_pipeline_tests.cpp
+        LIBRARY SDL3MCP::SDL3MCP
+        LIBS nlohmann_json::nlohmann_json Threads::Threads)
+    set_tests_properties(library_pipeline_tests PROPERTIES ENVIRONMENT
+        "SDL_VIDEODRIVER=dummy;ASAN_OPTIONS=detect_leaks=0:halt_on_error=1")
+
+    # The public CMake surface: a parent project must see the three public
+    # target names. The consumer embeds SDL3MCP as a subdirectory and asserts
+    # them, so the check fails if a name disappears or is renamed. It configures
+    # a tree of its own, so it only runs when SDL3 came from find_package and a
+    # standalone configure can find it again; a parent that vendors SDL through
+    # add_subdirectory leaves SDL3_DIR unset and skips the check rather than
+    # failing it for an environment it does not control.
+    if(SDL3_DIR)
+        get_filename_component(sdl3mcp_source_dir "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
+        add_test(NAME targets_check
+                 COMMAND "${CMAKE_COMMAND}"
+                         -S "${CMAKE_CURRENT_SOURCE_DIR}/targets_consumer"
+                         -B "${CMAKE_CURRENT_BINARY_DIR}/targets_consumer"
+                         "-DSDL3MCP_SOURCE_DIR=${sdl3mcp_source_dir}"
+                         "-DSDL3_DIR=${SDL3_DIR}")
+        set_tests_properties(targets_check PROPERTIES LABELS LIBRARY_TESTS)
     endif()
-endfunction()
 
-sdl3mcp_add_test(header_cpp header_cpp.cpp)
-
-sdl3mcp_add_test(configuration_tests configuration_tests.cpp)
-
-sdl3mcp_add_test(keymap_tests keymap_tests.cpp)
-
-sdl3mcp_add_test(input_tests input_tests.cpp)
-
-sdl3mcp_add_test(input_json_tests input_json_tests.cpp
-    LIBS nlohmann_json::nlohmann_json)
-
-sdl3mcp_add_test(replay_tests replay_tests.cpp)
-
-sdl3mcp_add_test(mouse_tests mouse_tests.cpp)
-
-sdl3mcp_add_test(connect_tests connect_tests.cpp
-    LIBS Threads::Threads)
-
-sdl3mcp_add_test(queue_tests queue_tests.cpp
-    LIBS Threads::Threads)
-
-sdl3mcp_add_test(app_input_tests app_input_tests.cpp
-    LIBS nlohmann_json::nlohmann_json Threads::Threads)
-
-sdl3mcp_add_test(input_tool_tests input_tool_tests.cpp
-    LIBRARY SDL3MCP::SDL3MCP
-    LIBS nlohmann_json::nlohmann_json Threads::Threads)
-# SDL's dummy video driver keeps process-wide allocations the test cannot free,
-# so leak detection is scoped off for the dummy-driver integration tests only.
-# Every other test runs with ASan leak detection on.
-set_tests_properties(input_tool_tests PROPERTIES ENVIRONMENT
-    "SDL_VIDEODRIVER=dummy;ASAN_OPTIONS=detect_leaks=0:halt_on_error=1")
-
-sdl3mcp_add_test(text_input_tests text_input_tests.cpp
-    LIBRARY SDL3MCP::SDL3MCP
-    LIBS nlohmann_json::nlohmann_json Threads::Threads)
-set_tests_properties(text_input_tests PROPERTIES ENVIRONMENT
-    "SDL_VIDEODRIVER=dummy;ASAN_OPTIONS=detect_leaks=0:halt_on_error=1")
-
-sdl3mcp_add_test(capture_tests capture_tests.cpp
-    LIBS nlohmann_json::nlohmann_json Threads::Threads)
-
-sdl3mcp_add_test(capture_tool_tests capture_tool_tests.cpp
-    LIBRARY SDL3MCP::SDL3MCP
-    LIBS nlohmann_json::nlohmann_json Threads::Threads)
-set_tests_properties(capture_tool_tests PROPERTIES ENVIRONMENT
-    "SDL_VIDEODRIVER=dummy;ASAN_OPTIONS=detect_leaks=0:halt_on_error=1")
-
-sdl3mcp_add_test(frame_size_tests frame_size_tests.cpp
-    LIBRARY SDL3MCP::SDL3MCP
-    LIBS nlohmann_json::nlohmann_json Threads::Threads)
-set_tests_properties(frame_size_tests PROPERTIES ENVIRONMENT
-    "SDL_VIDEODRIVER=dummy;ASAN_OPTIONS=detect_leaks=0:halt_on_error=1")
-
-sdl3mcp_add_test(terminate_tests terminate_tests.cpp
-    LIBRARY SDL3MCP::SDL3MCP
-    LIBS nlohmann_json::nlohmann_json Threads::Threads)
-set_tests_properties(terminate_tests PROPERTIES ENVIRONMENT
-    "SDL_VIDEODRIVER=dummy;ASAN_OPTIONS=detect_leaks=0:halt_on_error=1")
-
-sdl3mcp_add_test(json_rpc_tests json_rpc_tests.cpp
-    LIBS nlohmann_json::nlohmann_json)
-
-sdl3mcp_add_test(session_tests session_tests.cpp
-    LIBS nlohmann_json::nlohmann_json)
-
-sdl3mcp_add_test(frame_tests frame_tests.cpp)
-
-sdl3mcp_add_test(info_tests info_tests.cpp
-    LIBS nlohmann_json::nlohmann_json)
-
-sdl3mcp_add_test(server_tests server_tests.cpp
-    LIBS nlohmann_json::nlohmann_json Threads::Threads)
-
-sdl3mcp_add_test(responder_tests responder_tests.cpp
-    LIBS nlohmann_json::nlohmann_json)
-
-# One lifecycle per process, so every scenario is its own CTest. The executable
-# selects its case from the scenario argument.
-sdl3mcp_add_test(lifecycle_tests lifecycle_tests.cpp
-    LIBRARY SDL3MCP::SDL3MCP
-    LIBS Threads::Threads nlohmann_json::nlohmann_json
-    NO_TEST)
-foreach(scenario none help version error uninitialized stdio_pipes)
-    add_test(NAME lifecycle_${scenario}
-             COMMAND sdl3mcp_test_lifecycle ${scenario})
-endforeach()
-
-# The README is the contract, so its code, schemas, and run command are checked.
-find_package(Python3 COMPONENTS Interpreter QUIET)
-if(Python3_Interpreter_FOUND)
-    add_test(NAME readme_check
-             COMMAND "${Python3_EXECUTABLE}"
-                     "${CMAKE_CURRENT_SOURCE_DIR}/check_readme.py"
-                     --source "${PROJECT_SOURCE_DIR}"
-                     --build "${PROJECT_BINARY_DIR}")
+    # The README is the contract, so its code, schemas, and run command are
+    # checked. The Handler's --dump-tools supplies the catalog the check
+    # compares against, so the guard reads the same definitions tools/list does.
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        set(sdl3mcp_readme_arguments
+            --source "${PROJECT_SOURCE_DIR}"
+            --build "${PROJECT_BINARY_DIR}"
+        )
+        if(TARGET sdl3mcp)
+            list(APPEND sdl3mcp_readme_arguments --tools $<TARGET_FILE:sdl3mcp>)
+        endif()
+        add_test(NAME readme_check
+                 COMMAND "${Python3_EXECUTABLE}"
+                         "${CMAKE_CURRENT_SOURCE_DIR}/check_readme.py"
+                         ${sdl3mcp_readme_arguments})
+        set_tests_properties(readme_check PROPERTIES LABELS LIBRARY_TESTS)
+    endif()
 endif()
 
-# The supervisor tests drive the real executable over pipes, with a fake child
-# that speaks MCP without SDL, so no window or video driver is involved.
-if(SDL3MCP_BUILD_CLI)
-    sdl3mcp_add_test(supervisor_png_tests supervisor_png_tests.cpp
-        LIBRARY sdl3mcp_supervisor_objects
-        LIBS sdl3mcp_wire_objects sdl3mcp_app_objects SDL3::SDL3 Threads::Threads
-        INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/../supervisor")
-
-    add_executable(sdl3mcp_fake_child supervisor_fake_child.cpp)
-    target_compile_features(sdl3mcp_fake_child PRIVATE cxx_std_20)
-    target_include_directories(sdl3mcp_fake_child PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+if(SDL3MCP_HANDLER_TESTS)
+    # The protocol core is SDL-free, so its suite links the common library alone:
+    # a wire unit that starts calling SDL breaks this build instead of dragging a
+    # window and a GPU into a protocol test.
+    add_executable(sdl3mcp_test_protocol_core protocol_core_tests.cpp)
+    target_compile_features(sdl3mcp_test_protocol_core PRIVATE cxx_std_20)
+    target_include_directories(sdl3mcp_test_protocol_core PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/../src/common"
+        "${SDL3MCP_GENERATED_DIR}"
+        ${SDL3MCP_JSON_INCLUDE_DIRS}
     )
-    target_link_libraries(sdl3mcp_fake_child PRIVATE
-        sdl3mcp_wire_objects
+    target_link_libraries(sdl3mcp_test_protocol_core PRIVATE
+        SDL3MCP_COMMON
         nlohmann_json::nlohmann_json
-        Threads::Threads
+        doctest::doctest
     )
+    add_test(NAME protocol_core_tests COMMAND sdl3mcp_test_protocol_core)
+    set_tests_properties(protocol_core_tests PROPERTIES LABELS HANDLER_TESTS)
 
-    sdl3mcp_add_test(supervisor_tests supervisor_tests.cpp
-        LIBRARY sdl3mcp_supervisor_objects
-        LIBS sdl3mcp_wire_objects sdl3mcp_app_objects SDL3::SDL3
-             nlohmann_json::nlohmann_json Threads::Threads
-        NO_TEST)
-    add_test(NAME supervisor_tests
-             COMMAND sdl3mcp_test_supervisor
-                     $<TARGET_FILE:sdl3mcp>
-                     $<TARGET_FILE:sdl3mcp_fake_child>)
+    # The Handler end to end: the real executable over pipes and sockets, driven
+    # by a test MCP client and a fake application that speaks the library's wire
+    # protocol. No SDL is on this link line, so a handler unit that starts calling
+    # SDL breaks the test build instead of dragging a window into the Handler.
+    if(TARGET sdl3mcp)
+        add_executable(sdl3mcp_test_handler handler_tests.cpp)
+        target_compile_features(sdl3mcp_test_handler PRIVATE cxx_std_20)
+        target_include_directories(sdl3mcp_test_handler PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/../src/common"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../src/handler"
+        )
+        target_link_libraries(sdl3mcp_test_handler PRIVATE
+            sdl3mcp_handler_objects
+            SDL3MCP_COMMON
+            nlohmann_json::nlohmann_json
+            doctest::doctest
+            Threads::Threads
+        )
 
-    # The relay drives the same executable with --listen and a fake application
-    # that dials in over TCP, so no child process and no SDL are involved.
-    sdl3mcp_add_test(relay_tests relay_tests.cpp
-        LIBRARY sdl3mcp_supervisor_objects
-        LIBS sdl3mcp_wire_objects sdl3mcp_app_objects SDL3::SDL3
-             nlohmann_json::nlohmann_json Threads::Threads
-        NO_TEST)
-    add_test(NAME relay_tests
-             COMMAND sdl3mcp_test_relay
-                     $<TARGET_FILE:sdl3mcp>)
+        # The fake target a --targets entry spawns: it dials the appended
+        # --mcp=HOST:PORT and speaks the library's wire protocol, so the spawn
+        # path is exercised end to end without SDL.
+        add_executable(sdl3mcp_handler_fake_app handler_fake_app.cpp)
+        target_compile_features(sdl3mcp_handler_fake_app PRIVATE cxx_std_20)
+        target_include_directories(sdl3mcp_handler_fake_app PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/../src/common"
+        )
+        target_link_libraries(sdl3mcp_handler_fake_app PRIVATE
+            SDL3MCP_COMMON
+            nlohmann_json::nlohmann_json
+        )
 
-    # The spawner dials a relay the test itself listens on, then spawns the fake
-    # child through its own per-spawn listener; the fake child dials back with
-    # --mcp=<endpoint> and speaks MCP like the real app.
-    sdl3mcp_add_test(spawner_tests spawner_tests.cpp
-        LIBRARY sdl3mcp_supervisor_objects
-        LIBS sdl3mcp_wire_objects sdl3mcp_app_objects SDL3::SDL3
-             nlohmann_json::nlohmann_json Threads::Threads
-        INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/../supervisor"
-        NO_TEST)
-    add_test(NAME spawner_tests
-             COMMAND sdl3mcp_test_spawner
-                     $<TARGET_FILE:sdl3mcp>
-                     $<TARGET_FILE:sdl3mcp_fake_child>)
+        # The controllable page server and WebSocket bridge a web spawn starts in
+        # place of python3 and websocat: no Python, no websocat, no browser.
+        add_executable(sdl3mcp_test_web_stack web_stack_helper.cpp)
+        target_compile_features(sdl3mcp_test_web_stack PRIVATE cxx_std_20)
+        target_link_libraries(sdl3mcp_test_web_stack PRIVATE Threads::Threads)
 
-    # The same binary again, this time driving the real example through the
-    # proxy. The dummy video driver gives a real software renderer headless;
-    # as with the other dummy-driver tests, SDL's process-wide allocations are
-    # not leaks the example can free, so leak detection is scoped off here and
-    # inherited by both the supervisor and the app it spawns.
-    if(SDL3MCP_BUILD_EXAMPLES)
-        add_test(NAME supervisor_real_app
-                 COMMAND sdl3mcp_test_supervisor
-                         $<TARGET_FILE:sdl3mcp>
-                         $<TARGET_FILE:sdl3mcp_fake_child>
-                         $<TARGET_FILE:minimal>)
-        set_tests_properties(supervisor_real_app PROPERTIES ENVIRONMENT
-            "SDL_VIDEODRIVER=dummy;ASAN_OPTIONS=detect_leaks=0:halt_on_error=1")
+        add_test(NAME handler_tests
+                 COMMAND sdl3mcp_test_handler $<TARGET_FILE:sdl3mcp>
+                         $<TARGET_FILE:sdl3mcp_handler_fake_app>
+                         $<TARGET_FILE:sdl3mcp_test_web_stack>)
+        set_tests_properties(handler_tests PROPERTIES LABELS HANDLER_TESTS)
+
+        # The web source and the throwaway profile are pure value/filesystem
+        # operations, so their suite links the handler objects and the common
+        # archive without a Handler process or a browser.
+        add_executable(sdl3mcp_test_web web_tests.cpp)
+        target_compile_features(sdl3mcp_test_web PRIVATE cxx_std_20)
+        target_include_directories(sdl3mcp_test_web PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/../src/common"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../src/handler"
+        )
+        target_link_libraries(sdl3mcp_test_web PRIVATE
+            sdl3mcp_handler_objects
+            SDL3MCP_COMMON
+            doctest::doctest
+            Threads::Threads
+        )
+        add_test(NAME web_tests COMMAND sdl3mcp_test_web)
+        set_tests_properties(web_tests PROPERTIES LABELS HANDLER_TESTS)
+    endif()
+
+    # The web registration is configure-time behavior, so it is checked by
+    # configuring a tiny project rather than by a compiled suite. The script runs
+    # one configure per case and asserts the file on success and the diagnostic
+    # on each failure, which a FATAL_ERROR makes impossible to observe from
+    # inside. It includes the module directly, so it needs no SDL either.
+    add_test(NAME web_registration_check
+             COMMAND "${CMAKE_COMMAND}"
+                     "-DSDL3MCP_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/.."
+                     "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/web_registration"
+                     -P "${CMAKE_CURRENT_SOURCE_DIR}/check_web_registration.cmake")
+    set_tests_properties(web_registration_check PROPERTIES LABELS HANDLER_TESTS)
+
+    # The SDL-free invariant, proven by a configure/build/test of its own: the
+    # library half is off, SDL discovery is disabled, and the Handler plus the
+    # Handler suites must still pass. Forwarding the parent's generator and the
+    # dependencies it already resolved keeps the nested configure off the
+    # network. The nested configure turns this variable off, so the fixture does
+    # not register itself again.
+    #
+    # Only the standalone gate registers this fixture. An embedded parent owns
+    # neither doctest nor nlohmann/json in the variables the script forwards: it
+    # usually defines them as targets (add_subdirectory), so the nested
+    # configure would download them and a consumer's ctest would grow a network
+    # dependency and a cold nested build. The SDL-free invariant is this
+    # project's gate to keep, so the parent must not run it.
+    #
+    # Internal, not a cache option or a README row: it is the gate's own switch
+    # for its nested configure, not part of the public build surface.
+    if(NOT DEFINED SDL3MCP_HANDLER_ONLY_FIXTURE)
+        set(SDL3MCP_HANDLER_ONLY_FIXTURE ON)
+    endif()
+    if(PROJECT_IS_TOP_LEVEL AND SDL3MCP_HANDLER_ONLY_FIXTURE)
+        set(sdl3mcp_handler_only_command
+            "-DSDL3MCP_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
+            "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/handler_only"
+            "-DCTEST_COMMAND=${CMAKE_CTEST_COMMAND}"
+            "-DGENERATOR=${CMAKE_GENERATOR}"
+            "-DBUILD_TYPE=${CMAKE_BUILD_TYPE}"
+        )
+        if(doctest_DIR AND EXISTS "${doctest_DIR}/doctestConfig.cmake")
+            list(APPEND sdl3mcp_handler_only_command
+                "-DDOCTEST_DIR=${doctest_DIR}")
+        elseif(doctest_SOURCE_DIR)
+            list(APPEND sdl3mcp_handler_only_command
+                "-DDOCTEST_SOURCE_DIR=${doctest_SOURCE_DIR}")
+        endif()
+        if(nlohmann_json_DIR AND EXISTS "${nlohmann_json_DIR}/nlohmann_jsonConfig.cmake")
+            list(APPEND sdl3mcp_handler_only_command
+                "-DNLOHMANN_JSON_DIR=${nlohmann_json_DIR}")
+        elseif(nlohmann_json_SOURCE_DIR)
+            list(APPEND sdl3mcp_handler_only_command
+                "-DNLOHMANN_JSON_SOURCE_DIR=${nlohmann_json_SOURCE_DIR}")
+        endif()
+        add_test(NAME handler_only_check
+                 COMMAND "${CMAKE_COMMAND}" ${sdl3mcp_handler_only_command}
+                         -P "${CMAKE_CURRENT_SOURCE_DIR}/handler_only_check.cmake")
+        set_tests_properties(handler_only_check PROPERTIES LABELS HANDLER_TESTS)
     endif()
 endif()

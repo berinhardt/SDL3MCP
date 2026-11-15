@@ -1,0 +1,18 @@
+# Files kept above the 150-line soft limit, with the counted lines at the time
+# they were accepted and a one-line reason. scripts/check-file-size.sh fails
+# when a tracked product source over 150 is missing here, when a recorded count
+# is stale, or when an entry names a file at or below 150 or no longer tracked.
+# Recompute with scripts/count-code-lines.awk; over 200 the file splits.
+#
+# path	count	reason
+src/common/ToolDefinitions-Input.cpp	185	one JSON schema document; the capture schema shares its region grammar
+src/common/ToolResult.cpp	183	the result serializer is one switch over the result kinds
+src/handler/AppPeer-Protocol.cpp	185	one handshake, tool-list and event-dispatch unit
+src/handler/Handler-Loop.cpp	160	the one poll loop whose order README documents
+src/handler/Handler-Spawn.cpp	154	the fork/exec channel
+src/handler/HandlerCli.cpp	185	the one option grammar the suite pins
+src/handler/Targets.cpp	181	one JSON source loader and alias map
+src/handler/Web-Plan-Preflight.cpp	159	launch preflight, ports included
+src/lib/KeyMap.cpp	181	one key-name and chord table
+src/lib/Mouse.cpp	188	one table of SDL mouse helpers
+src/lib/Replay.cpp	186	one held-state and event-replay state machine

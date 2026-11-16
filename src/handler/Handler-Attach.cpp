@@ -63,8 +63,8 @@ void Handler::onAppAttached(std::vector<nlohmann::json> tools) {
    peerTools_ = std::move(tools);
    appReady_ = true;
    rebuildCatalog();
-   /* Attach is silent: a bare app is an identity, and a spawn changes no name. */
-   publishToolsIfChanged(false);
+   /* A relay appends its app_spawn_* names, which the client must learn about. */
+   publishToolsIfChanged(true);
    completeWaiters("an application session attached");
 
    if (pendingSpawn_.has_value()) {
@@ -90,7 +90,7 @@ void Handler::onAppDetached(std::string reason) {
    appReady_ = false;
    peerTools_.clear();
    rebuildCatalog();
-   publishToolsIfChanged(false);
+   publishToolsIfChanged(true);
    failPendingForwards(reason + " during ", "");
 }
 

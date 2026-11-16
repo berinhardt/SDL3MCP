@@ -975,10 +975,13 @@ whether an application is attached:
   Handler's forward. Names only the peer advertises are appended.
 - A forwarded tool the peer did not advertise answers
   `the application does not provide <name>` instead of being sent.
-- A spawn, attach or detach changes no advertised name, so no
-  `notifications/tools/list_changed` is sent for it. A notification is sent only
-  when the merged set really changes; a peer's own list-changed notification
-  makes the Handler ask it for `tools/list` again and re-merge.
+- A bare attach or detach changes no advertised name, so it sends no
+  `notifications/tools/list_changed`. A peer that appends or drops names (a relay
+  serving `app_spawn_<alias>`) really changes the merged set, so its attach and
+  its detach each send one `notifications/tools/list_changed` to the connected
+  client. A notification is sent only when the merged set really changes; a
+  peer's own list-changed notification makes the Handler ask it for `tools/list`
+  again and re-merge.
 
 The Handler's own copies of the two blocking tools add its forward budget:
 

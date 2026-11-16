@@ -581,6 +581,14 @@ nlohmann::json fakeAppTools(bool withTerminate = true) {
    return tools;
 }
 
+/* A fake app's catalog plus one name the Handler's base catalog lacks. */
+nlohmann::json fakeAppToolsWith(const std::string& name,
+                                const std::string& description) {
+   nlohmann::json tools = fakeAppTools();
+   tools.push_back(toolDefinition(name, description));
+   return tools;
+}
+
 struct McpClient {
    FdChannel channel;
    int nextId = 1;
@@ -675,6 +683,10 @@ std::vector<std::string> toolNames(const nlohmann::json& listResponse) {
       names.push_back(tool.value("name", std::string()));
    }
    return names;
+}
+
+bool namesContain(const std::vector<std::string>& names, const std::string& name) {
+   return std::find(names.begin(), names.end(), name) != names.end();
 }
 
 const nlohmann::json* toolByName(const nlohmann::json& listResponse,
@@ -1990,7 +2002,10 @@ TEST_CASE("a server attaches one app, merges tools, and forwards calls") {
    startServer(process, port, client);
    CHECK(!client.initialize().contains("error"));
 
-   /* Park a wait_session; the attach wakes it without changing the list. */
+   /*
+     Park a wait_session; the attach wakes it. This peer appends app_info, so
+     the merged set changes and the attach is announced exactly once.
+   */
    const int waitId = client.send("tools/call", nlohmann::json{
                                                     {"name", "wait_session"},
                                                     {"arguments", nlohmann::json{
@@ -2003,7 +2018,8 @@ TEST_CASE("a server attaches one app, merges tools, and forwards calls") {
    const nlohmann::json waited = client.readResponse(waitId);
    CHECK(waited["result"]["isError"] == false);
    CHECK(resultText(waited) == "an application session attached");
-   CHECK(client.notifications.empty());
+   REQUIRE(client.notifications.size() == 1);
+   CHECK(client.notifications[0]["method"] == "notifications/tools/list_changed");
 
    const nlohmann::json list = client.toolsList();
    const std::vector<std::string> names = toolNames(list);
@@ -2350,6 +2366,73 @@ TEST_CASE("a peer announcement is re-listed and republished") {
    CHECK((names == std::vector<std::string>{"app_extra", "app_info", "sdl_capture",
                                             "sdl_info", "sdl_input", "sdl_terminate",
                                             "wait_session"}));
+
+   process.closeStdin();
+   CHECK(process.waitForExit(kLineTimeoutMs));
+}
+
+TEST_CASE("an attach announces a peer-only tool") {
+   TestProcess process;
+   std::uint16_t port = 0;
+   McpClient client;
+   startServer(process, port, client);
+   CHECK(!client.initialize().contains("error"));
+   CHECK(!namesContain(toolNames(client.toolsList()), "app_extra"));
+
+   FakeApp app;
+   attachFakeApp(app, port, fakeAppToolsWith("app_extra", "added at attach"));
+
+   client.readNotification("notifications/tools/list_changed");
+   CHECK(namesContain(toolNames(client.toolsList()), "app_extra"));
+
+   process.closeStdin();
+   CHECK(process.waitForExit(kLineTimeoutMs));
+}
+
+TEST_CASE("a detach announces a peer-only tool leaving") {
+   TestProcess process;
+   std::uint16_t port = 0;
+   McpClient client;
+   startServer(process, port, client);
+   CHECK(!client.initialize().contains("error"));
+
+   FakeApp app;
+   attachFakeApp(app, port, fakeAppToolsWith("app_extra", "added at attach"));
+
+   /* The attach itself is announced because the name is new. */
+   client.readNotification("notifications/tools/list_changed");
+   CHECK(namesContain(toolNames(client.toolsList()), "app_extra"));
+
+   app.close();
+   client.readNotification("notifications/tools/list_changed");
+   CHECK(!namesContain(toolNames(client.toolsList()), "app_extra"));
+
+   process.closeStdin();
+   CHECK(process.waitForExit(kLineTimeoutMs));
+}
+
+TEST_CASE("an attach of identical definitions stays silent") {
+   TestProcess process;
+   std::uint16_t port = 0;
+   McpClient client;
+   startServer(process, port, client);
+   CHECK(!client.initialize().contains("error"));
+
+   /* The base catalog is the Handler's own view, so echoing it is a no-op. */
+   const nlohmann::json base = client.toolsList();
+   FakeApp app;
+   attachFakeApp(app, port, base["result"]["tools"]);
+
+   CHECK(client.callTool("wait_session", nlohmann::json{{"timeout_ms", 3000}})
+             ["result"]["isError"] == false);
+   CHECK(client.notifications.empty());
+   CHECK(client.toolsList()["result"].dump() == base["result"].dump());
+
+   /* A detach that drops nothing is silent too. */
+   app.close();
+   CHECK(awaitNoApp(client));
+   CHECK(client.notifications.empty());
+   CHECK(client.toolsList()["result"].dump() == base["result"].dump());
 
    process.closeStdin();
    CHECK(process.waitForExit(kLineTimeoutMs));

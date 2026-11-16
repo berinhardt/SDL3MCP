@@ -8,7 +8,7 @@
 src/common/ToolDefinitions-Input.cpp	185	one JSON schema document; the capture schema shares its region grammar
 src/common/ToolResult.cpp	183	the result serializer is one switch over the result kinds
 src/handler/AppPeer-Protocol.cpp	185	one handshake, tool-list and event-dispatch unit
-src/handler/Handler-Loop.cpp	160	the one poll loop whose order README documents
+src/handler/Handler-Loop.cpp	161	the one poll loop whose order README documents
 src/handler/Handler-Spawn.cpp	154	the fork/exec channel
 src/handler/HandlerCli.cpp	185	the one option grammar the suite pins
 src/handler/Targets.cpp	181	one JSON source loader and alias map

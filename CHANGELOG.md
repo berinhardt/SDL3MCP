@@ -52,6 +52,12 @@ linkage, SDL ownership and the nlohmann/json resolution all change.
   `SDL3MCP_BUILD_EXAMPLES` are removed; Catalyst is the example application, and
   the README's complete C block is still the quick start and still compiles.
 
+### Fixed
+
+- **A relay's `app_spawn_<alias>` tools reach a connected client.** A peer that
+  appends or drops tool names now sends `notifications/tools/list_changed` on
+  attach and on detach; an attach or detach that changes no name stays silent.
+
 ## 1.0.0
 
 The rewrite. The library is now single-threaded and dial-only, and the Handler

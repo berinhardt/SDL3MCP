@@ -42,6 +42,8 @@ int Handler::run() {
 
    buildBaseTools();
    rebuildCatalog();
+   /* Seed the published view so only a real merged-set change notifies. */
+   publishToolsIfChanged(false);
 
    const Result<void, TransportError> client = startClient();
    if (!client) {

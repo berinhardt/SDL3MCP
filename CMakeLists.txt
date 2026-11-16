@@ -27,7 +27,7 @@ option(SDL3MCP_BUILD_LIBRARY
 # the single switch; a Handler-only configure gets HANDLER_TESTS and no SDL.
 option(SDL3MCP_BUILD_TESTS
     "Build the test suites derived from the half each group exercises"
-    ${PROJECT_IS_TOP_LEVEL})
+    ON)
 
 option(SDL3MCP_BUILD_CLI "Build the sdl3mcp Handler executable" OFF)
 

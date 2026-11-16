@@ -57,6 +57,8 @@ linkage, SDL ownership and the nlohmann/json resolution all change.
 - **A relay's `app_spawn_<alias>` tools reach a connected client.** A peer that
   appends or drops tool names now sends `notifications/tools/list_changed` on
   attach and on detach; an attach or detach that changes no name stays silent.
+  The `initialize` answer declares `tools.listChanged`, because a client installs
+  its handler for that notification only when the server advertises it.
 
 ## 1.0.0
 

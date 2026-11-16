@@ -2438,6 +2438,46 @@ TEST_CASE("an attach of identical definitions stays silent") {
    CHECK(process.waitForExit(kLineTimeoutMs));
 }
 
+TEST_CASE("a relay's spawn tools reach the upstream client") {
+   TempDir directory;
+   writeFile(directory.file("targets.json"),
+             nlohmann::json{
+                 {"alpha", nlohmann::json::array({"/bin/true"})},
+             }
+                 .dump());
+
+   TestProcess upstream;
+   std::uint16_t port = 0;
+   McpClient client;
+   startServer(upstream, port, client);
+   const nlohmann::json initialized = client.initialize();
+   CHECK(!initialized.contains("error"));
+   /*
+     A spec-abiding client installs its list_changed handler only when the
+     server advertises the capability.
+   */
+   CHECK(initialized["result"]["capabilities"]["tools"]["listChanged"] == true);
+   CHECK(!namesContain(toolNames(client.toolsList()), "app_spawn_alpha"));
+
+   TestProcess relay;
+   relay.start(g_handler,
+               {"--connect=127.0.0.1:" + std::to_string(port),
+                "--targets=" + directory.file("targets.json")});
+
+   /* The relay appends a name, so the attach is announced and reachable. */
+   client.readNotification("notifications/tools/list_changed");
+   CHECK(namesContain(toolNames(client.toolsList()), "app_spawn_alpha"));
+
+   /* A relay leaving drops the name and announces that too. */
+   ::kill(relay.pid, SIGTERM);
+   CHECK(relay.waitForExit(kLineTimeoutMs));
+   client.readNotification("notifications/tools/list_changed");
+   CHECK(!namesContain(toolNames(client.toolsList()), "app_spawn_alpha"));
+
+   upstream.closeStdin();
+   CHECK(upstream.waitForExit(kLineTimeoutMs));
+}
+
 TEST_CASE("a relay dials its upstream and serves a dial-in app") {
    std::uint16_t upstreamPort = 0;
    const int upstreamListener = bindLoopback(upstreamPort);

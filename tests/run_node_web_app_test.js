@@ -160,7 +160,8 @@ async function converse(client, output) {
    const initialized = await client.request(
        'initialize', {protocolVersion: '2025-11-25', capabilities: {}});
    assert.equal(initialized.answer.result.protocolVersion, '2025-11-25');
-   assert.deepEqual(initialized.answer.result.capabilities.tools, {});
+   assert.deepEqual(initialized.answer.result.capabilities.tools,
+                    {listChanged: true});
    assert.equal(initialized.answer.result.serverInfo.name, 'sdl3mcp');
    assert.ok(initialized.answer.result.serverInfo.version.length > 0);
    client.notify('notifications/initialized');

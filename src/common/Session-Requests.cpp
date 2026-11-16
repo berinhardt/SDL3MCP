@@ -70,7 +70,7 @@ void Session::handleInitialize(const RpcRequest& request) {
        request.id,
        nlohmann::json{
            {"protocolVersion", std::string(kProtocolVersion)},
-           {"capabilities", nlohmann::json{{"tools", nlohmann::json::object()}}},
+           {"capabilities", nlohmann::json{{"tools", nlohmann::json{{"listChanged", true}}}}},
            {"serverInfo", nlohmann::json{
                               {"name", std::string(kServerName)},
                               {"version", std::string(SDL3MCP_VERSION_STRING)},

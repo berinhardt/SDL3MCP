@@ -622,6 +622,7 @@ TEST_CASE("session initialize answers with its own revision") {
    CHECK(response["result"]["capabilities"].is_object());
    CHECK(response["result"]["capabilities"].size() == 1);
    CHECK(response["result"]["capabilities"]["tools"].is_object());
+   CHECK(response["result"]["capabilities"]["tools"]["listChanged"] == true);
    CHECK(response["result"]["serverInfo"]["name"] == "sdl3mcp");
    CHECK(response["result"]["serverInfo"]["version"] == SDL3MCP_VERSION_STRING);
    CHECK(fixture.session->initialized());

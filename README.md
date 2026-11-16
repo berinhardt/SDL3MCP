@@ -1504,7 +1504,9 @@ The release is **1.0.0**. It is the project version, `SDL3MCP_VERSION_STRING`,
   "result": {
     "protocolVersion": "2025-11-25",
     "capabilities": {
-      "tools": {}
+      "tools": {
+        "listChanged": true
+      }
     },
     "serverInfo": {
       "name": "sdl3mcp",
@@ -1513,6 +1515,12 @@ The release is **1.0.0**. It is the project version, `SDL3MCP_VERSION_STRING`,
   }
 }
 ```
+
+The `tools` capability declares `listChanged`, because the merged catalog changes
+when a relay attaches or detaches. A client installs its
+`notifications/tools/list_changed` handler only when the server advertises the
+capability, so without it the relay's `app_spawn_<alias>` tools never reach the
+client.
 
 `CHANGELOG.md` records the 1.0.0 breaks. `CONTRACT.md` is the v0 oracle kept for
 reference; it is not the current contract, and `README.md` is.
